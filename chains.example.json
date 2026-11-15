@@ -1,0 +1,31 @@
+{
+  "ethereum": {
+    "url": "https://api.etherscan.io/v2/api",
+    "params": {"chainid": "1"},
+    "apikey": "YOUR_ETHERSCAN_KEY",
+    "symbol": "ETH"
+  },
+  "arbitrum": {
+    "url": "https://api.etherscan.io/v2/api",
+    "params": {"chainid": "42161"},
+    "apikey": "YOUR_ETHERSCAN_KEY",
+    "symbol": "ETH"
+  },
+  "polygon": {
+    "url": "https://api.etherscan.io/v2/api",
+    "params": {"chainid": "137"},
+    "apikey": "YOUR_ETHERSCAN_KEY",
+    "symbol": "POL"
+  },
+  "optimism": {
+    "url": "https://explorer.optimism.io/api",
+    "apikey": "YOUR_BLOCKSCOUT_KEY",
+    "tokenlist": true,
+    "symbol": "ETH"
+  },
+  "my-own-blockscout": {
+    "url": "http://blockscout.lan/api",
+    "tokenlist": true,
+    "symbol": "ETH"
+  }
+}

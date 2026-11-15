@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0d1117">
+<title>Crypto tracker</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<button id="menu" aria-label="Toggle panel" aria-controls="panel" aria-expanded="true">☰</button>
+<aside id="panel">
+  <h1>Crypto tracker</h1>
+
+  <section>
+    <h2>My wallets</h2>
+    <ul id="wallets"></ul>
+    <form id="add">
+      <label>Address <input name="address" required placeholder="bc1… / 0x…" autocomplete="off" spellcheck="false"></label>
+      <label>Name <input name="name" placeholder="optional" maxlength="80"></label>
+      <label class="row"><input type="checkbox" name="public"> Public (other people know it is mine)</label>
+      <button>Add wallet</button>
+    </form>
+  </section>
+
+  <section>
+    <h2>Sync</h2>
+    <label>Depth
+      <select id="depth">
+        <option value="0">My wallets only</option>
+        <option value="1">+ their counterparties</option>
+        <option value="2">+ two levels</option>
+      </select>
+    </label>
+    <label class="row"><input type="checkbox" id="labels"> Also download open label sets</label>
+    <button id="sync">Sync</button>
+    <p id="status" role="status"></p>
+  </section>
+
+  <section>
+    <h2>Traces between my wallets</h2>
+    <p class="hint">A trace is the strongest on-chain path linking two of your wallets. <b>Exposed</b> means one end is public and the other is not.</p>
+    <ul id="traces"></ul>
+  </section>
+
+  <section>
+    <h2>Display</h2>
+    <label>Hide guessed links below <output id="minout">0%</output>
+      <input type="range" id="minconf" min="0" max="100" value="0" step="5"></label>
+    <label class="row"><input type="checkbox" id="spam"> Show tokens my wallets never sent (often spam)</label>
+  </section>
+
+  <section>
+    <h2>Legend</h2>
+    <ul id="legend"></ul>
+    <p class="hint">Solid arrow: a transfer (fact). Dashed line: a guess that two addresses share an owner, with its confidence.</p>
+  </section>
+</aside>
+<main id="cy" aria-label="Wallet graph"></main>
+<aside id="detail" hidden></aside>
+<script src="cytoscape.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
