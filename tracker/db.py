@@ -50,5 +50,12 @@ def norm(address):
     raise ValueError(f"not a Bitcoin or EVM address: {address[:80]}")
 
 
+def valid(address):
+    try:
+        return norm(address) == address
+    except (ValueError, AttributeError):
+        return False
+
+
 def family(address):
     return "evm" if address.startswith("0x") else "btc"

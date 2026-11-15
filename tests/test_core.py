@@ -122,6 +122,10 @@ def test_bridge_matching_scores_and_penalises_ambiguity(db):
     assert (link["a"], link["b"], link["kind"], link["confidence"]) == (A, B, "bridge", 0.95)
     assert link["evidence"] == "ethereum:out > optimism:in"
 
+    transfer(db, "optimism", "fake", D, B, 1.0, ts=1100, asset="ETH", token=D)  # airdropped
+    heuristics.match_bridges(db)
+    assert db.execute("SELECT COUNT(*) FROM link").fetchone()[0] == 1
+
     transfer(db, "optimism", "in2", D, B, 0.99, ts=1300)  # a second plausible destination leg
     heuristics.match_bridges(db)
     assert sorted(r["confidence"] for r in db.execute("SELECT * FROM link")) == [0.42, 0.5]
@@ -142,8 +146,57 @@ def test_trace_finds_exposure_and_refuses_paths_through_services(db):
     assert by_pair[(A, B)]["path"] == [] and by_pair[(A, B)]["shared_services"] == ["Binance"]
     assert by_pair[(A, C)]["path"] == [A, D, C]
     assert by_pair[(A, C)]["confidence"] == graph.HOP_DECAY
-    assert by_pair[(A, C)]["exposure"] and (B, C) not in by_pair
+    assert (B, C) not in by_pair
     assert graph.trace(db, max_hops=1) == [by_pair[(A, B)]]
+
+    verdict = {v["address"]: v for v in graph.verdicts(db)}
+    assert verdict[B]["links"] == []  # nothing found on-chain...
+    assert verdict[B]["shared_services"] == [{"wallet": A, "services": ["Binance"]}]  # ...but
+    assert verdict[B]["services"] == [{"name": "Binance", "category": "cex"}]
+    (link,) = verdict[C]["links"]
+    assert (link["wallet"], link["public"], link["confidence"]) == (A, True, 0.7)
+    assert verdict[C]["coverage"] == {
+        "synced": False,
+        "truncated": False,
+        "error": None,
+        "counterparties": 1,
+        "expanded": 0,
+    }
+
+
+def test_private_wallet_behind_another_private_wallet_is_exposed(db):
+    mine(db, A, public=1)
+    mine(db, B)
+    mine(db, C)
+    transfer(db, "ethereum", "1", A, B, 1)
+    transfer(db, "ethereum", "2", B, C, 1)
+    db.execute("INSERT INTO link VALUES (?, ?, 'change', 0.5, 'x')", (B, C))  # weaker, ignored
+    links = {v["address"]: v["links"] for v in graph.verdicts(db)}
+    (to_a,) = [k for k in links[C] if k["wallet"] == A]
+    assert to_a["public"] and to_a["confidence"] == 1.0
+    assert to_a["path"] == [C, B, A] and to_a["via"] == [B]
+    assert [k["wallet"] for k in links[A]] == [B, C]
+
+
+def test_origins_follow_funds_upstream_pro_rata(db):
+    mine(db, A)
+    mine(db, B)
+    db.execute("INSERT INTO label VALUES (?, 'Kraken 4', 'cex', 'user')", (BINANCE,))
+    db.execute("INSERT INTO node(address, synced_at) VALUES (?, 1)", (D,))
+    transfer(db, "ethereum", "1", D, A, 4)  # a stranger forwards 4 ETH to A...
+    transfer(db, "ethereum", "2", BINANCE, D, 3)  # ...which it got 3:1 from an exchange
+    transfer(db, "ethereum", "3", C, D, 1)  # and from an address nobody expanded
+    transfer(db, "ethereum", "4", B, A, 4)  # plus 4 ETH straight from my other wallet
+    (eth,) = graph.origins(db)[A]
+    assert (eth["asset"], eth["received"]) == ("ETH", 8)
+    got = {s["address"]: (s["kind"], s["reason"], s["share"], s["path"]) for s in eth["sources"]}
+    assert got == {
+        B: ("own", "", 0.5, [A, B]),
+        BINANCE: ("cex", "", 0.375, [A, D, BINANCE]),
+        C: ("unknown", "not expanded", 0.125, [A, D, C]),
+    }
+    (eth,) = graph.origins(db, max_hops=1)[A]
+    assert {s["address"]: s["reason"] for s in eth["sources"]} == {B: "", D: "hop limit"}
 
 
 def test_trace_prefers_strong_path_within_hop_limit(db):
@@ -202,7 +255,7 @@ def test_labels_parse_and_keep_user_labels(db):
 def test_api_wallets_labels_and_auth(db, monkeypatch):
     from tracker.app import app
 
-    client = TestClient(app)
+    client = TestClient(app, base_url="http://localhost")
     assert client.post("/api/wallets", json={"address": "nope"}).status_code == 422
     assert client.post(
         "/api/wallets", json={"address": A, "name": "hot", "public": True}
@@ -218,13 +271,17 @@ def test_api_wallets_labels_and_auth(db, monkeypatch):
     assert (node["address"], node["mine"], node["public"], node["name"]) == (A, 1, 1, "hot")
     assert client.delete(f"/api/wallets/{A}").is_success
     assert client.get("/api/graph").json()["nodes"][0]["mine"] == 0
-    assert client.get("/api/trace").json() == []
+    assert client.get("/api/analysis").json()["verdicts"] == []
+    # A page that rebinds its own domain to this port must not read the wallet list.
+    assert client.get("/api/graph", headers={"host": "evil.example"}).status_code == 403
     assert client.get("/").status_code == 200
 
     monkeypatch.setenv("CT_PASSWORD", "s3cret")
     assert client.get("/api/graph").status_code == 401
     assert client.get("/api/graph", auth=("any", "wrong")).status_code == 401
     assert client.get("/api/graph", auth=("any", "s3cret")).status_code == 200
+    remote = {"host": "tracker.example"}
+    assert client.get("/api/graph", auth=("any", "s3cret"), headers=remote).status_code == 200
 
 
 def test_sync_evm_address_reports_bad_chain_and_derives_token_balance(db, monkeypatch):
@@ -279,3 +336,53 @@ def test_rate_limit_is_reported_not_swallowed(monkeypatch):
     transport = httpx.MockTransport(lambda request: httpx.Response(429))
     with httpx.Client(transport=transport) as client, pytest.raises(RuntimeError, match="429"):
         chains.get(client, "http://x/")
+
+
+def test_errors_never_contain_the_api_key(db, monkeypatch):
+    import httpx
+
+    from tracker import sync
+
+    monkeypatch.setattr(chains, "DELAY", 0)
+    monkeypatch.setattr(
+        chains, "DEFAULT_EVM", {"x": {"url": "http://b/api", "symbol": "ETH", "apikey": "SECRET"}}
+    )
+
+    def refuse(request):
+        return httpx.Response(403)
+
+    def unreachable(request):
+        raise httpx.ConnectError("no route", request=request)
+
+    for handler in (refuse, unreachable):
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            sync.sync_address(db, client, A)
+        error = db.execute("SELECT error FROM node WHERE address = ?", (A,)).fetchone()[0]
+        assert error in ("x: HTTP 403", "x: ConnectError") and "SECRET" not in error
+
+
+def test_failed_address_does_not_stop_the_run_and_bad_counterparties_are_dropped(db, monkeypatch):
+    import httpx
+
+    from tracker import sync
+
+    monkeypatch.setattr(chains, "DELAY", 0)
+    monkeypatch.setattr(chains.time, "sleep", lambda s: None)
+    monkeypatch.setattr(chains, "DEFAULT_EVM", {"x": {"url": "http://evm/api", "symbol": "ETH"}})
+    rows = [
+        {"from": "../../admin", "to": A, "hash": "h1", "timeStamp": "5", "value": "1"},
+        {"from": D, "to": A, "hash": "h2", "timeStamp": "5", "value": "1"},
+    ]
+
+    def handler(request):
+        if request.url.host != "evm":
+            return httpx.Response(429)  # Bitcoin indexer is rate limiting
+        ok = request.url.params["action"] == "txlist"
+        return httpx.Response(200, json={"status": "1", "result": rows if ok else []})
+
+    btc = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        sync.sync_address(db, client, btc)
+        sync.sync_address(db, client, A)
+    assert "429" in db.execute("SELECT error FROM node WHERE address = ?", (btc,)).fetchone()[0]
+    assert [r["src"] for r in db.execute("SELECT src FROM transfer")] == [D]

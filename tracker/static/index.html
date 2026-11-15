@@ -8,59 +8,78 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="style.css">
+<script type="importmap">
+{ "imports": { "three": "./vendor/three.module.js", "three/addons/controls/OrbitControls.js": "./vendor/OrbitControls.js" } }
+</script>
 </head>
 <body>
-<button id="menu" aria-label="Toggle panel" aria-controls="panel" aria-expanded="true">☰</button>
-<aside id="panel">
+<header>
   <h1>Crypto tracker</h1>
+  <nav aria-label="Views">
+    <button data-view="portfolio" aria-current="page">Portfolio</button>
+    <button data-view="graph">Graph</button>
+    <button data-view="manage">Wallets &amp; sync</button>
+  </nav>
+  <p id="status" role="status"></p>
+</header>
 
-  <section>
-    <h2>My wallets</h2>
-    <ul id="wallets"></ul>
-    <form id="add">
-      <label>Address <input name="address" required placeholder="bc1… / 0x…" autocomplete="off" spellcheck="false"></label>
-      <label>Name <input name="name" placeholder="optional" maxlength="80"></label>
-      <label class="row"><input type="checkbox" name="public"> Public (other people know it is mine)</label>
-      <button>Add wallet</button>
-    </form>
+<main>
+  <section id="view-portfolio" aria-label="Portfolio">
+    <div id="summary" class="cards"></div>
+    <h2>Assets</h2>
+    <div id="assets"></div>
+    <h2>Wallets</h2>
+    <p class="hint">Each card says whether the wallet can be tied to your other wallets, and where its funds came from. Open one for the evidence.</p>
+    <div id="walletcards" class="cards"></div>
   </section>
 
-  <section>
-    <h2>Sync</h2>
-    <label>Depth
-      <select id="depth">
-        <option value="0">My wallets only</option>
-        <option value="1">+ their counterparties</option>
-        <option value="2">+ two levels</option>
-      </select>
-    </label>
-    <label class="row"><input type="checkbox" id="labels"> Also download open label sets</label>
-    <button id="sync">Sync</button>
-    <p id="status" role="status"></p>
+  <section id="view-graph" aria-label="Wallet graph" hidden>
+    <div id="canvas" role="img" aria-label="Graph of wallets and transfers. The same information is available as lists in the Portfolio view."></div>
+    <div id="tip" hidden></div>
+    <div id="graphbar">
+      <button id="mode" aria-pressed="true" title="Switch between the 3D and the flat graph">3D</button>
+      <label>Hide guesses below <output id="minout">0%</output>
+        <input type="range" id="minconf" min="0" max="100" value="0" step="5"></label>
+      <label class="row"><input type="checkbox" id="spam"> Unknown tokens</label>
+      <details>
+        <summary>Legend</summary>
+        <ul id="legend"></ul>
+        <p class="hint">Grey line: transfers, brighter toward the receiver. Dashed coloured line: a guess that two addresses share an owner, with its confidence. Orange: the selected path.</p>
+      </details>
+    </div>
   </section>
 
-  <section>
-    <h2>Traces between my wallets</h2>
-    <p class="hint">A trace is the strongest on-chain path linking two of your wallets. <b>Exposed</b> means one end is public and the other is not.</p>
-    <ul id="traces"></ul>
+  <section id="view-manage" aria-label="Wallets and sync" hidden>
+    <div class="cards">
+      <form id="add" class="card">
+        <h2>Add a wallet</h2>
+        <label>Address <input name="address" required placeholder="bc1… / 0x…" autocomplete="off" spellcheck="false"></label>
+        <label>Name <input name="name" placeholder="optional" maxlength="80"></label>
+        <label class="row"><input type="checkbox" name="public"> Public: tied to my identity (KYC exchange, shared with people)</label>
+        <button>Add wallet</button>
+      </form>
+      <div class="card">
+        <h2>Sync</h2>
+        <label>Depth
+          <select id="depth">
+            <option value="0">My wallets only</option>
+            <option value="1">+ their counterparties</option>
+            <option value="2">+ two levels</option>
+          </select>
+        </label>
+        <p class="hint">Deeper syncs find links that run through several strangers, and take longer.</p>
+        <label class="row"><input type="checkbox" id="labels"> Also download open label sets (first time)</label>
+        <button id="sync">Sync</button>
+      </div>
+      <div class="card">
+        <h2>My wallets</h2>
+        <ul id="wallets"></ul>
+      </div>
+    </div>
   </section>
-
-  <section>
-    <h2>Display</h2>
-    <label>Hide guessed links below <output id="minout">0%</output>
-      <input type="range" id="minconf" min="0" max="100" value="0" step="5"></label>
-    <label class="row"><input type="checkbox" id="spam"> Show tokens my wallets never sent (often spam)</label>
-  </section>
-
-  <section>
-    <h2>Legend</h2>
-    <ul id="legend"></ul>
-    <p class="hint">Solid arrow: a transfer (fact). Dashed line: a guess that two addresses share an owner, with its confidence.</p>
-  </section>
-</aside>
-<main id="cy" aria-label="Wallet graph"></main>
-<aside id="detail" hidden></aside>
-<script src="cytoscape.min.js"></script>
-<script src="app.js"></script>
+</main>
+<aside id="detail" aria-label="Details" hidden></aside>
+<script src="vendor/cytoscape.min.js"></script>
+<script type="module" src="app.js"></script>
 </body>
 </html>

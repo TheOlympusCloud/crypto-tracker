@@ -4,6 +4,7 @@ A link is a guess that two addresses share an owner; a transfer is a fact. They 
 and drawn separately so a guess never looks like a fact.
 """
 
+from bisect import bisect_left, bisect_right
 from collections import Counter
 
 # Confidence of each heuristic, in one place so the UI legend and README can quote them.
@@ -16,6 +17,13 @@ CHANGE_BOTH = 0.75  # both change rules point at the same output
 BRIDGE_WINDOW = 6 * 3600  # seconds between the two legs
 BRIDGE_FEE = 0.03  # the destination leg may be this much smaller than the source leg
 SERVICE = {"cex", "dex", "bridge", "mixer", "defi", "service"}
+
+# Unknown tokens anyone can airdrop to two wallets would fake a link between them, so only
+# native coins and tokens one of my wallets has itself sent count as evidence.
+TRUSTED = (
+    "(token = '' OR token IN "
+    "(SELECT token FROM transfer WHERE src IN (SELECT address FROM node WHERE mine)))"
+)
 
 _SYMBOL = {"WETH": "ETH", "USDC.E": "USDC", "USDBC": "USDC", "USDT0": "USDT", "XDAI": "DAI"}
 
@@ -93,19 +101,27 @@ def match_bridges(db):
     need price data to compare amounts, add it when such a trace matters.
     """
     mine = "(SELECT address FROM node WHERE mine)"
-    outs = db.execute(f"SELECT * FROM transfer WHERE src IN {mine} ORDER BY ts").fetchall()
-    ins = db.execute(f"SELECT * FROM transfer WHERE dst IN {mine} ORDER BY ts").fetchall()
+    # A bridged token often lands in a wallet that never sent it, so the receiving leg is
+    # also trusted when it comes from a labelled bridge.
+    from_bridge = "src IN (SELECT address FROM label WHERE category = 'bridge')"
+    outs = db.execute(
+        f"SELECT * FROM transfer WHERE {TRUSTED} AND src IN {mine} ORDER BY ts"
+    ).fetchall()
+    ins = db.execute(
+        f"SELECT * FROM transfer WHERE ({TRUSTED} OR {from_bridge}) AND dst IN {mine} ORDER BY ts"
+    ).fetchall()
+    times = [i["ts"] for i in ins]
     bridges = {
         r["address"] for r in db.execute("SELECT address FROM label WHERE category = 'bridge'")
     }
     candidates = []
     for o in outs:
-        for i in ins:
+        window = slice(bisect_left(times, o["ts"]), bisect_right(times, o["ts"] + BRIDGE_WINDOW))
+        for i in ins[window]:
             if (
                 i["chain"] != o["chain"]
                 and i["dst"] != o["src"]
                 and symbol(i["asset"]) == symbol(o["asset"])
-                and 0 <= i["ts"] - o["ts"] <= BRIDGE_WINDOW
                 and o["amount"] * (1 - BRIDGE_FEE) <= i["amount"] <= o["amount"] * 1.001
             ):
                 candidates.append((o, i))

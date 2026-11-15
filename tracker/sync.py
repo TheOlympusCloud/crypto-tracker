@@ -19,12 +19,20 @@ def sync_address(db, client, address):
     try:
         data = fetch(client, address)
         error = "; ".join(data.get("errors", []))
-    except (httpx.HTTPError, ValueError, KeyError, TypeError) as e:
-        data, error = None, str(e).splitlines()[0][:200]
+    except (httpx.HTTPError, RuntimeError, ValueError, KeyError, TypeError) as e:
+        data, error = None, chains.describe(e)
     db.execute("INSERT OR IGNORE INTO node(address) VALUES (?)", (address,))
     if data:
-        db.executemany("INSERT OR IGNORE INTO transfer VALUES (?,?,?,?,?,?,?,?)", data["transfers"])
-        db.executemany("INSERT OR REPLACE INTO link VALUES (?,?,?,?,?)", data["links"])
+        # Indexer output is untrusted: an address that is not one would later be crawled.
+        ok = database.valid
+        db.executemany(
+            "INSERT OR IGNORE INTO transfer VALUES (?,?,?,?,?,?,?,?)",
+            [t for t in data["transfers"] if ok(t[2]) and ok(t[3])],
+        )
+        db.executemany(
+            "INSERT OR REPLACE INTO link VALUES (?,?,?,?,?)",
+            [k for k in data["links"] if ok(k[0]) and ok(k[1])],
+        )
         db.execute("DELETE FROM balance WHERE address = ?", (address,))
         db.executemany(
             "INSERT OR REPLACE INTO balance VALUES (?,?,?,?,?)",

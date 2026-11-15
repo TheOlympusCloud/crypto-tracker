@@ -1,13 +1,19 @@
 # Crypto tracker
 
-Self-hosted wallet graph. You list the wallets that are yours, mark the ones other people
-know about as **public**, and the app shows:
+Self-hosted view of everything you hold, and of what ties your wallets together. You
+list the wallets that are yours and mark as **public** the ones tied to your identity
+(withdrawals from a KYC exchange, addresses you gave to people). The app then shows:
 
-- every wallet as a node, with balances, and every transfer as an arrow, across chains;
-- the external addresses your wallets dealt with, labelled as exchange, DEX, bridge,
-  mixer and so on, and their own counterparties when you expand them;
-- **traces**: the strongest on-chain path between each pair of your wallets, with a
-  confidence, and a warning when a private wallet can be tied to a public one.
+- **Portfolio**: every asset across all wallets and chains, split into private and public.
+- **A verdict per wallet**: either the other wallets of yours it can be tied to, directly
+  or through strangers, bridges, common inputs or a chain of your own wallets, with hop
+  count and confidence; or "no link found", next to the list of what that check cannot
+  rule out. It never says "safe".
+- **Funds origin**: where each wallet's money came from, followed back to a labelled
+  source (exchange, bridge, mixer...), one of your wallets, or the edge of what is known.
+- **A 3D graph** of your wallets, their counterparties (labelled by type) and the links
+  between them. Any link or origin opens as a highlighted path with each hop spelled
+  out. A flat 2D graph is the default on phones and where WebGL is missing.
 
 Chains: Bitcoin and Ethereum out of the box; any EVM chain with an Etherscan-compatible
 API through a config file. One web app, installable on a phone as a PWA.
@@ -19,7 +25,7 @@ uv sync
 uv run python -m tracker          # http://127.0.0.1:8000
 ```
 
-Add your wallets, tick "Also download open label sets" the first time (about 500,000
+Under "Wallets & sync" add your wallets, tick "Also download open label sets" the first time (about 500,000
 labels, takes a minute), and press Sync.
 
 With Docker (the image is not exercised by the test suite):
@@ -31,11 +37,11 @@ docker run -p 8000:8000 -v tracker-data:/data -e CT_PASSWORD=change-me crypto-tr
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `CT_HOST`, `CT_PORT` | `127.0.0.1`, `8000` | Listen address. Anything but loopback requires `CT_PASSWORD`. |
+| `CT_HOST`, `CT_PORT` | `127.0.0.1`, `8000` | Listen address. Anything but loopback requires `CT_PASSWORD`; without a password the app only answers to `localhost`/`127.0.0.1`. |
 | `CT_PASSWORD` | unset | HTTP Basic password (any user name). Put TLS in front of it. |
 | `CT_DB` | `tracker.db` | SQLite file. |
 | `CT_ESPLORA` | `https://blockstream.info/api` | Bitcoin indexer (Esplora API: Blockstream, mempool.space, your own). |
-| `CT_CHAINS` | unset | JSON file of EVM chains, see `chains.example.json`. |
+| `CT_CHAINS` | unset | JSON file of EVM chains and their API keys. Copy `chains.example.json` to `chains.json` (git-ignored), put your key in it, and set `CT_CHAINS=chains.json`. |
 | `CT_DELAY` | `0.25` | Seconds between API calls. |
 | `CT_BTC_PAGES`, `CT_EVM_ROWS` | `8`, `1000` | History loaded per address (pages of 25 / rows per list). |
 
@@ -75,10 +81,17 @@ in `tracker/heuristics.py` and `tracker/graph.py`.
 
 Several transactions supporting the same guess combine as `1 - (1-c1)(1-c2)...`.
 
-A trace multiplies the confidences along its path (a transfer counts 1.0) and then by 0.7
-for every stranger it passes through. Traces never pass through a labelled service or a
-very active address: two people using Binance are not linked on-chain. Such shared
-services are still listed on the trace, because the service itself can link you.
+A link between two wallets multiplies the confidences along its path (a transfer counts
+1.0) and then by 0.7 for every stranger it passes through. Links chain through your own
+wallets: public A tied to private B tied to private C exposes C. Paths never pass through
+a labelled service or a very active address: two people using Binance are not linked
+on-chain. Such shared services are still listed in the verdict, because the service
+itself can link you.
+
+Funds origin is an estimate of the mix, not a coin trace: an address that forwards money
+passes on its own sources in proportion to what it received of that asset, ignoring
+timing. It stops at a label, at one of your wallets, at an address that was not expanded,
+or at the hop limit, and says which.
 
 ## Known limits
 
@@ -101,5 +114,5 @@ uv run pytest
 uv run ruff check . && uv run ruff format --check .
 ```
 
-The graph library, Cytoscape.js 3.35.0 (MIT), is vendored in `tracker/static/` so the app
-loads nothing from the internet.
+three.js 0.187.0 and Cytoscape.js 3.35.0 (both MIT) are vendored unmodified in
+`tracker/static/vendor/`, loaded as plain ES modules: no build step, nothing from the internet.

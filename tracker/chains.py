@@ -47,6 +47,15 @@ def get(client, url, params=None):
     return r
 
 
+def describe(error):
+    """Error text safe to store and show: request URLs carry the API key, so never those."""
+    if isinstance(error, httpx.HTTPStatusError):
+        return f"HTTP {error.response.status_code}"
+    if isinstance(error, httpx.HTTPError):
+        return type(error).__name__
+    return str(error).splitlines()[0][:160] if str(error) else type(error).__name__
+
+
 def btc_transfers(address, tx):
     ins = btc_inputs(tx)
     total = sum(ins.values()) or 1
@@ -142,5 +151,5 @@ def fetch_evm(client, address, chains=None):
                         )
         # One unreachable chain must not hide the others.
         except (httpx.HTTPError, RuntimeError, ValueError, KeyError, TypeError) as e:
-            out["errors"].append(f"{chain}: {str(e).splitlines()[0][:160]}")
+            out["errors"].append(f"{chain}: {describe(e)}")
     return out

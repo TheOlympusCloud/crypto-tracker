@@ -1,4 +1,4 @@
-"""Read side: the node graph and the traces between my wallets."""
+"""Read side: the node graph, the links between my wallets and where their funds came from."""
 
 import heapq
 import math
@@ -6,13 +6,9 @@ import re
 from collections import defaultdict
 from itertools import combinations
 
-from .heuristics import SERVICE
+from .heuristics import SERVICE, TRUSTED
 
 HOP_DECAY = 0.7  # each stranger a trace passes through weakens it by this factor
-
-# Unknown tokens anyone can airdrop to two wallets would fake a link between them, so by
-# default only native coins and tokens one of my wallets has itself sent are shown.
-TRUSTED = "(token = '' OR token IN (SELECT token FROM transfer WHERE src IN (SELECT address FROM node WHERE mine)))"
 
 
 def combine(confidences):
@@ -64,7 +60,7 @@ def build(db, spam=False):
 
 
 def _entity(name):
-    return re.sub(r"[\s:#]*\d+$", "", name)  # "Binance 14" -> "Binance"
+    return re.sub(r"[\s:#]+\d+$", "", name)  # "Binance 14" -> "Binance"
 
 
 def trace(db, max_hops=4):
@@ -74,6 +70,7 @@ def trace(db, max_hops=4):
     link its own confidence) x HOP_DECAY per stranger on the way. Paths never run through
     a service or a hub: sharing Binance with someone links nobody. Such shared services are
     reported separately, since the service itself can still connect the two wallets.
+    A path ends at the first of my wallets it reaches; `verdicts` chains the pairs.
     """
     adj = defaultdict(dict)  # a -> b -> (confidence, kind)
 
@@ -86,7 +83,7 @@ def trace(db, max_hops=4):
     for k in _links(db):
         connect(k["a"], k["b"], k["confidence"], k["kind"])
 
-    mine = {r["address"]: r for r in db.execute("SELECT * FROM node WHERE mine")}
+    mine = {r["address"] for r in db.execute("SELECT address FROM node WHERE mine")}
     labels = {r["address"]: r for r in db.execute("SELECT * FROM label")}
     blocked = {a for a, r in labels.items() if r["category"] in SERVICE}
     blocked |= {r["address"] for r in db.execute("SELECT address FROM node WHERE hub AND NOT mine")}
@@ -100,7 +97,6 @@ def trace(db, max_hops=4):
                 continue
             seen.add((node, hops))
             best.setdefault(node, (math.exp(-cost), path, kinds))
-            # Another of my wallets ends the path; pairs chain transitively.
             if (node != start and node in mine) or hops == max_hops or node in blocked:
                 continue
             for other, (conf, kind) in adj[node].items():
@@ -115,22 +111,182 @@ def trace(db, max_hops=4):
         a: {_entity(labels[b]["name"]) for b in adj[a] if b in blocked and b in labels}
         for a in mine
     }
+    paths = {a: best_paths(a) for a in mine}
     out = []
     for a, b in combinations(sorted(mine), 2):
-        found = best_paths(a).get(b)
+        found = paths[a].get(b)
         shared = sorted(services[a] & services[b])
-        if not found and not shared:
-            continue
+        if found or shared:
+            out.append(
+                {
+                    "a": a,
+                    "b": b,
+                    "confidence": round(found[0], 3) if found else None,
+                    "path": list(found[1]) if found else [],
+                    "kinds": list(found[2]) if found else [],
+                    "shared_services": shared,
+                }
+            )
+    return out
+
+
+def verdicts(db, max_hops=4):
+    """Per wallet: every other wallet of mine it can be tied to, directly or through a chain
+    of my own wallets (public A - private B - private C exposes C), plus what the answer
+    rests on, so that "nothing found" is never read as "safe"."""
+    mine = {r["address"]: r for r in db.execute("SELECT * FROM node WHERE mine")}
+    labels = {r["address"]: r for r in db.execute("SELECT * FROM label")}
+    synced = {r["address"] for r in db.execute("SELECT address FROM node WHERE synced_at")}
+    direct, shared = defaultdict(dict), defaultdict(list)
+    for p in trace(db, max_hops):
+        if p["path"]:
+            direct[p["a"]][p["b"]] = (p["confidence"], p["path"], p["kinds"])
+            direct[p["b"]][p["a"]] = (p["confidence"], p["path"][::-1], p["kinds"][::-1])
+        if p["shared_services"]:
+            shared[p["a"]].append({"wallet": p["b"], "services": p["shared_services"]})
+            shared[p["b"]].append({"wallet": p["a"], "services": p["shared_services"]})
+
+    out = []
+    for w in sorted(mine):
+        # Strongest chain of pair links from w to each other wallet (product of confidences).
+        best, done, heap = {w: (1.0, [w], [], [w])}, set(), [(0.0, w)]
+        while heap:
+            _, u = heapq.heappop(heap)
+            if u in done:
+                continue
+            done.add(u)
+            for v, (conf, path, kinds) in direct[u].items():
+                total = best[u][0] * conf
+                if v not in done and total > best.get(v, (0,))[0]:
+                    best[v] = (total, best[u][1] + path[1:], best[u][2] + kinds, best[u][3] + [v])
+                    heapq.heappush(heap, (-math.log(total), v))
+        links = [
+            {
+                "wallet": v,
+                "public": bool(mine[v]["public"]),
+                "confidence": round(conf, 3),
+                "path": path,
+                "kinds": kinds,
+                "via": chain[1:-1],  # my own wallets the link passes through
+            }
+            for v, (conf, path, kinds, chain) in best.items()
+            if v != w
+        ]
+        others = {
+            r[0]
+            for r in db.execute(
+                f"SELECT dst FROM transfer WHERE src = ?1 AND {TRUSTED} "
+                f"UNION SELECT src FROM transfer WHERE dst = ?1 AND {TRUSTED}",
+                (w,),
+            )
+        }
+        services = {
+            (_entity(labels[a]["name"]), labels[a]["category"])
+            for a in others
+            if a in labels and labels[a]["category"] in SERVICE
+        }
+        strangers = {a for a in others if a not in labels and a not in mine}
         out.append(
             {
-                "a": a,
-                "b": b,
-                "confidence": round(found[0], 3) if found else None,
-                "path": list(found[1]) if found else [],
-                "kinds": list(found[2]) if found else [],
-                "shared_services": shared,
-                # The case the app exists for: a wallet I keep private tied to a public one.
-                "exposure": bool(mine[a]["public"]) != bool(mine[b]["public"]),
+                "address": w,
+                "name": mine[w]["name"],
+                "public": bool(mine[w]["public"]),
+                "links": sorted(links, key=lambda k: -k["confidence"]),
+                "services": [{"name": n, "category": c} for n, c in sorted(services)],
+                "shared_services": shared[w],
+                "coverage": {
+                    "synced": w in synced,
+                    "truncated": bool(mine[w]["hub"]),
+                    "error": mine[w]["error"],
+                    "counterparties": len(strangers),
+                    "expanded": len(strangers & synced),
+                },
             }
         )
-    return sorted(out, key=lambda t: (not t["exposure"], -(t["confidence"] or 0)))
+    return out
+
+
+def origins(db, max_hops=4):
+    """Per wallet and asset: where the money received came from, followed upstream to a
+    labelled source, one of my wallets, or the edge of what is known.
+
+    An address that forwards money passes on its own sources pro rata to what it received
+    of that asset. This ignores timing, so it is an estimate of the mix, not a coin trace.
+    """
+    inbound = defaultdict(dict)  # (address, chain, token) -> src -> amount
+    symbols = {}
+    for r in db.execute(
+        f"""SELECT chain, src, dst, asset, token, SUM(amount) amount FROM transfer
+            WHERE {TRUSTED} GROUP BY chain, src, dst, token"""
+    ):
+        inbound[(r["dst"], r["chain"], r["token"])][r["src"]] = r["amount"]
+        symbols[(r["chain"], r["token"])] = r["asset"]
+    nodes = {r["address"]: r for r in db.execute("SELECT * FROM node")}
+    labels = {r["address"]: r for r in db.execute("SELECT * FROM label")}
+
+    def kind(address, hops, chain, token):
+        """Why following stops at `address`, or None to keep going upstream."""
+        node = nodes.get(address)
+        if node and node["mine"]:
+            return "own"
+        if address in labels:
+            return labels[address]["category"]
+        if not node or not node["synced_at"]:
+            return "unknown:not expanded"
+        if node["hub"]:
+            return "unknown:very active address"
+        if hops >= max_hops:
+            return "unknown:hop limit"
+        if not inbound.get((address, chain, token)):
+            return "unknown:no earlier transfer of this asset"
+        return None
+
+    def upstream(address, chain, token, hops, seen):
+        """terminal address -> (share of the money, kind, path to it)."""
+        srcs = inbound[(address, chain, token)]
+        total = sum(srcs.values())
+        out = {}
+
+        def add(terminal, share, why, path):
+            old = out.get(terminal)
+            out[terminal] = (share + old[0], old[1], old[2]) if old else (share, why, path)
+
+        for src, amount in srcs.items():
+            why = "unknown:loop" if src in seen else kind(src, hops, chain, token)
+            if why:
+                add(src, amount / total, why, (src,))
+            else:
+                found = upstream(src, chain, token, hops + 1, seen | {src})
+                for terminal, (share, why, path) in found.items():
+                    add(terminal, amount / total * share, why, (src, *path))
+        return out
+
+    out = {}
+    for w in (a for a, n in nodes.items() if n["mine"]):
+        assets = []
+        for address, chain, token in [k for k in inbound if k[0] == w]:
+            received = sum(inbound[(w, chain, token)].values())
+            sources = [
+                {
+                    "address": terminal,
+                    "name": (nodes[terminal]["name"] if terminal in nodes else "")
+                    or (labels[terminal]["name"] if terminal in labels else ""),
+                    "kind": why.partition(":")[0],
+                    "reason": why.partition(":")[2],
+                    "share": round(share, 4),
+                    "amount": share * received,
+                    "path": [w, *path],
+                }
+                for terminal, (share, why, path) in upstream(w, chain, token, 1, {w}).items()
+            ]
+            assets.append(
+                {
+                    "chain": chain,
+                    "asset": symbols[(chain, token)],
+                    "token": token,
+                    "received": received,
+                    "sources": sorted(sources, key=lambda x: -x["share"])[:12],
+                }
+            )
+        out[w] = sorted(assets, key=lambda x: (x["token"] != "", x["chain"], x["asset"]))
+    return out
