@@ -410,3 +410,229 @@ def test_failed_address_does_not_stop_the_run_and_bad_counterparties_are_dropped
         sync.sync_address(db, client, A)
     assert "429" in db.execute("SELECT error FROM node WHERE address = ?", (btc,)).fetchone()[0]
     assert [r["src"] for r in db.execute("SELECT src FROM transfer")] == [D]
+
+
+ZPUB = "zpub6rFR7y4Q2AijBEqTUquhVz398htDFrtymD9xYYfG1m4wAcvPhXNfE3EfH1r1ADqtfSdVCToUG868RvUUkgDKf31mGDtKsAYz2oz2AGutZYs"
+XPRV = "xprv9s21ZrQH143K3QTDL4LXw2F7HEK3wJUD2nW2nRk4stbPy6cq3jPPqjiChkVvvNKmPGJxWUtg6LnF5kejMRNNU3TGtRBeJgk33yuGBxrMPHi"
+BIP84 = ["bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu", "bc1qnjg0jd8228aq7egyzacy8cys3knf9xvrerkf9g"]
+SATOSHI = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
+
+
+def test_hd_derivation_matches_bip84_and_refuses_private_keys():
+    from tracker import hd
+
+    (d,) = hd.descriptors(ZPUB)
+    assert [hd.address(d, 0, i) for i in (0, 1)] == BIP84  # the BIP84 test vector
+    assert hd.address(d, 1, 0) == "bc1q8c6fshw2dlwun7ekn9qwf37cu2rn755upcp6el"
+    xpub = "xpub6CatWdiZiodmUeTDp8LT5or8nmbKNcuyvz7WyksVFkKB4RHwCD3XyuvPEbvqAQY3rAPshWcMLoP2fMFMKHPJ4ZeZXYVUhLv1VMrjPC7PW6V"
+    assert len(hd.descriptors(xpub)) == 4  # a plain xpub does not say which address type
+    (d,) = hd.descriptors(f"wpkh({xpub}/0/*)")
+    assert hd.address(d, 0, 1) == BIP84[1] and d.num_branches == 1
+    for secret in (XPRV, f"wpkh({XPRV}/0/*)"):
+        with pytest.raises(ValueError, match="private key"):
+            hd.descriptors(secret)
+    for junk in ("xpubnonsense", "wpkh(", "zpub" + "1" * 107):
+        with pytest.raises(ValueError, match="not a valid"):
+            hd.descriptors(junk)
+    assert hd.looks_like(ZPUB) and hd.looks_like(XPRV) and not hd.looks_like(BIP84[0])
+
+
+def test_hd_wallet_is_discovered_grouped_and_treated_as_one_wallet(db, monkeypatch):
+    import httpx
+
+    from tracker import hd, sync
+
+    monkeypatch.setattr(chains, "DELAY", 0)
+    monkeypatch.setattr(hd, "GAP", 3)
+    (d,) = hd.descriptors(ZPUB)
+    first, third, change = hd.address(d, 0, 0), hd.address(d, 0, 2), hd.address(d, 1, 0)
+    history = {
+        first: [tx([vin(SATOSHI, 5000)], [vout(first, 5000)], "fund1")],
+        third: [tx([vin(SATOSHI, 7000)], [vout(third, 7000)], "fund2")],
+        # Both receive addresses are spent together, with change back into the wallet.
+        change: [
+            tx(
+                [vin(first, 5000), vin(third, 7000)],
+                [vout(SATOSHI, 9000), vout(change, 2900)],
+                "spend",
+            )
+        ],
+    }
+    history[first].append(history[change][0])
+    history[third].append(history[change][0])
+    asked = []
+
+    def handler(request):
+        address = request.url.path.split("/")[3]  # /api/address/<address>/...
+        asked.append(address)
+        if request.url.path.endswith("/txs/chain"):
+            return httpx.Response(200, json=history.get(address, []))
+        stats = {"funded_txo_sum": 2900 if address == change else 0, "spent_txo_sum": 0}
+        return httpx.Response(200, json={"chain_stats": {**stats, "tx_count": 1}})
+
+    client = TestClient(
+        __import__("tracker.app", fromlist=["app"]).app, base_url="http://localhost"
+    )
+    assert client.post("/api/wallets", json={"address": XPRV}).status_code == 422
+    made = client.post(
+        "/api/wallets", json={"address": ZPUB, "name": "Ledger", "public": True}
+    ).json()
+    wallet = db.execute("SELECT * FROM hdwallet").fetchone()
+    assert wallet["id"] == made["wallet"] and wallet["id"].startswith("hd:")
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http:
+        assert sync.discover(db, http, wallet) == [first, third, change]
+    # Receive branch: used, unused, used, then three unused in a row end the scan.
+    assert len(set(asked)) == 6 + 4
+    rows = {r["address"]: r for r in db.execute("SELECT * FROM node WHERE mine")}
+    assert set(rows) == {first, third, change}
+    assert {(r["wallet"], r["name"], r["public"]) for r in rows.values()} == {
+        (wallet["id"], "Ledger", 1)
+    }
+    assert (
+        db.execute("SELECT COUNT(*) FROM node WHERE NOT mine AND address LIKE 'bc1%'").fetchone()[0]
+        == 0
+    )
+
+    # Common-input links inside the wallet are not a finding; the wallet is one verdict.
+    assert db.execute("SELECT COUNT(*) FROM link WHERE kind = 'common-input'").fetchone()[0] == 1
+    (verdict,) = graph.verdicts(db)
+    assert verdict["wallet"] == wallet["id"] and verdict["addresses"] == sorted(rows)
+    assert verdict["links"] == [] and verdict["name"] == "Ledger" and verdict["public"]
+    # Its funds came from outside; the change it paid itself is not a source.
+    (btc,) = graph.origins(db)[verdict["address"]]
+    assert btc["received"] == pytest.approx(12000e-8)
+    assert [s["address"] for s in btc["sources"]] == [SATOSHI]
+
+    from tracker import prices
+
+    db.execute("INSERT INTO price VALUES ('coingecko:bitcoin', 50000, 1)")
+    db.commit()
+    p = prices.portfolio(db)
+    (held,) = p["wallets"]
+    assert (held["id"], held["kind"], held["name"], len(held["addresses"])) == (
+        wallet["id"],
+        "hd",
+        "Ledger",
+        3,
+    )
+    assert held["value"] == pytest.approx(2900e-8 * 50000) == p["public"] == p["total"]
+    assert p["private"] == 0 and p["assets"][0]["price"] == pytest.approx(50000)
+
+    # Making one of its addresses private speaks for the whole wallet; removing it forgets it.
+    client.post("/api/wallets", json={"address": first, "name": "Ledger", "public": False})
+    assert {r["public"] for r in db.execute("SELECT public FROM node WHERE mine")} == {0}
+    assert (
+        "descriptor" not in str(client.get("/api/portfolio").json())
+        and ZPUB not in client.get("/api/portfolio").text
+    )
+    assert client.delete(f"/api/wallets/{wallet['id']}").is_success
+    assert db.execute("SELECT COUNT(*) FROM node WHERE mine").fetchone()[0] == 0
+
+
+def test_links_chain_through_the_addresses_of_an_hd_wallet(db):
+    mine(db, A, public=1)
+    mine(db, D)
+    for address in (B, C):  # one HD wallet with two addresses
+        db.execute("INSERT INTO node(address, mine, wallet) VALUES (?, 1, 'hd:x')", (address,))
+    transfer(db, "ethereum", "1", A, B, 1)
+    transfer(db, "ethereum", "2", C, D, 1)
+    links = {v["address"]: v["links"] for v in graph.verdicts(db)}
+    (to_a,) = [k for k in links[D] if k["wallet"] == A]
+    assert to_a["confidence"] == 1.0 and to_a["via"] == [B] and to_a["path"] == [D, C, B, A]
+    assert [k["wallet_id"] for k in links[B]] == [A, D]
+
+
+def test_exchange_flow_links_deposit_and_withdrawal(db):
+    mine(db, A, public=1)
+    mine(db, B)
+    deposit, other = "0x" + "3" * 40, "0x" + "4" * 40
+    db.execute("INSERT INTO label VALUES (?, 'Kraken 4', 'cex', 'user')", (BINANCE,))
+    db.execute("INSERT INTO label VALUES (?, 'Kraken 7', 'cex', 'user')", (BRIDGE,))
+    transfer(db, "ethereum", "dep", A, deposit, 1.37, ts=1000)
+    transfer(db, "ethereum", "sweep", deposit, BINANCE, 1.37, ts=1500)  # so it is a deposit address
+    transfer(db, "ethereum", "wd", BRIDGE, B, 1.365, ts=1000 + 1800)  # 0.4% less, 30 min later
+    transfer(db, "ethereum", "late", BRIDGE, B, 1.365, ts=1000 + 3 * 86400)
+    transfer(db, "ethereum", "stranger", other, B, 1.37, ts=1100)  # not from an exchange
+    heuristics.match_exchange_flows(db)
+    (link,) = db.execute("SELECT * FROM link").fetchall()
+    assert (link["a"], link["b"], link["kind"], link["confidence"]) == (A, B, "exchange-flow", 0.75)
+    assert link["evidence"] == "ethereum:dep > Kraken > ethereum:wd"
+    (verdict,) = [v for v in graph.verdicts(db) if v["address"] == B]
+    assert verdict["links"][0]["kinds"] == ["exchange-flow"] and verdict["links"][0]["public"]
+
+    # A round amount to an address nobody expanded is only a weak guess.
+    db.execute("DELETE FROM transfer")
+    transfer(db, "ethereum", "dep", A, deposit, 2.0, ts=1000)
+    transfer(db, "ethereum", "wd", BRIDGE, B, 1.97, ts=9000)
+    heuristics.match_exchange_flows(db)
+    assert [r["confidence"] for r in db.execute("SELECT * FROM link")] == [0.09]
+    # ...and none at all once that address is known not to be an exchange deposit.
+    db.execute("INSERT INTO node(address, synced_at) VALUES (?, 1)", (deposit,))
+    heuristics.match_exchange_flows(db)
+    assert db.execute("SELECT COUNT(*) FROM link").fetchone()[0] == 0
+
+
+def test_alert_when_a_link_appears_or_gets_stronger(db):
+    from tracker import alerts
+
+    mine(db, A, public=1)
+    mine(db, B)
+    db.execute("UPDATE node SET name = 'Hot' WHERE address = ?", (A,))
+    alerts.check(db)
+    assert db.execute("SELECT COUNT(*) FROM alert").fetchone()[0] == 0
+    db.execute("INSERT INTO link VALUES (?, ?, 'change', 0.5, 'x')", (A, B))
+    alerts.check(db)
+    alerts.check(db)  # nothing new the second time
+    (alert,) = db.execute("SELECT * FROM alert").fetchall()
+    assert "Hot can be tied to" in alert["text"] and "50%" in alert["text"]
+    assert "private wallet is now tied to a public one" in alert["text"] and not alert["seen"]
+    transfer(db, "ethereum", "1", A, B, 1)
+    alerts.check(db)
+    assert (
+        "100% confidence (was 50%)"
+        in db.execute("SELECT text FROM alert ORDER BY id DESC").fetchone()[0]
+    )
+
+
+def test_prices_are_fetched_cached_and_survive_an_outage(db, monkeypatch):
+    import httpx
+
+    from tracker import prices
+
+    mine(db, A)
+    transfer(db, "ethereum", "1", A, B, 1, asset="USDC", token=C)  # makes USDC a trusted token
+    db.executemany(
+        "INSERT INTO balance VALUES (?, 'ethereum', ?, ?, ?)",
+        [(A, "ETH", "", 2.0), (A, "USDC", C, 100.0), (A, "SCAM", D, 9e9)],
+    )
+    calls = []
+
+    def handler(request):
+        calls.append(str(request.url))
+        if request.url.host == "api.frankfurter.app":
+            return httpx.Response(200, json={"rates": {"EUR": 0.5}})
+        return httpx.Response(
+            200,
+            json={"coins": {"coingecko:ethereum": {"price": 2000}, f"ethereum:{C}": {"price": 1}}},
+        )
+
+    monkeypatch.setenv("CT_CURRENCY", "eur")
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http:
+        prices.snapshot(db, http)
+        prices.refresh(db, http)  # cached: no second round of calls
+    assert len(calls) == 2 and A not in "".join(calls) and D not in "".join(calls)
+    p = prices.portfolio(db)
+    assert (p["currency"], p["total"], p["private"], p["public"]) == ("EUR", 2050.0, 2050.0, 0)
+    assert [(a["asset"], a["value"]) for a in p["assets"]] == [("ETH", 2000.0), ("USDC", 50.0)]
+    assert [(h["private"], h["currency"]) for h in p["history"]] == [(2050.0, "EUR")]
+
+    db.execute("UPDATE price SET ts = 0")
+    with httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(500))) as http:
+        prices.refresh(db, http)
+    assert prices.portfolio(db)["total"] == 2050.0  # stale, not gone
+    monkeypatch.setenv("CT_PRICES", "off")
+    client = TestClient(
+        __import__("tracker.app", fromlist=["app"]).app, base_url="http://localhost"
+    )
+    assert client.get("/api/portfolio").json()["total"] == 2050.0
+    assert client.get("/api/alerts").json() == [] and client.post("/api/alerts/seen").is_success

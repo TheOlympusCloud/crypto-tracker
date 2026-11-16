@@ -5,7 +5,7 @@ import time
 
 import httpx
 
-from . import chains, heuristics, labels
+from . import alerts, chains, hd, heuristics, labels, prices
 from . import db as database
 
 EXPAND_PER_LEVEL = 40  # neighbours synced per depth level, most active first
@@ -59,6 +59,8 @@ def sync_address(db, client, address):
 def neighbours(db, addresses):
     """Unsynced, unlabelled counterparties of `addresses`, most transfers first.
     Services and hubs are never expanded: everybody is two hops from Binance."""
+    if not addresses:
+        return []
     marks = ",".join("?" * len(addresses))
     rows = db.execute(
         f"""SELECT other, COUNT(*) n FROM (
@@ -72,24 +74,80 @@ def neighbours(db, addresses):
     return [r["other"] for r in rows]
 
 
-def run(addresses, depth=0, import_labels=False):
-    """Sync `addresses`, then `depth` levels of their counterparties."""
+def used(db, address):
+    return db.execute(
+        "SELECT 1 FROM transfer WHERE src = ?1 OR dst = ?1 LIMIT 1", (address,)
+    ).fetchone()
+
+
+def discover(db, client, wallet):
+    """Walk an HD wallet's branches until GAP unused addresses in a row, syncing as it goes.
+    Addresses that were never used are forgotten again."""
+    found = []
+    for descriptor in hd.descriptors(wallet["descriptor"]):
+        for branch in range(descriptor.num_branches):
+            unused = index = 0
+            while unused < hd.GAP:
+                address = hd.address(descriptor, branch, index)
+                status["current"] = address
+                sync_address(db, client, address)
+                status["done"] += 1
+                status["total"] += 1
+                if used(db, address):
+                    unused = 0
+                    found.append(address)
+                    db.execute(
+                        "UPDATE node SET mine = 1, public = ?, name = ?, wallet = ? WHERE address = ?",
+                        (wallet["public"], wallet["name"], wallet["id"], address),
+                    )
+                else:
+                    unused += 1
+                    db.execute("DELETE FROM node WHERE address = ? AND NOT mine", (address,))
+                    db.execute("DELETE FROM balance WHERE address = ?", (address,))
+                db.commit()
+                index += 1
+                if not descriptor.is_wildcard:
+                    break
+    return found
+
+
+def run(addresses=None, depth=0, import_labels=False):
+    """Sync `addresses` (all my wallets when None), then `depth` levels of counterparties."""
     db = database.connect()
     try:
         with httpx.Client(timeout=30, headers={"User-Agent": "crypto-tracker"}) as client:
             if import_labels:
                 status["current"] = "labels"
                 labels.import_open(db, client)
-            frontier = list(addresses)
+            if addresses is None:
+                done = [
+                    a
+                    for w in db.execute("SELECT * FROM hdwallet").fetchall()
+                    for a in discover(db, client, w)
+                ]
+                rest = [
+                    r["address"]
+                    for r in db.execute("SELECT address FROM node WHERE mine AND wallet IS NULL")
+                ]
+                addresses = [*done, *rest]
+                frontier = rest
+            else:
+                done, frontier = [], list(addresses)
             for level in range(depth + 1):
                 status["total"] += len(frontier)
                 for address in frontier:
                     status["current"] = address
                     sync_address(db, client, address)
                     status["done"] += 1
-                if level < depth and frontier:
-                    frontier = neighbours(db, frontier)
-        heuristics.match_bridges(db)
+                if level < depth:
+                    frontier = neighbours(db, [*frontier, *done] if level == 0 else frontier)
+                    if not frontier:
+                        break
+            heuristics.match_bridges(db)
+            heuristics.match_exchange_flows(db)
+            alerts.check(db)
+            status["current"] = "prices"
+            prices.snapshot(db, client)
     except Exception as e:  # noqa: BLE001 - a background thread must report, not die silently
         status["error"] = str(e)[:200]
     finally:
@@ -98,10 +156,21 @@ def run(addresses, depth=0, import_labels=False):
         _lock.release()
 
 
-def start(addresses, depth=0, import_labels=False):
+def start(addresses=None, depth=0, import_labels=False):
     """Run in the background; False when a run is already going."""
     if not _lock.acquire(blocking=False):
         return False
     status.update(running=True, done=0, total=0, current="", error="")
     threading.Thread(target=run, args=(addresses, depth, import_labels), daemon=True).start()
     return True
+
+
+def every(minutes):
+    """Sync all my wallets on an interval, for as long as the server runs."""
+
+    def loop():
+        while True:
+            time.sleep(minutes * 60)
+            start()
+
+    threading.Thread(target=loop, daemon=True).start()

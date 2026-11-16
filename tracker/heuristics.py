@@ -152,3 +152,85 @@ def match_bridges(db):
             ),
         )
     db.commit()
+
+
+EXCHANGE_WINDOW = 48 * 3600  # a deposit and the matching withdrawal
+EXCHANGE_FEE = 0.02
+
+
+def match_exchange_flows(db):
+    """Money goes from one of my wallets into an exchange and a similar amount of the same
+    asset comes out of an exchange into another of my wallets soon after. Anyone watching
+    the chain can make this guess; it is how wallets on both sides of a KYC account get
+    tied together without any direct transfer.
+
+    Confidence starts at 0.5 when both legs touch the same exchange, 0.3 for two different
+    ones and 0.15 when only the withdrawal is known to be an exchange (the deposit went to
+    an address that was never expanded). +0.15 if the amounts are within 0.5%, +0.1 if
+    within an hour; x0.6 for round amounts, which many people move; divided by the number
+    of equally plausible matches; never above 0.8.
+
+    shortcut: mixers are left out (fixed denominations make amounts meaningless), and so are
+    swaps that change the asset, which need price data or the swap service's own records.
+    """
+    wallet = {
+        r["address"]: r["wallet"] or r["address"]
+        for r in db.execute("SELECT address, wallet FROM node WHERE mine")
+    }
+    exchange = {
+        r["address"]: r["name"].rstrip("0123456789 #:")
+        for r in db.execute(
+            "SELECT address, name FROM label WHERE category IN ('cex', 'service') AND address IN "
+            "(SELECT src FROM transfer UNION SELECT dst FROM transfer)"
+        )
+    }
+    # An unlabelled address that forwards to an exchange is taken for one of its deposit
+    # addresses (someone paying a hot wallet directly is mistaken for one, which only adds
+    # a low-confidence guess).
+    for r in db.execute("SELECT src, dst FROM transfer"):
+        if r["dst"] in exchange and r["src"] not in exchange and r["src"] not in wallet:
+            exchange.setdefault(r["src"], exchange[r["dst"]])
+    expanded = {r["address"] for r in db.execute("SELECT address FROM node WHERE synced_at")}
+    rows = db.execute(f"SELECT * FROM transfer WHERE {TRUSTED} ORDER BY ts").fetchall()
+    outs = [
+        t
+        for t in rows
+        if t["src"] in wallet
+        and (t["dst"] in exchange or t["dst"] not in expanded)
+        and t["dst"] not in wallet
+    ]
+    ins = [t for t in rows if t["dst"] in wallet and t["src"] in exchange]
+    times = [i["ts"] for i in ins]
+    candidates = []
+    for o in outs:
+        window = slice(bisect_left(times, o["ts"]), bisect_right(times, o["ts"] + EXCHANGE_WINDOW))
+        for i in ins[window]:
+            if (
+                wallet[i["dst"]] != wallet[o["src"]]
+                and symbol(i["asset"]) == symbol(o["asset"])
+                and o["amount"] * (1 - EXCHANGE_FEE) <= i["amount"] <= o["amount"] * 1.001
+            ):
+                candidates.append((o, i))
+    ident = lambda t: (t["chain"], t["txid"], t["src"], t["dst"], t["token"])
+    per_out = Counter(ident(o) for o, _ in candidates)
+    per_in = Counter(ident(i) for _, i in candidates)
+    db.execute("DELETE FROM link WHERE kind = 'exchange-flow'")
+    for o, i in candidates:
+        via = exchange.get(o["dst"])
+        conf = 0.15 if via is None else 0.5 if via == exchange[i["src"]] else 0.3
+        if i["amount"] >= o["amount"] * 0.995:
+            conf += 0.15
+        if i["ts"] - o["ts"] <= 3600:
+            conf += 0.1
+        if float(f"{o['amount']:.2g}") == o["amount"]:
+            conf *= 0.6
+        conf /= max(per_out[ident(o)], per_in[ident(i)])
+        db.execute(
+            "INSERT OR REPLACE INTO link VALUES (?, ?, 'exchange-flow', ?, ?)",
+            (
+                *pair(o["src"], i["dst"]),
+                round(min(conf, 0.8), 2),
+                f"{o['chain']}:{o['txid']} > {exchange[i['src']]} > {i['chain']}:{i['txid']}",
+            ),
+        )
+    db.commit()

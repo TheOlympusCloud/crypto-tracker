@@ -10,7 +10,16 @@ CREATE TABLE IF NOT EXISTS node(
   name TEXT NOT NULL DEFAULT '',
   synced_at INT,
   hub INT NOT NULL DEFAULT 0,
-  error TEXT);
+  error TEXT,
+  wallet TEXT);
+CREATE TABLE IF NOT EXISTS hdwallet(
+  id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', public INT NOT NULL DEFAULT 0,
+  descriptor TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS price(key TEXT PRIMARY KEY, usd REAL, ts INT);
+CREATE TABLE IF NOT EXISTS snapshot(ts INT PRIMARY KEY, private REAL, public REAL, currency TEXT);
+CREATE TABLE IF NOT EXISTS alert(
+  id INTEGER PRIMARY KEY, ts INT, wallet TEXT, other TEXT, text TEXT, seen INT NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS known_link(a TEXT, b TEXT, confidence REAL, PRIMARY KEY(a, b));
 CREATE TABLE IF NOT EXISTS transfer(
   chain TEXT, txid TEXT, src TEXT, dst TEXT, asset TEXT, token TEXT, amount REAL, ts INT,
   PRIMARY KEY(chain, txid, src, dst, token));
@@ -36,6 +45,8 @@ def connect(path=None):
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA journal_mode=WAL")
     db.executescript(SCHEMA)
+    if "wallet" not in [r["name"] for r in db.execute("PRAGMA table_info(node)")]:
+        db.execute("ALTER TABLE node ADD COLUMN wallet TEXT")  # databases from before HD wallets
     return db
 
 

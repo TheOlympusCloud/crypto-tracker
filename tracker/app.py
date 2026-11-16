@@ -3,12 +3,13 @@ import secrets
 from base64 import b64decode
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import db as database
-from . import graph, sync
+from . import graph, hd, prices, sync
 
 app = FastAPI(title="Crypto tracker", docs_url=None, redoc_url=None)
 CATEGORIES = {"cex", "dex", "bridge", "mixer", "defi", "service", "other"}
@@ -92,19 +93,75 @@ def write(sql, params):
 
 @app.post("/api/wallets")
 def put_wallet(w: Wallet):
-    write(
-        "INSERT INTO node(address, mine, public, name) VALUES (?, 1, ?, ?) "
-        "ON CONFLICT(address) DO UPDATE SET mine = 1, public = excluded.public, "
-        "name = excluded.name",
-        (address(w.address), int(w.public), w.name[:80]),
-    )
-    return {"ok": True}
+    """Add or update a wallet: a single address, or an xpub/ypub/zpub/descriptor whose
+    addresses are discovered on the next sync."""
+    if hd.looks_like(w.address):
+        try:
+            hd.descriptors(w.address)
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from None
+        write(
+            "INSERT INTO hdwallet VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET "
+            "name = excluded.name, public = excluded.public",
+            (hd.wallet_id(w.address), w.name[:80], int(w.public), w.address.strip()),
+        )
+        return {"ok": True, "wallet": hd.wallet_id(w.address)}
+    one = address(w.address)
+    db = database.connect()
+    try:
+        with db:
+            row = db.execute("SELECT wallet FROM node WHERE address = ?", (one,)).fetchone()
+            if row and row["wallet"]:  # an address of an HD wallet speaks for the whole wallet
+                values = (int(w.public), w.name[:80], row["wallet"])
+                db.execute("UPDATE hdwallet SET public = ?, name = ? WHERE id = ?", values)
+                db.execute("UPDATE node SET public = ?, name = ? WHERE wallet = ?", values)
+            else:
+                db.execute(
+                    "INSERT INTO node(address, mine, public, name) VALUES (?, 1, ?, ?) "
+                    "ON CONFLICT(address) DO UPDATE SET mine = 1, public = excluded.public, "
+                    "name = excluded.name",
+                    (one, int(w.public), w.name[:80]),
+                )
+    finally:
+        db.close()
+    return {"ok": True, "wallet": one}
 
 
 @app.delete("/api/wallets/{raw}")
 def delete_wallet(raw: str):
-    """Stop treating the address as mine. Its transfers stay: they are public facts."""
-    write("UPDATE node SET mine = 0, public = 0, name = '' WHERE address = ?", (address(raw),))
+    """Stop treating the wallet as mine. Its transfers stay: they are public facts."""
+    forget = "UPDATE node SET mine = 0, public = 0, name = '', wallet = NULL WHERE "
+    if raw.startswith("hd:"):
+        write("DELETE FROM hdwallet WHERE id = ?", (raw,))
+        write(forget + "wallet = ?", (raw,))
+    else:
+        write(forget + "address = ? AND wallet IS NULL", (address(raw),))
+    return {"ok": True}
+
+
+@app.get("/api/portfolio")
+def get_portfolio():
+    db = database.connect()
+    try:
+        with httpx.Client(timeout=8, headers={"User-Agent": "crypto-tracker"}) as client:
+            prices.refresh(db, client)
+        return prices.portfolio(db)
+    finally:
+        db.close()
+
+
+@app.get("/api/alerts")
+def get_alerts():
+    db = database.connect()
+    try:
+        return [dict(r) for r in db.execute("SELECT * FROM alert ORDER BY id DESC LIMIT 100")]
+    finally:
+        db.close()
+
+
+@app.post("/api/alerts/seen")
+def seen_alerts():
+    write("UPDATE alert SET seen = 1 WHERE NOT seen", ())
     return {"ok": True}
 
 
@@ -124,11 +181,7 @@ def put_label(label: Label):
 
 @app.post("/api/sync")
 def post_sync(req: Sync):
-    addresses = [address(a) for a in req.addresses]
-    if not addresses:
-        db = database.connect()
-        addresses = [r["address"] for r in db.execute("SELECT address FROM node WHERE mine")]
-        db.close()
+    addresses = [address(a) for a in req.addresses] or None
     if not sync.start(addresses, max(0, min(req.depth, 3)), req.labels):
         raise HTTPException(409, "a sync is already running")
     return sync.status
@@ -138,5 +191,8 @@ def post_sync(req: Sync):
 def get_sync():
     return sync.status
 
+
+if os.environ.get("CT_SYNC_EVERY"):  # minutes
+    sync.every(float(os.environ["CT_SYNC_EVERY"]))
 
 app.mount("/", StaticFiles(directory=Path(__file__).parent / "static", html=True))

@@ -65,6 +65,7 @@ name = "crypto-tracker"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "embit" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "pyyaml" },
@@ -79,6 +80,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "embit", specifier = ">=0.8" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "pyyaml", specifier = ">=6" },
@@ -90,6 +92,12 @@ dev = [
     { name = "pytest", specifier = ">=8" },
     { name = "ruff", specifier = ">=0.6" },
 ]
+
+[[package]]
+name = "embit"
+version = "0.8.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/83/88/b054b00ade6d2a41749e15976cdcec4b7ec4656ac1cb917ce3de395528d1/embit-0.8.0.tar.gz", hash = "sha256:8bf4b10073c67400370ce523fb16f035fe759f6fdd987c579bdcc268d75ed770", size = 763120, upload-time = "2024-05-30T10:56:48.944Z" }
 
 [[package]]
 name = "fastapi"
