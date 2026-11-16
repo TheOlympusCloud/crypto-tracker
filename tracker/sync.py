@@ -93,32 +93,49 @@ def used(db, address):
 
 def discover(db, client, wallet):
     """Walk an HD wallet's branches until GAP unused addresses in a row, syncing as it goes.
-    Addresses that were never used are forgotten again."""
-    found = []
+    Addresses that were never used are forgotten again.
+
+    A lookup that fails says nothing about the address, so it neither counts as unused nor
+    is forgotten quietly: after three failures in a row the branch is given up and the
+    wallet is marked as not fully scanned, which its verdict and the sync status show.
+    """
+    found, problem = [], None
     for descriptor in hd.descriptors(wallet["descriptor"]):
         for branch in range(descriptor.num_branches):
-            unused = index = 0
-            while unused < hd.GAP:
+            unused = failures = index = 0
+            while unused < hd.GAP and failures < 3:
                 address = hd.address(descriptor, branch, index)
                 status["current"] = address
                 sync_address(db, client, address)
                 status["done"] += 1
                 status["total"] += 1
+                error = db.execute(
+                    "SELECT error FROM node WHERE address = ?", (address,)
+                ).fetchone()
                 if used(db, address):
-                    unused = 0
+                    unused = failures = 0
                     found.append(address)
                     db.execute(
                         "UPDATE node SET mine = 1, public = ?, name = ?, wallet = ? WHERE address = ?",
                         (wallet["public"], wallet["name"], wallet["id"], address),
                     )
                 else:
-                    unused += 1
+                    if error and error["error"]:
+                        failures += 1
+                        problem = error["error"]
+                    else:
+                        unused, failures = unused + 1, 0
                     db.execute("DELETE FROM node WHERE address = ? AND NOT mine", (address,))
                     db.execute("DELETE FROM balance WHERE address = ?", (address,))
                 db.commit()
                 index += 1
                 if not descriptor.is_wildcard:
                     break
+    if problem:
+        problem = f"address scan incomplete, some lookups failed ({problem})"
+        status["notes"].append(f"{wallet['name'] or wallet['id']}: {problem}")
+    db.execute("UPDATE hdwallet SET error = ? WHERE id = ?", (problem, wallet["id"]))
+    db.commit()
     return found
 
 
@@ -155,7 +172,7 @@ def run(addresses=None, depth=0, import_labels=False):
                     if not frontier:
                         break
             status["current"] = "swaps"
-            status["notes"] = swaps.sync(db, client)
+            status["notes"] += swaps.sync(db, client)
             heuristics.match_bridges(db)
             heuristics.match_exchange_flows(db)
             alerts.check(db)

@@ -156,6 +156,7 @@ def match_bridges(db):
 
 EXCHANGE_WINDOW = 48 * 3600  # a deposit and the matching withdrawal
 EXCHANGE_FEE = 0.02
+EXCHANGE_CAP = 0.8  # no amount-and-timing guess is ever worth more, however often it repeats
 
 
 def match_exchange_flows(db):
@@ -168,7 +169,8 @@ def match_exchange_flows(db):
     ones and 0.15 when only the withdrawal is known to be an exchange (the deposit went to
     an address that was never expanded). +0.15 if the amounts are within 0.5%, +0.1 if
     within an hour; x0.6 for round amounts, which many people move; divided by the number
-    of equally plausible matches; never above 0.8.
+    of equally plausible matches; never above 0.8. Repeated matches between the same two
+    wallets raise the best one at most halfway to that cap (see graph.repeated).
 
     shortcut: mixers are left out (fixed denominations make amounts meaningless), and so are
     swaps that change the asset, which need price data or the swap service's own records.
@@ -229,7 +231,7 @@ def match_exchange_flows(db):
             "INSERT OR REPLACE INTO link VALUES (?, ?, 'exchange-flow', ?, ?)",
             (
                 *pair(o["src"], i["dst"]),
-                round(min(conf, 0.8), 2),
+                round(min(conf, EXCHANGE_CAP), 2),
                 f"{o['chain']}:{o['txid']} > {exchange[i['src']]} > {i['chain']}:{i['txid']}",
             ),
         )

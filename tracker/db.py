@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS node(
   wallet TEXT);
 CREATE TABLE IF NOT EXISTS hdwallet(
   id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', public INT NOT NULL DEFAULT 0,
-  descriptor TEXT NOT NULL);
+  descriptor TEXT NOT NULL, error TEXT);
 CREATE TABLE IF NOT EXISTS price(
   key TEXT PRIMARY KEY, usd REAL, ts INT, symbol TEXT, confidence REAL);
 CREATE TABLE IF NOT EXISTS snapshot(ts INT PRIMARY KEY, private REAL, public REAL, currency TEXT);
@@ -53,6 +53,8 @@ def connect(path=None):
     db.executescript(SCHEMA)
     if "wallet" not in [r["name"] for r in db.execute("PRAGMA table_info(node)")]:
         db.execute("ALTER TABLE node ADD COLUMN wallet TEXT")  # databases from before HD wallets
+    if "error" not in [r["name"] for r in db.execute("PRAGMA table_info(hdwallet)")]:
+        db.execute("ALTER TABLE hdwallet ADD COLUMN error TEXT")
     if "symbol" not in [r["name"] for r in db.execute("PRAGMA table_info(price)")]:
         db.execute("DROP TABLE price")  # only a cache; rebuilt with the new columns
         db.executescript(SCHEMA)
@@ -75,14 +77,18 @@ def parse(address):
         raw = base58.decode_check(address)
         if len(raw) == 21 and raw[0] in BASE58:
             return BASE58[raw[0]], address
+        secret = len(raw) in (33, 34) and raw[0] in (0x80, 0xB0, 0x9E)  # WIF: BTC, LTC, DOGE
     except (ValueError, KeyError, IndexError):
-        pass
+        secret = False
+    if secret:
+        raise ValueError("that is a private key: never enter one here")
     try:
         if len(base58.decode(address)) == 32:  # a Solana account is a bare 32-byte key
             return "solana", address
     except (ValueError, KeyError, IndexError):
         pass
-    raise ValueError(f"not an address of a supported chain: {address[:80]}")
+    # The input is not repeated in the message: it may be a secret in a form not recognised.
+    raise ValueError("not an address of a supported chain")
 
 
 def norm(address):

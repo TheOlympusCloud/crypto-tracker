@@ -53,6 +53,40 @@ def parse(actions, protocol):
     return out
 
 
+def label(db, protocol, sender, tx_in, recipient, tx_out):
+    """Name the protocol's vaults, so origins read "THORChain" instead of "unknown".
+
+    The vault that paid out is the sender of the outbound transaction. The vault that took
+    the money in is a destination of the inbound one, but a UTXO transaction also pays
+    change, possibly to an address of mine that is not registered: so the inbound vault is
+    only labelled when the sender paid a single address that is not mine.
+    """
+    theirs = "NOT IN (SELECT address FROM node WHERE mine)"
+    same_tx = "lower(txid) IN (lower(?), '0x' || lower(?))"
+    paid = [
+        r[0]
+        for r in db.execute(
+            f"SELECT DISTINCT dst FROM transfer WHERE src = ? AND {same_tx} AND dst {theirs}",
+            (sender, tx_in, tx_in),
+        )
+    ]
+    vaults = paid if len(paid) == 1 else []
+    vaults += [
+        r[0]
+        for r in db.execute(
+            f"SELECT DISTINCT src FROM transfer WHERE dst = ? AND {same_tx} AND src {theirs}",
+            (recipient, tx_out, tx_out),
+        )
+    ]
+    db.executemany(
+        "INSERT OR IGNORE INTO label VALUES (?, ?, 'dex', 'swap-protocol')",
+        [(v, protocol) for v in vaults],
+    )
+
+
+NOTE = "Swaps: only the 50 newest THORChain and Maya swaps of each address are read."
+
+
 def sync(db, client):
     """Look up the swaps of every address of mine. Returns the sources that did not answer."""
     if os.environ.get("CT_SWAPS", "on") == "off":
@@ -65,25 +99,16 @@ def sync(db, client):
                 bare = address.removeprefix("bitcoincash:")
                 query = {"address": bare, "type": "swap", "limit": 50}
                 data = chains.get(client, f"{url}/v2/actions", query).json()
-                for a, b, evidence, tx_in, tx_out in parse(data.get("actions", []), protocol):
+                for a, b, evidence, tx_in, tx_out in parse(data.get("actions") or [], protocol):
                     db.execute(
                         "INSERT OR REPLACE INTO link VALUES (?, ?, 'swap', ?, ?)",
                         (*pair(a, b), CONFIDENCE, evidence),
                     )
-                    # The vault that took the money in, and the one that paid out, are the
-                    # protocol's: label them so origins read "THORChain", not "unknown".
-                    for txid, column, other, known in (
-                        (tx_in, "dst", "src", a),
-                        (tx_out, "src", "dst", b),
-                    ):
-                        db.execute(
-                            f"""INSERT OR IGNORE INTO label
-                                SELECT DISTINCT {column}, ?, 'dex', 'swap-protocol' FROM transfer
-                                WHERE {other} = ? AND lower(txid) IN (lower(?), '0x' || lower(?))
-                                  AND {column} NOT IN (SELECT address FROM node WHERE mine)""",
-                            (protocol, known, txid, txid),
-                        )
-        except (httpx.HTTPError, RuntimeError, ValueError) as e:
-            failed.append(f"{protocol}: {chains.describe(e)}")  # one source down, try the other
+                    label(db, protocol, a, tx_in, b, tx_out)
+        except Exception as e:  # noqa: BLE001 - whatever one source sends, the other and the sync go on
+            reason = (
+                chains.describe(e) if isinstance(e, httpx.HTTPError | RuntimeError) else "bad reply"
+            )
+            failed.append(f"{protocol}: {reason}")
     db.commit()
     return failed

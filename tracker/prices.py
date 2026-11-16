@@ -100,10 +100,8 @@ def refresh(db, client):
             data = client.get(FX, params={"from": "USD", "to": currency()}, follow_redirects=True)
             rate = float(data.raise_for_status().json()["rates"][currency()])
             db.execute(
-                db.execute(
-                    "INSERT OR REPLACE INTO price VALUES (?, ?, ?, '', NULL)",
-                    (f"fx:{currency()}", rate, now),
-                )
+                "INSERT OR REPLACE INTO price VALUES (?, ?, ?, '', NULL)",
+                (f"fx:{currency()}", rate, now),
             )
     except (httpx.HTTPError, KeyError, ValueError, TypeError):
         pass

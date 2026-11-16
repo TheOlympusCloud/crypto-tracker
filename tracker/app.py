@@ -102,7 +102,7 @@ def put_wallet(w: Wallet):
         except ValueError as e:
             raise HTTPException(422, str(e)) from None
         write(
-            "INSERT INTO hdwallet VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET "
+            "INSERT INTO hdwallet(id, name, public, descriptor) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET "
             "name = excluded.name, public = excluded.public",
             (hd.wallet_id(w.address), w.name[:80], int(w.public), w.address.strip()),
         )

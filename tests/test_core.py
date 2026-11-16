@@ -162,7 +162,8 @@ def test_trace_finds_exposure_and_refuses_paths_through_services(db):
         "counterparties": 1,
         "expanded": 0,
         "notes": [
-            "Not read on base, arbitrum, optimism, polygon, bsc: that needs a free Etherscan API key."
+            "Not read on base, arbitrum, optimism, polygon, bsc: that needs a free Etherscan API key.",
+            "Swaps: only the 50 newest THORChain and Maya swaps of each address are read.",
         ],
     }
 
@@ -1015,3 +1016,121 @@ def test_dogecoin_quota_is_respected_across_addresses_and_runs(db, monkeypatch):
     assert rows[DOGE]["synced_at"] and rows[DOGE]["error"] is None
     assert "follows on a later sync" in rows[second]["error"] and rows[second]["synced_at"] is None
     assert db.execute("SELECT amount FROM balance WHERE address = ?", (DOGE,)).fetchone()[0] == 1.0
+
+
+def test_hd_wallet_scan_that_fails_is_reported_not_shown_as_empty(db, monkeypatch):
+    import httpx
+
+    from tracker import hd, sync
+
+    monkeypatch.setattr(chains, "DELAY", 0)
+    monkeypatch.setattr(chains.time, "sleep", lambda s: None)
+    db.execute(
+        "INSERT INTO hdwallet(id, name, public, descriptor) VALUES ('hd:x', 'Ledger', 0, ?)",
+        (ZPUB,),
+    )
+    wallet = db.execute("SELECT * FROM hdwallet").fetchone()
+    asked = set()
+
+    def down(request):
+        asked.add(request.url.path)
+        return httpx.Response(503)
+
+    sync.status["notes"] = []
+    with httpx.Client(transport=httpx.MockTransport(down)) as client:
+        assert sync.discover(db, client, wallet) == []
+    # Three failures end a branch; they are not twenty "unused" addresses.
+    assert len(asked) == 3 * 2 < hd.GAP
+    assert "scan incomplete" in sync.status["notes"][0] and "HTTP 503" in sync.status["notes"][0]
+    (verdict,) = graph.verdicts(db)
+    assert (verdict["wallet"], verdict["addresses"], verdict["links"]) == ("hd:x", [], [])
+    assert not verdict["coverage"]["synced"] and "HTTP 503" in verdict["coverage"]["error"]
+
+    def empty(request):
+        stats = {"funded_txo_sum": 0, "spent_txo_sum": 0, "tx_count": 0}
+        return httpx.Response(
+            200, json=[] if request.url.path.endswith("/chain") else {"chain_stats": stats}
+        )
+
+    monkeypatch.setattr(hd, "GAP", 2)
+    with httpx.Client(transport=httpx.MockTransport(empty)) as client:
+        sync.discover(db, client, wallet)  # the indexer is back: the error clears
+    assert graph.verdicts(db)[0]["coverage"]["error"] is None
+
+
+def test_repeated_exchange_matches_never_pass_the_cap(db):
+    assert graph.repeated([0.5]) == 0.5
+    assert graph.repeated([0.5] * 5) < graph.repeated([0.5] * 50) <= 0.65
+    assert graph.repeated([0.15] * 10) < 0.5 and graph.repeated([0.8] * 9) == 0.8
+    mine(db, A)
+    mine(db, B)
+    for week in range(5):
+        db.execute(
+            "INSERT INTO link VALUES (?, ?, 'exchange-flow', 0.5, ?)", (A, B, f"week {week}")
+        )
+    (link,) = graph.build(db)["links"]
+    assert link["count"] == 5 and link["confidence"] <= 0.65 < heuristics.EXCHANGE_CAP
+    assert graph.verdicts(db)[0]["links"][0]["confidence"] == link["confidence"]
+
+
+def test_swap_vault_label_spares_the_change_output(db):
+    from tracker import swaps
+
+    vault, change, payer = "bc1q8c6fshw2dlwun7ekn9qwf37cu2rn755upcp6el", BIP84[1], "0x" + "6" * 40
+    mine(db, BIP84[0])
+    mine(db, A)
+    transfer(db, "bitcoin", "aa11", BIP84[0], vault, 0.5, asset="BTC")
+    transfer(
+        db, "bitcoin", "aa11", BIP84[0], change, 0.2, asset="BTC"
+    )  # change, address not registered
+    transfer(db, "ethereum", "0xbb22", payer, A, 9)
+    swaps.label(db, "THORChain", BIP84[0], "AA11", A, "BB22")
+    assert [r["address"] for r in db.execute("SELECT * FROM label")] == [
+        payer
+    ]  # only the payout vault
+    db.execute("DELETE FROM transfer WHERE dst = ?", (change,))
+    swaps.label(db, "THORChain", BIP84[0], "AA11", A, "BB22")
+    assert {r["address"] for r in db.execute("SELECT * FROM label")} == {payer, vault}
+
+
+def test_private_keys_are_named_as_such_and_never_echoed(db):
+    from tracker.app import app
+
+    wif = "5HueCGU8rMjxEXxiPuD5BDku4MkFqeZyd4dZ1jvhTVqvbTLvyTJ"
+    with pytest.raises(ValueError, match="private key"):
+        database.parse(wif)
+    client = TestClient(app, base_url="http://localhost")
+    for secret in (wif, "correct horse battery staple"):
+        reply = client.post("/api/wallets", json={"address": secret})
+        assert reply.status_code == 422 and secret not in reply.text
+
+
+def test_a_malformed_swap_reply_does_not_stop_the_sync(db, monkeypatch):
+    import httpx
+
+    from tracker import swaps
+
+    monkeypatch.setattr(chains, "DELAY", 0)
+    mine(db, A)
+    replies = iter([{"actions": None}, ["not", "a", "dict"]])
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=next(replies)))
+    with httpx.Client(transport=transport) as client:
+        assert swaps.sync(db, client) == [
+            "Maya Protocol: bad reply"
+        ]  # None is "no swaps", a list is not
+
+
+def test_first_alert_check_only_records_a_baseline(db):
+    from tracker import alerts
+
+    mine(db, A, public=1)
+    mine(db, B)
+    transfer(db, "ethereum", "1", A, B, 1)  # a link that already existed before alerts did
+    alerts.check(db)
+    assert db.execute("SELECT COUNT(*) FROM alert").fetchone()[0] == 0
+    mine(db, C)
+    transfer(db, "ethereum", "2", B, C, 1)
+    alerts.check(db)
+    assert (
+        db.execute("SELECT COUNT(*) FROM alert").fetchone()[0] == 2
+    )  # C tied to B, and to A through B

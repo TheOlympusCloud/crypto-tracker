@@ -2,13 +2,14 @@
 
 import heapq
 import math
+import os
 import re
 from collections import defaultdict
 from itertools import combinations
 
-from . import chains
+from . import chains, swaps
 from . import db as database
-from .heuristics import SERVICE, TRUSTED
+from .heuristics import EXCHANGE_CAP, SERVICE, TRUSTED
 
 HOP_DECAY = 0.7  # each stranger a trace passes through weakens it by this factor
 
@@ -16,6 +17,14 @@ HOP_DECAY = 0.7  # each stranger a trace passes through weakens it by this facto
 def combine(confidences):
     """Independent pieces of evidence for the same link: 1 - prod(1 - c)."""
     return round(1 - math.prod(1 - c for c in confidences), 3)
+
+
+def repeated(confidences, cap=EXCHANGE_CAP):
+    """Several amount-and-timing matches between the same two wallets. They are not
+    independent proof (someone who moves money through an exchange weekly matches weekly),
+    so they lift the best single match at most halfway to the cap, never past it."""
+    best = max(confidences)
+    return round(best + (cap - best) * 0.5 * (1 - 0.5 ** (len(confidences) - 1)), 3)
 
 
 def _links(db):
@@ -27,7 +36,9 @@ def _links(db):
             "a": a,
             "b": b,
             "kind": kind,
-            "confidence": combine(r["confidence"] for r in rows),
+            "confidence": (repeated if kind == "exchange-flow" else combine)(
+                [r["confidence"] for r in rows]
+            ),
             "evidence": [r["evidence"] for r in rows[:5]],
             "count": len(rows),
         }
@@ -185,7 +196,19 @@ def verdicts(db, max_hops=4):
             shared[a].setdefault(b, set()).add(name)
             shared[b].setdefault(a, set()).add(name)
 
-    out = []
+    scans = {r["id"]: r for r in db.execute("SELECT * FROM hdwallet")}
+    out = [
+        {  # an HD wallet no address of which was found: say so, never show it as clean
+            "address": w, "wallet": w, "addresses": [], "name": r["name"],
+            "public": bool(r["public"]), "links": [], "services": [], "shared_services": [],
+            "coverage": {
+                "synced": False, "truncated": False, "error": r["error"], "counterparties": 0,
+                "expanded": 0, "notes": chains.notes("bitcoin"),
+            },
+        }
+        for w, r in scans.items()
+        if w not in members
+    ]  # fmt: skip
     for w in sorted(members, key=first.get):
         # Strongest chain of pair links from w to each other wallet (product of confidences).
         best, done, heap = {w: (1.0, [], [], [w])}, set(), [(0.0, w)]
@@ -246,12 +269,21 @@ def verdicts(db, max_hops=4):
                 "coverage": {
                     "synced": all(a in synced for a in members[w]),
                     "truncated": any(r["hub"] for r in rows),
-                    "error": "; ".join(r["error"] for r in rows if r["error"]) or None,
+                    "error": "; ".join(
+                        e
+                        for e in [
+                            scans[w]["error"] if w in scans else None,
+                            *[r["error"] for r in rows],
+                        ]
+                        if e
+                    )
+                    or None,
                     "counterparties": len(strangers),
                     "expanded": len(strangers & synced),
                     # Where this wallet's chains are read less thoroughly than Bitcoin or EVM.
                     "notes": sorted(
                         {n for a in members[w] for n in chains.notes(database.chain_of(a))}
+                        | ({swaps.NOTE} if os.environ.get("CT_SWAPS", "on") != "off" else set())
                     ),
                 },
             }
