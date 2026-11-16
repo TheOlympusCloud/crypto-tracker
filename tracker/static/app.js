@@ -27,7 +27,9 @@ function verdictBox(tag, verdict, ...more) {
 // A bar segment: solid, or hatched for the kinds listed in HATCHED, so it reads without colour.
 const seg = (kind, share, tip) => h("i", { className: HATCHED.has(kind) ? "hatch" : "", style: `width:${share * 100}%;--c:${KINDS[kind][0]}`, title: tip || "" });
 // Entrance animations run once per visit to a view, not on every refresh of its data.
+const still = matchMedia("(prefers-reduced-motion: reduce)");
 function reveal(section) {
+  if (still.matches) return;
   section.classList.add("fresh");
   clearTimeout(section.timer);
   section.timer = setTimeout(() => section.classList.remove("fresh"), 1600);
