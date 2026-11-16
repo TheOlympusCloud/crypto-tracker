@@ -228,6 +228,7 @@ export function create2d(el, { onSelect }) {
     });
     cy.elements().difference(keep).addClass("faded");
     frame(keep);
+    pathStyle(); // the camera may already be where it is sent: no zoom event would follow
   }
 
   return {

@@ -308,6 +308,7 @@ form .primary, .card > .primary { margin-top: 10px; }
   nav { position: fixed; z-index: 4; left: 50%; bottom: calc(12px + env(safe-area-inset-bottom)); transform: translateX(-50%); gap: 2px; padding: 5px; border-radius: var(--pill); background: var(--ink); box-shadow: 0 6px 0 #14100d1f; }
   nav button { height: var(--tap); padding: 0 16px; border-color: transparent; background: none; color: var(--paper); }
   nav button[aria-current] { background: var(--orange); color: var(--ink); }
+  nav :focus-visible { outline-color: var(--paper); } /* ink on the ink pill would not show */
   .with-detail nav { display: none; }
   main > section { padding: 0 12px 104px; }
   #view-portfolio > .ticker { margin: 10px -12px 0; }
