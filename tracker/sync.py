@@ -139,8 +139,9 @@ def discover(db, client, wallet):
     return found
 
 
-def run(addresses=None, depth=0, import_labels=False):
-    """Sync `addresses` (all my wallets when None), then `depth` levels of counterparties."""
+def run(addresses=None, depth=0, import_labels=False, wallets=()):
+    """Sync `addresses` and rescan the HD `wallets` given by id (everything of mine when
+    `addresses` is None), then `depth` levels of counterparties."""
     db = database.connect()
     try:
         with httpx.Client(timeout=30, headers={"User-Agent": "crypto-tracker"}) as client:
@@ -160,7 +161,10 @@ def run(addresses=None, depth=0, import_labels=False):
                 addresses = [*done, *rest]
                 frontier = rest
             else:
-                done, frontier = [], list(addresses)
+                marks = ",".join("?" * len(wallets))
+                chosen = db.execute(f"SELECT * FROM hdwallet WHERE id IN ({marks})", list(wallets))
+                done = [a for w in chosen.fetchall() for a in discover(db, client, w)]
+                frontier = list(addresses)
             for level in range(depth + 1):
                 status["total"] += len(frontier)
                 for address in frontier:
@@ -186,12 +190,13 @@ def run(addresses=None, depth=0, import_labels=False):
         _lock.release()
 
 
-def start(addresses=None, depth=0, import_labels=False):
+def start(addresses=None, depth=0, import_labels=False, wallets=()):
     """Run in the background; False when a run is already going."""
     if not _lock.acquire(blocking=False):
         return False
     status.update(running=True, done=0, total=0, current="", error="", notes=[])
-    threading.Thread(target=run, args=(addresses, depth, import_labels), daemon=True).start()
+    args = (addresses, depth, import_labels, wallets)
+    threading.Thread(target=run, args=args, daemon=True).start()
     return True
 
 

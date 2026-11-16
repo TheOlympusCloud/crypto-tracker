@@ -150,6 +150,7 @@ export function create3d(el, { onSelect }) {
   controls.autoRotateSpeed = 0.35;
   let touched = false; // the camera is the viewer's from the first touch on
   controls.addEventListener("start", () => {
+    flight = null; // the viewer's hand takes over from a camera flight
     touched = true;
     controls.autoRotate = false;
   });

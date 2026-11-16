@@ -215,7 +215,7 @@ def verdicts(db, max_hops=4):
     scans = {r["id"]: r for r in db.execute("SELECT * FROM hdwallet")}
     out = [
         {  # an HD wallet no address of which was found: say so, never show it as clean
-            "address": w, "wallet": w, "addresses": [], "name": r["name"],
+            "address": w, "wallet": w, "addresses": [], "name": r["name"], "checked": "none",
             "public": bool(r["public"]), "links": [], "services": [], "shared_services": [],
             "coverage": {
                 "synced": False, "truncated": False, "error": r["error"], "counterparties": 0,
@@ -269,11 +269,20 @@ def verdicts(db, max_hops=4):
         }
         strangers = {a for a in others if a not in labels and a not in mine}
         rows = [mine[a] for a in members[w]]
+
+        def checked(w, rows=rows):
+            if not all(a in synced for a in members[w]):
+                return "none"
+            failed = (w in scans and scans[w]["error"]) or any(r["error"] for r in rows)
+            return "partial" if failed else "full"
+
         out.append(
             {
                 "address": first[w],
                 "wallet": w,
                 "addresses": members[w],
+                # "full" is the only state in which "no link found" may be said at all.
+                "checked": checked(w),
                 "name": rows[0]["name"],
                 "public": bool(rows[0]["public"]),
                 "links": sorted(links, key=lambda k: -k["confidence"]),

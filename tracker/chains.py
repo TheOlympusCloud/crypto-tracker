@@ -144,7 +144,11 @@ def coverage():
         )
     out.append({"chain": "tron", "asset": "TRX", "status": "ok", "note": SHALLOW["tron"]})
     out.append({"chain": "solana", "asset": "SOL", "status": "ok", "note": SHALLOW["solana"]})
-    return [{**c, **explorer(c["chain"])} for c in out]
+    names = {"bitcoincash": "Bitcoin Cash", "bsc": "BNB Chain"}
+    return [
+        {**c, "name": names.get(c["chain"], c["chain"].capitalize()), **explorer(c["chain"])}
+        for c in out
+    ]
 
 
 def notes(chain):

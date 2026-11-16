@@ -95,7 +95,6 @@ export function create2d(el, { onSelect }) {
         },
       },
       // The arrow follows the path, whichever way the transfer went.
-      { selector: "edge.path.back", style: { "target-arrow-shape": "none", "source-arrow-shape": "triangle", "source-arrow-color": PATH } },
     ],
   });
   // The names of my wallets stay readable when the whole graph is in view.
@@ -205,7 +204,7 @@ export function create2d(el, { onSelect }) {
   function highlight(path) {
     timers.forEach(clearTimeout);
     timers = [];
-    cy.elements().removeClass("faded path back").removeData("hop");
+    cy.elements().removeClass("faded path").removeData("hop");
     if (path.length < 2) return;
     let keep = cy.collection();
     path.forEach((a, i) => {
@@ -214,7 +213,6 @@ export function create2d(el, { onSelect }) {
       // The path draws itself hop by hop.
       const hop = cy.getElementById(a).edgesWith(cy.getElementById(path[i - 1]));
       hop.data("hop", String(i));
-      hop.filter((e) => e.source().id() === a).addClass("back");
       if (still) hop.addClass("path");
       else timers.push(setTimeout(() => hop.addClass("path"), (i - 1) * HOP));
       keep = keep.union(hop);

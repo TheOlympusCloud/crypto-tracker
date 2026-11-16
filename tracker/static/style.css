@@ -276,7 +276,6 @@ form .primary, .card > .primary { margin-top: 8px; }
 
 /* Chains card */
 #chains li { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 8px 0; }
-#chains b { text-transform: capitalize; }
 #chains .hint { flex-basis: 100%; margin: 0; }
 
 /* Switching between the 3D and the flat graph: the one that appears fades and settles in. */

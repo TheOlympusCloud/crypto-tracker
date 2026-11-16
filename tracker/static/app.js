@@ -203,7 +203,7 @@ function renderPortfolio() {
         "button",
         { className: "card wallet", style: `--i:${i}`, onclick: () => openWallet(v.address) },
         h("span", { className: "head" }, coin(n), h("span", {}, h("span", { className: "name" }, title(n)), h("span", { className: "mono" }, owned ? addresses(owned) : short(v.address)))),
-        h("span", { className: "tags" }, badge(n), worth(fiat?.wallets?.[v.address], fiat)),
+        h("span", { className: "tags" }, badge(n), fiat && v.checked === "none" ? h("span", { className: "worth mono", title: "Not checked, so its value is unknown" }, "—") : worth(fiat?.wallets?.[v.address], fiat)),
         h("span", { className: "amounts" }, held(n).slice(0, 4).map((b) => amount(b))),
         verdictBox("span", judge(v)),
         origin ? h("span", { className: "origin hint" }, `${origin.asset} came from`, originBar(origin)) : null
@@ -216,10 +216,11 @@ function renderPortfolio() {
 
 // The headline of a wallet's verdict. "ok" never means safe, only that nothing was found.
 function judge(v) {
-  if (!v.coverage.synced) return { level: "unknown", headline: "Not checked yet: sync this wallet" };
+  if (v.checked === "none") return { level: "unknown", headline: v.coverage.error ? "Not checked: the last sync failed" : "Not checked yet: sync this wallet" };
   const exposing = v.links.filter((k) => k.public !== v.public);
   const best = (v.public ? v.links : exposing)[0] || v.links[0];
-  if (!best) return { level: "ok", headline: "No link to your other wallets found" };
+  // Only a complete check may say that nothing was found.
+  if (!best) return v.checked === "full" ? { level: "ok", headline: "No link to your other wallets found" } : { level: "unknown", headline: "Partly checked: the last sync had errors" };
   if (v.public) return { level: "warn", headline: `Tied to ${plural(v.links.length, "other wallet")} of yours` };
   if (exposing.length) return { level: "bad", headline: `Linked to public wallet ${nameOf(best.wallet)} (${pct(best.confidence)})` };
   return { level: "warn", headline: `Linked to private wallet ${nameOf(best.wallet)} (${pct(best.confidence)})` };
@@ -333,7 +334,7 @@ function openWallet(address) {
   if (!n || !v) return;
   const fiat = readFiat();
   const owned = readAddresses(n);
-  const wallet = (pub) => act(() => api("wallets", { address, name: n.name, public: pub }));
+  const wallet = (pub) => act(() => api("wallets", { address: n.addresses && !n.addresses.length ? n.wallet : address, name: n.name, public: pub }));
   panel(
     heading(coin(n, 48), title(n), badge(n), worth(fiat?.wallets?.[address], fiat)),
     h("div", { className: "mono" }, address),
@@ -343,7 +344,7 @@ function openWallet(address) {
       { className: "buttons" },
       h("button", { className: "primary", onclick: () => showPath([], "", address) }, "Show in graph"),
       h("button", { onclick: wallet(!n.public) }, n.public ? "Make private" : "Make public"),
-      h("button", { onclick: () => startSync([address]) }, "Re-sync")
+      h("button", { onclick: () => startSync([n.wallet || address]) }, "Re-sync")
     ),
     owned.length ? h("h3", {}, addresses(owned.length)) : null,
     owned.length ? h("ul", { className: "rows addresses" }, owned.map((a) => h("li", {}, h("span", { className: "mono" }, a.address), h("span", { className: "amounts" }, (a.balances || []).map((b) => amount(b)))))) : null,
@@ -464,6 +465,7 @@ $("alerts").onclick = () => {
 
 function renderWallets() {
   // One row per wallet: an HD wallet's addresses are listed in its panel, not here.
+  const failed = new Map(analysis.verdicts.map((v) => [v.address, v.coverage.error]));
   const mine = analysis.verdicts.map((v) => byAddress.get(v.address));
   $("wallets").replaceChildren(
     ...(mine.length ? [] : [h("li", { className: "hint" }, "None yet.")]),
@@ -471,8 +473,8 @@ function renderWallets() {
       h(
         "li",
         {},
-        h("button", { className: "rowbtn", onclick: () => openWallet(n.address) }, coin(n, 28), h("span", {}, title(n), h("small", { className: "mono" }, n.addresses ? addresses(n.addresses.length) : short(n.address))), badge(n), n.error ? h("span", { className: "tag error", title: n.error }, "sync error") : null),
-        h("span", { className: "buttons" }, h("button", { onclick: act(() => api("wallets", { address: n.address, name: n.name, public: !n.public })) }, n.public ? "Make private" : "Make public"), h("button", { onclick: act(() => api(`wallets/${encodeURIComponent(n.wallet || n.address)}`, null, "DELETE")) }, "Remove"))
+        h("button", { className: "rowbtn", onclick: () => openWallet(n.address) }, coin(n, 28), h("span", {}, title(n), h("small", { className: "mono" }, n.addresses ? addresses(n.addresses.length) : short(n.address))), badge(n), n.error || failed.get(n.address) ? h("span", { className: "tag error", title: n.error || failed.get(n.address) }, "sync error") : null),
+        h("span", { className: "buttons" }, h("button", { onclick: act(() => api("wallets", { address: n.addresses && !n.addresses.length ? n.wallet : n.address, name: n.name, public: !n.public })) }, n.public ? "Make private" : "Make public"), h("button", { onclick: act(() => api(`wallets/${encodeURIComponent(n.wallet || n.address)}`, null, "DELETE")) }, "Remove"))
       )
     )
   );
@@ -482,7 +484,7 @@ function renderWallets() {
 function renderChains() {
   $("chains").replaceChildren(
     ...(analysis.chains || []).map((c) =>
-      h("li", {}, h("span", {}, h("b", {}, c.chain), h("small", {}, ` ${c.asset}`)), h("span", { className: `tag ${c.status === "ok" ? "private" : "error"}` }, c.status === "ok" ? "read" : "needs key"), c.note ? h("small", { className: "hint" }, c.note) : null)
+      h("li", {}, h("span", {}, h("b", {}, c.name), h("small", {}, ` ${c.asset}`)), h("span", { className: `tag ${c.status === "ok" ? "private" : "error"}` }, c.status === "ok" ? "read" : "needs key"), c.note ? h("small", { className: "hint" }, c.note) : null)
     )
   );
 }

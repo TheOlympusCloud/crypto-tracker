@@ -1168,3 +1168,97 @@ def test_alert_feed_points_at_the_wallet_and_counts_unread(db):
     )
     db.execute("UPDATE alert SET seen = 1")
     assert alerts.recent(db)["unread"] == 0
+
+
+def test_partial_hd_scan_is_marked_and_an_unscanned_wallet_has_no_value(db, monkeypatch):
+    import httpx
+
+    from tracker import hd, prices, sync
+
+    monkeypatch.setattr(chains, "DELAY", 0)
+    monkeypatch.setattr(chains.time, "sleep", lambda s: None)
+    db.execute(
+        "INSERT INTO hdwallet(id, name, public, descriptor) VALUES ('hd:x', 'Ledger', 0, ?)",
+        (ZPUB,),
+    )
+    db.execute("INSERT INTO price VALUES ('coingecko:bitcoin', 50000, 1, 'BTC', 0.99)")
+    wallet = db.execute("SELECT * FROM hdwallet").fetchone()
+    (d,) = hd.descriptors(ZPUB)
+    funded = hd.address(d, 0, 0)
+
+    def flaky(request):  # the first address answers, every later lookup fails
+        if funded not in request.url.path:
+            return httpx.Response(503)
+        if request.url.path.endswith("/chain"):
+            return httpx.Response(
+                200, json=[tx([vin(SATOSHI, 5000)], [vout(funded, 5000)], "fund")]
+            )
+        stats = {"funded_txo_sum": 5000, "spent_txo_sum": 0, "tx_count": 1}
+        return httpx.Response(200, json={"chain_stats": stats})
+
+    # Before any scan: not checked, and no value rather than a zero.
+    (verdict,) = graph.verdicts(db)
+    assert verdict["checked"] == "none"
+    assert prices.summary(db)["wallets"] == {"hd:x": None}
+
+    sync.status["notes"] = []
+    with httpx.Client(transport=httpx.MockTransport(flaky)) as client:
+        assert sync.discover(db, client, wallet) == [funded]
+    (verdict,) = graph.verdicts(db)
+    # One address was found and nothing links it, but the scan was cut short: this must not
+    # be presented as "no link found".
+    assert verdict["links"] == [] and verdict["coverage"]["synced"]
+    assert verdict["checked"] == "partial" and "scan incomplete" in verdict["coverage"]["error"]
+    assert prices.summary(db)["wallets"] == {funded: pytest.approx(2.5)}
+
+    db.execute("UPDATE hdwallet SET error = NULL")
+    assert graph.verdicts(db)[0]["checked"] == "full"
+
+
+def test_hd_wallet_can_be_toggled_and_rescanned_by_its_id(db, monkeypatch):
+    from tracker import sync
+    from tracker.app import app
+
+    db.execute(
+        "INSERT INTO hdwallet(id, name, public, descriptor) VALUES ('hd:x', 'Ledger', 0, ?)",
+        (ZPUB,),
+    )
+    db.commit()
+    client = TestClient(app, base_url="http://localhost")
+    assert client.post(
+        "/api/wallets", json={"address": "hd:x", "name": "Ledger", "public": True}
+    ).is_success
+    assert tuple(db.execute("SELECT name, public FROM hdwallet").fetchone()) == ("Ledger", 1)
+    assert client.get("/api/analysis").json()["verdicts"][0]["public"] is True
+    assert client.post("/api/wallets", json={"address": "hd:nope"}).status_code == 404
+
+    started = []
+    monkeypatch.setattr(sync, "start", lambda *args: started.append(args) or True)
+    assert client.post("/api/sync", json={"addresses": ["hd:x"]}).is_success
+    assert client.post("/api/sync", json={"addresses": [A, "hd:x"], "depth": 1}).is_success
+    assert client.post("/api/sync", json={}).is_success
+    assert started == [([], 0, False, ["hd:x"]), ([A], 1, False, ["hd:x"]), (None, 0, False, [])]
+    assert client.post("/api/sync", json={"addresses": ["nonsense"]}).status_code == 422
+
+
+def test_stale_vault_labels_are_rebuilt_and_chains_have_proper_names(db, monkeypatch):
+    import httpx
+
+    from tracker import swaps
+
+    monkeypatch.setattr(chains, "DELAY", 0)
+    mine(db, A)
+    db.execute(
+        "INSERT INTO label VALUES (?, 'THORChain', 'dex', 'swap-protocol')", (B,)
+    )  # a wrong old one
+    db.execute("INSERT INTO label VALUES (?, 'Kraken', 'cex', 'user')", (C,))
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json={"actions": []}))
+    with httpx.Client(transport=transport) as client:
+        assert swaps.sync(db, client) == []
+    assert [r["address"] for r in db.execute("SELECT address FROM label")] == [C]
+    names = {c["chain"]: c["name"] for c in chains.coverage()}
+    assert (names["bitcoincash"], names["bsc"], names["ethereum"]) == (
+        "Bitcoin Cash",
+        "BNB Chain",
+        "Ethereum",
+    )

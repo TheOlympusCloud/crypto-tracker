@@ -93,6 +93,8 @@ def sync(db, client):
         return []
     mine = [r["address"] for r in db.execute("SELECT address FROM node WHERE mine")]
     failed = []
+    # Vault labels are derived data: rebuilt on every run, so a wrong one cannot linger.
+    db.execute("DELETE FROM label WHERE source = 'swap-protocol'")
     for protocol, url in SOURCES.items():
         try:
             for address in mine:

@@ -206,5 +206,9 @@ def summary(db):
         "unpriced": p["unpriced"],
         "priced_at": p["priced_at"],
         "assets": {a["asset"]: a["value"] for a in p["assets"] if a["verified"]},
-        "wallets": {(w["addresses"] or [w["id"]])[0]: w["value"] for w in p["wallets"]},
+        # A wallet none of whose addresses is known has no value to show, not a value of zero.
+        "wallets": {
+            (w["addresses"] or [w["id"]])[0]: w["value"] if w["addresses"] else None
+            for w in p["wallets"]
+        },
     }

@@ -98,6 +98,18 @@ def write(sql, params):
 def put_wallet(w: Wallet):
     """Add or update a wallet: a single address, or an xpub/ypub/zpub/descriptor whose
     addresses are discovered on the next sync."""
+    if w.address.startswith("hd:"):  # an HD wallet by its id, e.g. one with no address found yet
+        db = database.connect()
+        try:
+            with db:
+                values = (int(w.public), w.name[:80], w.address)
+                done = db.execute("UPDATE hdwallet SET public = ?, name = ? WHERE id = ?", values)
+                db.execute("UPDATE node SET public = ?, name = ? WHERE wallet = ?", values)
+        finally:
+            db.close()
+        if not done.rowcount:
+            raise HTTPException(404, "no such HD wallet")
+        return {"ok": True, "wallet": w.address}
     if hd.looks_like(w.address):
         try:
             hd.descriptors(w.address)
@@ -184,8 +196,12 @@ def put_label(label: Label):
 
 @app.post("/api/sync")
 def post_sync(req: Sync):
-    addresses = [address(a) for a in req.addresses] or None
-    if not sync.start(addresses, max(0, min(req.depth, 3)), req.labels):
+    # An "hd:" id rescans that HD wallet; anything else must be an address.
+    wallets = [a for a in req.addresses if a.startswith("hd:")]
+    addresses = [address(a) for a in req.addresses if not a.startswith("hd:")]
+    everything = not wallets and not addresses
+    depth = max(0, min(req.depth, 3))
+    if not sync.start(None if everything else addresses, depth, req.labels, wallets):
         raise HTTPException(409, "a sync is already running")
     return sync.status
 
