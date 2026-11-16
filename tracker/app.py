@@ -199,6 +199,12 @@ def post_sync(req: Sync):
     # An "hd:" id rescans that HD wallet; anything else must be an address.
     wallets = [a for a in req.addresses if a.startswith("hd:")]
     addresses = [address(a) for a in req.addresses if not a.startswith("hd:")]
+    if wallets:
+        db = database.connect()
+        known = {r["id"] for r in db.execute("SELECT id FROM hdwallet")}
+        db.close()
+        if not set(wallets) <= known:
+            raise HTTPException(404, "no such HD wallet")
     everything = not wallets and not addresses
     depth = max(0, min(req.depth, 3))
     if not sync.start(None if everything else addresses, depth, req.labels, wallets):

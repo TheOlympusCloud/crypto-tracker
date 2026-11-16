@@ -53,8 +53,9 @@ def parse(actions, protocol):
     return out
 
 
-def label(db, protocol, sender, tx_in, recipient, tx_out):
-    """Name the protocol's vaults, so origins read "THORChain" instead of "unknown".
+def vaults(db, sender, tx_in, recipient, tx_out):
+    """The protocol's vault addresses in one swap, so origins can read "THORChain" instead
+    of "unknown".
 
     The vault that paid out is the sender of the outbound transaction. The vault that took
     the money in is a destination of the inbound one, but a UTXO transaction also pays
@@ -70,18 +71,13 @@ def label(db, protocol, sender, tx_in, recipient, tx_out):
             (sender, tx_in, tx_in),
         )
     ]
-    vaults = paid if len(paid) == 1 else []
-    vaults += [
+    return (paid if len(paid) == 1 else []) + [
         r[0]
         for r in db.execute(
             f"SELECT DISTINCT src FROM transfer WHERE dst = ? AND {same_tx} AND src {theirs}",
             (recipient, tx_out, tx_out),
         )
     ]
-    db.executemany(
-        "INSERT OR IGNORE INTO label VALUES (?, ?, 'dex', 'swap-protocol')",
-        [(v, protocol) for v in vaults],
-    )
 
 
 NOTE = "Swaps: only the 50 newest THORChain and Maya swaps of each address are read."
@@ -93,9 +89,8 @@ def sync(db, client):
         return []
     mine = [r["address"] for r in db.execute("SELECT address FROM node WHERE mine")]
     failed = []
-    # Vault labels are derived data: rebuilt on every run, so a wrong one cannot linger.
-    db.execute("DELETE FROM label WHERE source = 'swap-protocol'")
     for protocol, url in SOURCES.items():
+        found = set()
         try:
             for address in mine:
                 bare = address.removeprefix("bitcoincash:")
@@ -106,7 +101,15 @@ def sync(db, client):
                         "INSERT OR REPLACE INTO link VALUES (?, ?, 'swap', ?, ?)",
                         (*pair(a, b), CONFIDENCE, evidence),
                     )
-                    label(db, protocol, a, tx_in, b, tx_out)
+                    found.update(vaults(db, a, tx_in, b, tx_out))
+            # Vault labels are derived data, rebuilt so that a wrong one cannot linger. But
+            # only once this protocol has answered for every address: if it is down, its
+            # vaults keep their labels, or they would turn into strangers that link wallets.
+            db.execute("DELETE FROM label WHERE source = 'swap-protocol' AND name = ?", (protocol,))
+            db.executemany(
+                "INSERT OR IGNORE INTO label VALUES (?, ?, 'dex', 'swap-protocol')",
+                [(v, protocol) for v in found],
+            )
         except Exception as e:  # noqa: BLE001 - whatever one source sends, the other and the sync go on
             reason = (
                 chains.describe(e) if isinstance(e, httpx.HTTPError | RuntimeError) else "bad reply"

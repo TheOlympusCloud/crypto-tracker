@@ -94,7 +94,6 @@ export function create2d(el, { onSelect }) {
           "text-outline-width": 0,
         },
       },
-      // The arrow follows the path, whichever way the transfer went.
     ],
   });
   // The names of my wallets stay readable when the whole graph is in view.

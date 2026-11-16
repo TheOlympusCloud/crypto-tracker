@@ -72,6 +72,8 @@ function money(value, currency) {
     return `${num(value)} ${currency}`;
   }
 }
+// A wallet that was only partly read is worth at least what was found: say "at least".
+const partly = (v, el) => (el && v.checked === "partial" ? h("span", { className: "worth mono", title: "Only part of this wallet could be read: it holds at least this much" }, "≥ ", el.textContent) : el);
 const worth = (value, fiat) => (fiat && value != null ? h("span", { className: "worth mono" }, money(value, fiat.currency)) : null);
 
 let graph = { nodes: [], edges: [], links: [] };
@@ -203,7 +205,7 @@ function renderPortfolio() {
         "button",
         { className: "card wallet", style: `--i:${i}`, onclick: () => openWallet(v.address) },
         h("span", { className: "head" }, coin(n), h("span", {}, h("span", { className: "name" }, title(n)), h("span", { className: "mono" }, owned ? addresses(owned) : short(v.address)))),
-        h("span", { className: "tags" }, badge(n), fiat && v.checked === "none" ? h("span", { className: "worth mono", title: "Not checked, so its value is unknown" }, "—") : worth(fiat?.wallets?.[v.address], fiat)),
+        h("span", { className: "tags" }, badge(n), fiat && v.checked === "none" ? h("span", { className: "worth mono", title: "Not checked, so its value is unknown" }, "—") : partly(v, worth(fiat?.wallets?.[v.address], fiat))),
         h("span", { className: "amounts" }, held(n).slice(0, 4).map((b) => amount(b))),
         verdictBox("span", judge(v)),
         origin ? h("span", { className: "origin hint" }, `${origin.asset} came from`, originBar(origin)) : null
@@ -336,7 +338,7 @@ function openWallet(address) {
   const owned = readAddresses(n);
   const wallet = (pub) => act(() => api("wallets", { address: n.addresses && !n.addresses.length ? n.wallet : address, name: n.name, public: pub }));
   panel(
-    heading(coin(n, 48), title(n), badge(n), worth(fiat?.wallets?.[address], fiat)),
+    heading(coin(n, 48), title(n), badge(n), partly(v, worth(fiat?.wallets?.[address], fiat))),
     h("div", { className: "mono" }, address),
     h("ul", { className: "amounts" }, held(n).map((b) => h("li", {}, amount(b, `${b.asset} · ${b.chain}`)))),
     h(

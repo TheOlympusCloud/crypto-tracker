@@ -1100,13 +1100,9 @@ def test_swap_vault_label_spares_the_change_output(db):
         db, "bitcoin", "aa11", BIP84[0], change, 0.2, asset="BTC"
     )  # change, address not registered
     transfer(db, "ethereum", "0xbb22", payer, A, 9)
-    swaps.label(db, "THORChain", BIP84[0], "AA11", A, "BB22")
-    assert [r["address"] for r in db.execute("SELECT * FROM label")] == [
-        payer
-    ]  # only the payout vault
+    assert swaps.vaults(db, BIP84[0], "AA11", A, "BB22") == [payer]  # only the payout vault
     db.execute("DELETE FROM transfer WHERE dst = ?", (change,))
-    swaps.label(db, "THORChain", BIP84[0], "AA11", A, "BB22")
-    assert {r["address"] for r in db.execute("SELECT * FROM label")} == {payer, vault}
+    assert swaps.vaults(db, BIP84[0], "AA11", A, "BB22") == [vault, payer]
 
 
 def test_private_keys_are_named_as_such_and_never_echoed(db):
@@ -1239,6 +1235,8 @@ def test_hd_wallet_can_be_toggled_and_rescanned_by_its_id(db, monkeypatch):
     assert client.post("/api/sync", json={}).is_success
     assert started == [([], 0, False, ["hd:x"]), ([A], 1, False, ["hd:x"]), (None, 0, False, [])]
     assert client.post("/api/sync", json={"addresses": ["nonsense"]}).status_code == 422
+    assert client.post("/api/sync", json={"addresses": ["hd:nope"]}).status_code == 404
+    assert len(started) == 3
 
 
 def test_stale_vault_labels_are_rebuilt_and_chains_have_proper_names(db, monkeypatch):
@@ -1261,4 +1259,41 @@ def test_stale_vault_labels_are_rebuilt_and_chains_have_proper_names(db, monkeyp
         "Bitcoin Cash",
         "BNB Chain",
         "Ethereum",
+    )
+
+
+def test_vault_labels_survive_a_sync_in_which_their_protocol_is_down(db, monkeypatch):
+    import httpx
+
+    from tracker import alerts, swaps
+
+    monkeypatch.setattr(chains, "DELAY", 0)
+    monkeypatch.setattr(chains.time, "sleep", lambda s: None)
+    vault = "0x" + "5" * 40
+    mine(db, A, public=1)
+    mine(db, B)
+    # Both wallets dealt with the same vault: a link through it only if it loses its label.
+    transfer(db, "ethereum", "1", A, vault, 1)
+    transfer(db, "ethereum", "2", vault, B, 1)
+    db.execute("INSERT INTO label VALUES (?, 'THORChain', 'dex', 'swap-protocol')", (vault,))
+    db.execute(
+        "INSERT INTO label VALUES (?, 'Maya Protocol', 'dex', 'swap-protocol')", (C,)
+    )  # stale
+    alerts.check(db)  # baseline
+
+    def handler(request):
+        if request.url.host == "gateway.liquify.com":
+            return httpx.Response(503)  # THORChain is down, Maya answers with no swaps
+        return httpx.Response(200, json={"actions": []})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        assert swaps.sync(db, client) == ["THORChain: HTTP 503"]
+    labels_now = {r["address"]: r["name"] for r in db.execute("SELECT * FROM label")}
+    assert labels_now == {
+        vault: "THORChain"
+    }  # kept while its source is down; Maya's stale one is gone
+    alerts.check(db)
+    assert (
+        graph.verdicts(db)[1]["links"] == []
+        and db.execute("SELECT COUNT(*) FROM alert").fetchone()[0] == 0
     )
