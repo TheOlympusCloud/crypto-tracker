@@ -89,7 +89,8 @@
     <div class="cards">
       <form id="add" class="card">
         <h2 class="eyebrow">Add a wallet</h2>
-        <label>Address <input name="address" required placeholder="bc1… / 0x…" autocomplete="off" spellcheck="false"></label>
+        <label>Address <input name="address" required placeholder="address, or xpub / zpub / descriptor" autocomplete="off" spellcheck="false"></label>
+        <p class="hint">Bitcoin, Litecoin, Dogecoin, Bitcoin Cash, EVM chains, Tron or Solana. Public keys only: never paste a private key or seed.</p>
         <label>Name <input name="name" placeholder="optional" maxlength="80"></label>
         <label class="row"><input type="checkbox" name="public"> Public: tied to my identity (KYC exchange, shared with people)</label>
         <button class="primary">Add wallet</button>
@@ -110,6 +111,10 @@
       <div class="card wide">
         <h2 class="eyebrow">My wallets</h2>
         <ul id="wallets"></ul>
+      </div>
+      <div class="card wide">
+        <h2 class="eyebrow">Chains</h2>
+        <ul id="chains" class="rows"></ul>
       </div>
     </div>
   </section>

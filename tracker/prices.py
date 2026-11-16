@@ -189,3 +189,22 @@ def snapshot(db, client):
             (int(time.time()), p["private"], p["public"], p["currency"]),
         )
         db.commit()
+
+
+def summary(db):
+    """The portfolio's values in the compact form the pages use: totals, value per asset
+    symbol, value per wallet (keyed by the wallet's first address). None before any price
+    is known, so the pages show no value rather than a false zero."""
+    p = portfolio(db)
+    if p["priced_at"] is None:
+        return None
+    return {
+        "currency": p["currency"],
+        "total": p["total"],
+        "private": p["private"],
+        "public": p["public"],
+        "unpriced": p["unpriced"],
+        "priced_at": p["priced_at"],
+        "assets": {a["asset"]: a["value"] for a in p["assets"] if a["verified"]},
+        "wallets": {(w["addresses"] or [w["id"]])[0]: w["value"] for w in p["wallets"]},
+    }

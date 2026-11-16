@@ -1,7 +1,6 @@
 import { create2d } from "./graph2d.js";
 import { HATCHED, KINDS, LINKS, PATH, STONE, VERDICTS, glyphEl, kindOf, linkDash, pct, short, sourceKind, title } from "./kinds.js";
 
-const EXPLORER = { bitcoin: "https://mempool.space", ethereum: "https://eth.blockscout.com" };
 const $ = (id) => document.getElementById(id);
 // All text reaches the DOM as text nodes: labels and token names come from strangers.
 function h(tag, props, ...children) {
@@ -53,14 +52,16 @@ const fail = (e) => {
 };
 const act = (fn) => () => fn().then(refresh).catch(fail);
 
-// ---------- data that is on its way ----------
-// Fiat values, HD wallets and alerts are not in the API yet. Each has a slot in the page that
-// is filled through one of these readers, and stays hidden while its reader returns nothing.
+// ---------- optional data ----------
+// Fiat values, HD wallet addresses and alerts each have a slot in the page that is filled
+// through one of these readers, and stays hidden while its reader returns nothing.
 
 // { currency: "EUR", total, private, public, assets: { symbol: value }, wallets: { address: value } }
 const readFiat = () => (analysis.fiat && analysis.fiat.currency ? analysis.fiat : null);
 // An HD wallet is one node that owns many addresses: [{ address, balances: [...] }]
 const readAddresses = (n) => n.addresses || [];
+// What a wallet holds: summed over its addresses when it is an HD wallet.
+const held = (n) => n.wallet_balances || n.balances || [];
 // { unread: 2, items: [{ time: 1794789576, text: "…", address: "…" }] }
 const readAlerts = () => analysis.alerts || { unread: 0, items: [] };
 
@@ -104,7 +105,7 @@ async function drawGraph() {
   await fonts;
   const active = await renderer();
   for (const [name, r] of Object.entries(renderers)) r.setActive(name === mode);
-  // hook: an animated 2D/3D switch can key on body[data-mode]; today the two swap at once.
+  // The view that becomes active fades in (style.css, #canvas); the other one is hidden.
   document.body.dataset.mode = mode;
   $("mode").ariaPressed = String(mode === "3d");
   if (stale) active.setData(graph, { minConf: $("minconf").value / 100 });
@@ -203,7 +204,7 @@ function renderPortfolio() {
         { className: "card wallet", style: `--i:${i}`, onclick: () => openWallet(v.address) },
         h("span", { className: "head" }, coin(n), h("span", {}, h("span", { className: "name" }, title(n)), h("span", { className: "mono" }, owned ? addresses(owned) : short(v.address)))),
         h("span", { className: "tags" }, badge(n), worth(fiat?.wallets?.[v.address], fiat)),
-        h("span", { className: "amounts" }, (n.balances || []).slice(0, 4).map((b) => amount(b))),
+        h("span", { className: "amounts" }, held(n).slice(0, 4).map((b) => amount(b))),
         verdictBox("span", judge(v)),
         origin ? h("span", { className: "origin hint" }, `${origin.asset} came from`, originBar(origin)) : null
       );
@@ -237,7 +238,8 @@ function caveats(v) {
   if (exchanges.length && !v.public) out.push(`It dealt directly with ${exchanges.join(", ")}. If that account is in your name, the exchange knows this wallet is yours: consider marking it public.`);
   if (v.services.some((s) => s.category === "mixer")) out.push("It dealt with a mixer. Funds past a mixer cannot be followed here.");
   out.push(`Paths longer than ${plural(analysis.max_hops, "hop")} are not searched.`);
-  out.push("Swaps that change the asset, chains that are not configured, unlabelled exchange wallets and anything off-chain (same IP address, same exchange account) are invisible to this check.");
+  out.push(...(c.notes || []));
+  out.push("Swaps outside THORChain and Maya, chains that are not read, unlabelled exchange wallets and anything off-chain (same IP address, same exchange account) are invisible to this check.");
   return out;
 }
 
@@ -335,7 +337,7 @@ function openWallet(address) {
   panel(
     heading(coin(n, 48), title(n), badge(n), worth(fiat?.wallets?.[address], fiat)),
     h("div", { className: "mono" }, address),
-    h("ul", { className: "amounts" }, (n.balances || []).map((b) => h("li", {}, amount(b, `${b.asset} · ${b.chain}`)))),
+    h("ul", { className: "amounts" }, held(n).map((b) => h("li", {}, amount(b, `${b.asset} · ${b.chain}`)))),
     h(
       "div",
       { className: "buttons" },
@@ -397,7 +399,6 @@ function showPath(path, heading, back) {
 
 function selectNode(n) {
   if (!n) return closePanel();
-  const chain = n.address.startsWith("0x") ? "ethereum" : "bitcoin";
   const form = h(
     "form",
     {},
@@ -426,7 +427,7 @@ function selectNode(n) {
       { className: "buttons" },
       n.mine ? h("button", { className: "primary", onclick: () => openWallet(n.address) }, "Verdict and origin") : h("button", { onclick: act(() => api("wallets", { address: n.address, name: "", public: false })) }, "This is mine"),
       h("button", { onclick: () => startSync([n.address]) }, n.synced_at ? "Re-sync" : "Expand"),
-      h("a", { className: "button", href: `${EXPLORER[chain]}/address/${n.address}`, target: "_blank", rel: "noreferrer noopener" }, "Explorer ↗")
+      n.explorer_address ? h("a", { className: "button", href: n.explorer_address.replace("{}", encodeURIComponent(n.address.replace("bitcoincash:", ""))), target: "_blank", rel: "noreferrer noopener" }, "Explorer ↗") : null
     ),
     n.mine ? null : form
   );
@@ -456,34 +457,51 @@ function renderAlerts() {
 $("alerts").onclick = () => {
   $("alertlist").hidden = !$("alertlist").hidden;
   $("alerts").ariaExpanded = String(!$("alertlist").hidden);
+  if (!$("alertlist").hidden && readAlerts().unread) api("alerts/seen", {}).then(refresh).catch(fail);
 };
 
 // ---------- wallets & sync ----------
 
 function renderWallets() {
-  const mine = graph.nodes.filter((n) => n.mine);
+  // One row per wallet: an HD wallet's addresses are listed in its panel, not here.
+  const mine = analysis.verdicts.map((v) => byAddress.get(v.address));
   $("wallets").replaceChildren(
     ...(mine.length ? [] : [h("li", { className: "hint" }, "None yet.")]),
     ...mine.map((n) =>
       h(
         "li",
         {},
-        h("button", { className: "rowbtn", onclick: () => openWallet(n.address) }, coin(n, 28), h("span", {}, title(n), h("small", { className: "mono" }, short(n.address))), badge(n), n.error ? h("span", { className: "tag error", title: n.error }, "sync error") : null),
-        h("span", { className: "buttons" }, h("button", { onclick: act(() => api("wallets", { address: n.address, name: n.name, public: !n.public })) }, n.public ? "Make private" : "Make public"), h("button", { onclick: act(() => api(`wallets/${n.address}`, null, "DELETE")) }, "Remove"))
+        h("button", { className: "rowbtn", onclick: () => openWallet(n.address) }, coin(n, 28), h("span", {}, title(n), h("small", { className: "mono" }, n.addresses ? addresses(n.addresses.length) : short(n.address))), badge(n), n.error ? h("span", { className: "tag error", title: n.error }, "sync error") : null),
+        h("span", { className: "buttons" }, h("button", { onclick: act(() => api("wallets", { address: n.address, name: n.name, public: !n.public })) }, n.public ? "Make private" : "Make public"), h("button", { onclick: act(() => api(`wallets/${encodeURIComponent(n.wallet || n.address)}`, null, "DELETE")) }, "Remove"))
       )
+    )
+  );
+}
+
+// Which chains are read, which wait for a key, and how deep each one goes.
+function renderChains() {
+  $("chains").replaceChildren(
+    ...(analysis.chains || []).map((c) =>
+      h("li", {}, h("span", {}, h("b", {}, c.chain), h("small", {}, ` ${c.asset}`)), h("span", { className: `tag ${c.status === "ok" ? "private" : "error"}` }, c.status === "ok" ? "read" : "needs key"), c.note ? h("small", { className: "hint" }, c.note) : null)
     )
   );
 }
 
 let first = true;
 async function refresh() {
+  // Asking for the portfolio first refreshes prices older than ten minutes; values are optional.
+  await api("portfolio").catch(() => null);
   [graph, analysis] = await Promise.all([api(`graph?spam=${$("spam").checked}`), api("analysis")]);
   byAddress = new Map(graph.nodes.map((n) => [n.address, n]));
+  // An HD wallet none of whose addresses was found has a verdict but no node in the graph.
+  for (const v of analysis.verdicts)
+    if (!byAddress.has(v.address)) byAddress.set(v.address, { address: v.address, wallet: v.wallet, name: v.name, public: v.public, mine: 1, addresses: [] });
   stale = true;
   if (first) reveal($("view-portfolio"));
   first = false;
   renderPortfolio();
   renderWallets();
+  renderChains();
   renderAlerts();
   await drawGraph();
 }
@@ -492,7 +510,7 @@ async function poll() {
   const s = await api("sync");
   $("sync").disabled = s.running;
   $("status").className = s.error ? "error" : s.running ? "busy" : "";
-  $("status").textContent = s.running ? `Syncing ${s.done}/${s.total} ${s.current === "labels" ? "(downloading labels)" : short(s.current)}` : s.error || "";
+  $("status").textContent = s.running ? `Syncing ${s.done}/${s.total} ${["labels", "swaps", "prices"].includes(s.current) ? `(${s.current})` : short(s.current)}` : s.error || (s.notes || []).join(" · ");
   if (s.running) setTimeout(() => poll().catch(fail), 1500);
   else if (s.total) await refresh();
 }

@@ -73,6 +73,22 @@ def build(db, spam=False):
         nodes[r["address"]].setdefault("balances", []).append(
             {"chain": r["chain"], "asset": r["asset"], "amount": r["amount"]}
         )
+    members = defaultdict(list)
+    for address, node in sorted(nodes.items()):
+        if node.get("mine") and node.get("wallet"):
+            members[node["wallet"]].append(node)
+    for group in members.values():
+        total = defaultdict(float)
+        for node in group:
+            for b in node.get("balances", []):
+                total[(b["chain"], b["asset"])] += b["amount"]
+        # The wallet's first address stands for it on cards; the others keep their own rows.
+        group[0]["addresses"] = [
+            {"address": n["address"], "balances": n.get("balances", [])} for n in group
+        ]
+        group[0]["wallet_balances"] = [
+            {"chain": c, "asset": a, "amount": v} for (c, a), v in total.items()
+        ]
     return {"nodes": list(nodes.values()), "edges": edges, "links": links}
 
 

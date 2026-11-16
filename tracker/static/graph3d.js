@@ -324,15 +324,44 @@ export function create3d(el, { onSelect }) {
     placeLines();
   }
 
-  // hook: every camera move goes through here. It jumps today; a fly-to can ease from the
-  // current camera position and target to the ones computed below.
+  // Every camera move goes through here. Unless `instant` (or reduced motion), the camera
+  // flies: position and target ease to the new framing over FLIGHT ms, see frame().
+  const FLIGHT = 700;
+  let flight = null;
   function fit(points, instant) {
     const center = points.reduce((sum, p) => sum.add(p), new THREE.Vector3()).divideScalar(points.length);
     const radius = Math.max(15, ...points.map((p) => p.distanceTo(center)));
     const dir = camera.position.clone().sub(controls.target).normalize();
-    controls.target.copy(center);
-    camera.position.copy(center).addScaledVector(dir, (radius * 2.7) / Math.min(camera.aspect, 1)); // a narrow screen stands further back
-    if (instant) controls.update();
+    const eye = center.clone().addScaledVector(dir, (radius * 2.7) / Math.min(camera.aspect, 1)); // a narrow screen stands further back
+    if (instant || still) {
+      flight = null;
+      controls.target.copy(center);
+      camera.position.copy(eye);
+      if (instant) controls.update();
+      return;
+    }
+    flight = { t0: performance.now(), eye0: camera.position.clone(), eye, target0: controls.target.clone(), target: center };
+  }
+
+  function fly(now) {
+    const t = Math.min((now - flight.t0) / FLIGHT, 1);
+    const k = t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2; // ease in and out
+    camera.position.lerpVectors(flight.eye0, flight.eye, k);
+    controls.target.lerpVectors(flight.target0, flight.target, k);
+    if (t === 1) flight = null;
+  }
+
+  // The path draws itself hop by hop: each hop's parts appear HOP ms after the previous one.
+  const HOP = 320;
+  let traced = 0;
+  function trace(now) {
+    let pending = false;
+    for (const part of pathGroup.children) {
+      const due = !part.userData.hop || now - traced >= (part.userData.hop - 1) * HOP;
+      part.visible = due;
+      pending ||= !due;
+    }
+    if (!pending) traced = 0;
   }
 
   function select(i) {
@@ -479,7 +508,7 @@ export function create3d(el, { onSelect }) {
       const dir = new THREE.Vector3();
       ids.slice(1).forEach((id, k) => {
         // A thick bar from one node's rim to the next, an arrowhead at its end, its number halfway.
-        // hook: every part carries userData.hop (1, 2, …) for a path-trace animation to walk.
+        // Every part carries userData.hop (1, 2, …): trace() reveals them in that order.
         const from = nodes[ids[k]];
         const to = nodes[id];
         dir.subVectors(to.p, from.p).normalize();
@@ -505,6 +534,10 @@ export function create3d(el, { onSelect }) {
       }
       heat = 0; // the bars are placed once, so the layout must not move under them
       fit(ids.map((i) => nodes[i].p));
+      if (!still) {
+        traced = performance.now();
+        trace(traced);
+      }
     }
     place();
   }
@@ -560,11 +593,13 @@ export function create3d(el, { onSelect }) {
 
   function frame() {
     timer.update();
+    if (flight) fly(performance.now());
+    if (traced) trace(performance.now());
     if (heat) for (let i = 0; i < (nodes.length > 400 ? 1 : 3) && heat; i++) layoutStep();
     controls.update(timer.getDelta());
     if (heat) {
       // Until the camera is touched it keeps the whole graph in view while the layout spreads.
-      if (!touched && !faded) fit(nodes.map((node) => node.p));
+      if (!touched && !faded) fit(nodes.map((node) => node.p), true);
       place();
     }
     else if (nodes.length && (born || !facing.equals(camera.quaternion))) placeNodes(performance.now());

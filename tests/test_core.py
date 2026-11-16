@@ -522,6 +522,17 @@ def test_hd_wallet_is_discovered_grouped_and_treated_as_one_wallet(db, monkeypat
     assert held["value"] == pytest.approx(2900e-8 * 50000) == p["public"] == p["total"]
     assert p["private"] == 0 and p["assets"][0]["price"] == pytest.approx(50000)
 
+    card = next(n for n in graph.build(db)["nodes"] if n.get("addresses"))
+    assert card["address"] == min(rows) and [a["address"] for a in card["addresses"]] == sorted(
+        rows
+    )
+    assert card["wallet_balances"] == [
+        {"chain": "bitcoin", "asset": "BTC", "amount": pytest.approx(2900e-8)}
+    ]
+    assert client.get("/api/analysis").json()["fiat"]["wallets"] == {
+        card["address"]: pytest.approx(1.45)
+    }
+
     # Making one of its addresses private speaks for the whole wallet; removing it forgets it.
     client.post("/api/wallets", json={"address": first, "name": "Ledger", "public": False})
     assert {r["public"] for r in db.execute("SELECT public FROM node WHERE mine")} == {0}
@@ -640,7 +651,12 @@ def test_prices_are_fetched_cached_and_survive_an_outage(db, monkeypatch):
         __import__("tracker.app", fromlist=["app"]).app, base_url="http://localhost"
     )
     assert client.get("/api/portfolio").json()["total"] == 2050.0
-    assert client.get("/api/alerts").json() == [] and client.post("/api/alerts/seen").is_success
+    assert client.get("/api/alerts").json() == {"unread": 0, "items": []}
+    assert client.post("/api/alerts/seen").is_success
+    fiat = client.get("/api/analysis").json()["fiat"]
+    assert (fiat["currency"], fiat["total"], fiat["assets"], fiat["wallets"]) == (
+        "EUR", 2050.0, {"ETH": 2000.0, "USDC": 50.0}, {A: 2050.0},
+    )  # fmt: skip
 
 
 LTC, DOGE, TRX = (
@@ -1134,3 +1150,21 @@ def test_first_alert_check_only_records_a_baseline(db):
     assert (
         db.execute("SELECT COUNT(*) FROM alert").fetchone()[0] == 2
     )  # C tied to B, and to A through B
+
+
+def test_alert_feed_points_at_the_wallet_and_counts_unread(db):
+    from tracker import alerts
+
+    mine(db, A, public=1)
+    mine(db, B)
+    alerts.check(db)
+    transfer(db, "ethereum", "1", A, B, 1)
+    alerts.check(db)
+    feed = alerts.recent(db)
+    assert (
+        feed["unread"] == 1
+        and feed["items"][0]["address"] in (A, B)
+        and "100%" in feed["items"][0]["text"]
+    )
+    db.execute("UPDATE alert SET seen = 1")
+    assert alerts.recent(db)["unread"] == 0

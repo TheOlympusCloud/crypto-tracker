@@ -8,7 +8,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import chains, graph, hd, prices, sync
+from . import alerts, chains, graph, hd, prices, sync
 from . import db as database
 
 app = FastAPI(title="Crypto tracker", docs_url=None, redoc_url=None)
@@ -76,6 +76,8 @@ def get_analysis(max_hops: int = 4):
             "max_hops": max_hops,
             "hop_decay": graph.HOP_DECAY,
             "chains": chains.coverage(),
+            "fiat": prices.summary(db),
+            "alerts": alerts.recent(db),
             "verdicts": graph.verdicts(db, max_hops),
             "origins": graph.origins(db, max_hops),
         }
@@ -155,7 +157,7 @@ def get_portfolio():
 def get_alerts():
     db = database.connect()
     try:
-        return [dict(r) for r in db.execute("SELECT * FROM alert ORDER BY id DESC LIMIT 100")]
+        return alerts.recent(db)
     finally:
         db.close()
 

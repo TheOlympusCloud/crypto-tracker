@@ -4,6 +4,9 @@ import { KINDS, PATH, STONE, glyphUrl, kindOf, linkColor, linkDash, pct, title }
 
 const COSE_MAX = 250; // nodes; cose is quadratic per pass and freezes the page far beyond this
 
+const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const HOP = 320; // ms between the hops of a path as it draws itself
+
 export function create2d(el, { onSelect }) {
   const box = el.appendChild(document.createElement("div"));
   box.style.cssText = "position:absolute;inset:0";
@@ -191,28 +194,39 @@ export function create2d(el, { onSelect }) {
     else constellations();
   }
 
+  // The camera glides to what it should show, unless motion is unwanted.
+  function frame(eles) {
+    cy.stop();
+    if (still) cy.fit(eles, 60);
+    else cy.animate({ fit: { eles, padding: 60 } }, { duration: 500, easing: "ease-in-out-cubic" });
+  }
+
+  let timers = [];
   function highlight(path) {
+    timers.forEach(clearTimeout);
+    timers = [];
     cy.elements().removeClass("faded path back").removeData("hop");
     if (path.length < 2) return;
     let keep = cy.collection();
     path.forEach((a, i) => {
       keep = keep.union(cy.getElementById(a));
       if (!i) return;
-      // hook: a path-trace animation can walk these edges in order of their `hop`.
+      // The path draws itself hop by hop.
       const hop = cy.getElementById(a).edgesWith(cy.getElementById(path[i - 1]));
-      hop.addClass("path").data("hop", String(i));
+      hop.data("hop", String(i));
       hop.filter((e) => e.source().id() === a).addClass("back");
+      if (still) hop.addClass("path");
+      else timers.push(setTimeout(() => hop.addClass("path"), (i - 1) * HOP));
       keep = keep.union(hop);
     });
     cy.elements().difference(keep).addClass("faded");
-    cy.fit(keep, 60);
+    frame(keep);
   }
 
   return {
     setData,
     highlight,
-    // hook: a camera fly-to can animate this fit.
-    focus: (address) => cy.fit(cy.getElementById(address).closedNeighborhood(), 60),
+    focus: (address) => frame(cy.getElementById(address).closedNeighborhood()),
     setActive(on) {
       box.hidden = !on;
       if (on) cy.resize();

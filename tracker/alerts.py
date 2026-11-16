@@ -42,3 +42,23 @@ def check(db):
         [(*BASELINE, 0), *[(a, b, c) for (a, b), c in now.items()]],
     )
     db.commit()
+
+
+def recent(db):
+    """The latest alerts, each pointing at the first address of the wallet it is about."""
+    first = {}
+    for r in db.execute("SELECT address, wallet FROM node WHERE mine ORDER BY address"):
+        first.setdefault(r["wallet"] or r["address"], r["address"])
+    rows = db.execute("SELECT * FROM alert ORDER BY id DESC LIMIT 100").fetchall()
+    return {
+        "unread": sum(not r["seen"] for r in rows),
+        "items": [
+            {
+                "time": r["ts"],
+                "text": r["text"],
+                "address": first.get(r["wallet"], r["wallet"]),
+                "seen": bool(r["seen"]),
+            }
+            for r in rows
+        ],
+    }

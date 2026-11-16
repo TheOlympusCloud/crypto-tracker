@@ -273,3 +273,14 @@ form .primary, .card > .primary { margin-top: 8px; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* Chains card */
+#chains li { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 8px 0; }
+#chains b { text-transform: capitalize; }
+#chains .hint { flex-basis: 100%; margin: 0; }
+
+/* Switching between the 3D and the flat graph: the one that appears fades and settles in. */
+@keyframes mode-in { from { opacity: 0; transform: scale(0.985); } }
+@media (prefers-reduced-motion: no-preference) {
+  #canvas > :not([hidden]) { animation: mode-in 0.4s ease-out; }
+}
