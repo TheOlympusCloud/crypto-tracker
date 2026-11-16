@@ -1,9 +1,9 @@
 // 3D wallet graph. Same interface as graph2d.js: setData, highlight, focus, setActive.
-// My wallets are coins standing over a faint plinth; every other address is a small solid
-// whose silhouette is its glyph in kinds.js.
+// My wallets are paper coins standing over three orange rings; every other address is a small
+// matte solid whose silhouette is its glyph in kinds.js.
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { KINDS, PATH, STONE, drawGlyph, kindOf, linkColor, linkDash, pct, title } from "./kinds.js";
+import { KINDS, PAPER, PATH, drawGlyph, kindOf, linkColor, linkDash, pct, title } from "./kinds.js";
 
 const K = 14; // ideal distance between linked nodes, world units
 const FLATTEN = 0.12; // extra pull towards the plinth's plane, so the graph reads as a table of coins
@@ -11,7 +11,9 @@ const LINE = 0.3; // opacity of plain transfer lines: many of them cross
 const COIN = 6;
 const NEAR = 170; // counterparties are named within this distance of the camera, world units // radius of a wallet's coin, world units
 const REVEAL = { coin: 900, stagger: 110, rest: 700 }; // the entrance, in milliseconds
-const FONT = { name: "600 30px Cinzel, serif", tag: "500 19px Jost, sans-serif", text: "500 26px Jost, sans-serif", mono: "400 24px 'JetBrains Mono', monospace" };
+const FONT = { name: "900 30px 'Red Hat Display', sans-serif", tag: "700 19px 'Red Hat Text', sans-serif", text: "500 26px 'Red Hat Text', sans-serif", mono: "400 24px 'JetBrains Mono', monospace" };
+const PUBLIC_INK = "#b23800"; // the orange of small text (--orange-ink in style.css)
+const FADE = 0.86; // how far a node off the shown path sinks into the paper
 const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
 const ease = (t) => 1 - (1 - Math.min(Math.max(t, 0), 1)) ** 3;
 
@@ -34,7 +36,7 @@ function textSprite(lines, world = 0, shrink = 1) {
     ctx.font = font;
     ctx.letterSpacing = `${spacing}px`;
     ctx.lineWidth = 6;
-    ctx.strokeStyle = STONE.stone;
+    ctx.strokeStyle = PAPER.page;
     ctx.strokeText(text, canvas.width / 2 + spacing / 2, pitch * i + 29);
     ctx.fillStyle = color;
     ctx.fillText(text, canvas.width / 2 + spacing / 2, pitch * i + 29);
@@ -42,20 +44,21 @@ function textSprite(lines, world = 0, shrink = 1) {
   return sprite(canvas, world || (lines.length > 1 ? 0.05 : 0.019) * shrink, world > 0);
 }
 
-// The number of a hop on the selected path, in a ring.
+// The number of a hop on the selected path: paper on an ink dot with an orange edge.
 function hopSprite(n) {
   const canvas = Object.assign(document.createElement("canvas"), { width: 64, height: 64 });
   const ctx = canvas.getContext("2d");
   ctx.arc(32, 32, 27, 0, 2 * Math.PI);
-  ctx.fillStyle = STONE.stone;
+  ctx.fillStyle = PAPER.ink;
   ctx.fill();
-  ctx.lineWidth = 3;
-  ctx.strokeStyle = ctx.fillStyle = PATH;
+  ctx.lineWidth = 5;
+  ctx.strokeStyle = PATH;
   ctx.stroke();
+  ctx.fillStyle = PAPER.card;
   ctx.font = "400 30px 'JetBrains Mono', monospace";
   ctx.textAlign = "center";
   ctx.fillText(String(n), 32, 43);
-  const s = sprite(canvas, 0.034, false);
+  const s = sprite(canvas, 0.038, false);
   s.center.set(0.5, 0.5);
   return s;
 }
@@ -64,7 +67,7 @@ function sprite(canvas, height, attenuate) {
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
   // Drawn over the scene: a label must stay readable.
-  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, sizeAttenuation: attenuate, depthTest: false, transparent: true }));
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, sizeAttenuation: attenuate, depthTest: false, transparent: true, fog: false }));
   s.scale.set((canvas.width / canvas.height) * height, height, 1);
   s.center.set(0.5, 0); // it stands on its anchor, so it never covers what it names
   s.renderOrder = 2;
@@ -84,19 +87,19 @@ function clear(group) {
   }
 }
 
-// What the metals reflect: a pale sky over dark stone, and one bright window.
+// What the solids reflect: a white ceiling over warm paper, and one bright window.
 function environment(renderer) {
   const canvas = Object.assign(document.createElement("canvas"), { width: 4, height: 128 });
   const ctx = canvas.getContext("2d");
   const sky = ctx.createLinearGradient(0, 0, 0, 128);
-  [[0, "#f4f4f4"], [0.42, "#7a7a7a"], [0.56, "#2a2a2a"], [1, "#0e0e0e"]].forEach(([at, color]) => sky.addColorStop(at, color));
+  [[0, "#ffffff"], [0.45, PAPER.card], [0.6, PAPER.page], [1, "#e9d5c8"]].forEach(([at, color]) => sky.addColorStop(at, color));
   ctx.fillStyle = sky;
   ctx.fillRect(0, 0, 4, 128);
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
   const room = new THREE.Scene();
   const dome = new THREE.Mesh(new THREE.SphereGeometry(50, 32, 16), new THREE.MeshBasicMaterial({ map: texture, side: THREE.BackSide }));
-  const window = new THREE.Mesh(new THREE.PlaneGeometry(26, 26), new THREE.MeshBasicMaterial({ color: new THREE.Color(5, 5, 5) }));
+  const window = new THREE.Mesh(new THREE.PlaneGeometry(26, 26), new THREE.MeshBasicMaterial({ color: new THREE.Color(2, 2, 2) }));
   window.position.set(-24, 30, 26);
   window.lookAt(0, 0, 0);
   room.add(dome, window);
@@ -135,14 +138,14 @@ export function create3d(el, { onSelect }) {
   renderer.setClearColor(0x000000, 0); // the stage's own gradient shows through
   el.append(renderer.domElement);
   const scene = new THREE.Scene();
-  scene.fog = new THREE.FogExp2(0x161616, 0); // far nodes sink into the mist: a depth cue (density set per frame)
+  scene.fog = new THREE.FogExp2(PAPER.page, 0); // far nodes sink into the paper: a depth cue (density set per frame)
   scene.environment = environment(renderer);
-  scene.environmentIntensity = 0.9;
+  scene.environmentIntensity = 0.45;
   const camera = new THREE.PerspectiveCamera(40, 1, 1, 5000);
   camera.position.set(0, 55, 160);
-  const key = new THREE.DirectionalLight(0xffffff, 1.7);
+  const key = new THREE.DirectionalLight(0xffffff, 1.1);
   key.position.set(-2, 3, 3);
-  scene.add(key, new THREE.HemisphereLight(0xffffff, 0x1a1a1a, 0.9));
+  scene.add(key, new THREE.HemisphereLight(0xffffff, PAPER.blush, 0.9));
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = !still;
   // The scene turns slowly until it is first touched.
@@ -159,20 +162,21 @@ export function create3d(el, { onSelect }) {
 
   const world = new THREE.Group(); // rebuilt on every setData
   const pathGroup = new THREE.Group();
-  const plinth = new THREE.Group(); // three faint rings under everything
+  const plinth = new THREE.Group(); // three orange rings under everything
   const circle = new THREE.BufferGeometry().setFromPoints(Array.from({ length: 96 }, (_, i) => new THREE.Vector3(Math.cos((i * Math.PI) / 48), 0, Math.sin((i * Math.PI) / 48))));
-  const faint = new THREE.LineBasicMaterial({ color: STONE.ink, transparent: true, opacity: 0.1 });
+  const faint = new THREE.LineBasicMaterial({ color: PATH, transparent: true, opacity: 0.45 });
   for (const r of [0.38, 0.7, 1]) {
     const ring = new THREE.LineLoop(circle, faint);
     ring.scale.setScalar(r);
     plinth.add(ring);
   }
-  const halo = new THREE.Mesh(new THREE.TorusGeometry(1, 0.035, 8, 64), new THREE.MeshBasicMaterial({ color: STONE.ink })); // around the selected node
+  const halo = new THREE.Mesh(new THREE.TorusGeometry(1, 0.06, 8, 64), new THREE.MeshBasicMaterial({ color: PATH })); // around the selected node
   halo.visible = false;
   scene.add(world, pathGroup, plinth, halo);
 
   const shapes = solids();
-  const mineral = new THREE.MeshStandardMaterial({ metalness: 0.25, roughness: 0.45 });
+  const matte = new THREE.MeshStandardMaterial({ metalness: 0, roughness: 0.8 });
+  const paper = new THREE.Color(PAPER.page);
   const coinGeometry = new THREE.CylinderGeometry(1, 1, 0.18, 56).rotateX(Math.PI / 2);
   const coinMaterials = {}; // kind -> [bright, faded], each [edge, face, face]
   function coinMaterial(kind) {
@@ -189,9 +193,11 @@ export function create3d(el, { onSelect }) {
       // The caps are mapped for a lying cylinder; turned so the glyph stands upright on both.
       face.center.set(0.5, 0.5);
       face.rotation = -Math.PI / 2;
-      coinMaterials[kind] = [1, 0.12].map((light) => {
-        const edge = new THREE.MeshStandardMaterial({ color: new THREE.Color(color).multiplyScalar(light), metalness: 0.85, roughness: 0.3 });
-        const cap = new THREE.MeshStandardMaterial({ map: face, color: new THREE.Color().setScalar(light), metalness: 0.6, roughness: 0.38 });
+      // A faded coin is the same coin, mostly seen through.
+      coinMaterials[kind] = [1, 1 - FADE].map((opacity) => {
+        const look = { metalness: 0, roughness: 0.7, transparent: opacity < 1, depthWrite: opacity === 1, opacity };
+        const edge = new THREE.MeshStandardMaterial({ color: PAPER.ink, ...look });
+        const cap = new THREE.MeshStandardMaterial({ map: face, ...look });
         return [edge, cap, cap];
       });
     }
@@ -247,8 +253,10 @@ export function create3d(el, { onSelect }) {
     for (const mesh of solidMeshes) {
       mesh.userData.ids.forEach((i, k) => {
         const node = nodes[i];
-        mesh.setMatrixAt(k, m.compose(node.p, facing, s.setScalar(node.size * grown)));
-        mesh.setColorAt(k, color.set(node.color).multiplyScalar(faded && !faded.has(i) ? 0.12 : node.dim));
+        // Off the shown path a solid shrinks and pales, so it cannot stand in front of the line.
+        const off = faded && !faded.has(i);
+        mesh.setMatrixAt(k, m.compose(node.p, facing, s.setScalar(node.size * grown * (off ? 0.45 : 1))));
+        mesh.setColorAt(k, color.set(node.color).lerp(paper, off ? FADE : 1 - node.dim));
       });
       mesh.instanceMatrix.needsUpdate = true;
       mesh.instanceColor.needsUpdate = true;
@@ -384,9 +392,9 @@ export function create3d(el, { onSelect }) {
         size: n.mine ? COIN : n.category ? 2.6 : 0.9,
         dim: !n.mine && !n.synced_at && !n.category ? 0.55 : 1, // not expanded yet
         label: n.mine
-          ? [[n.public ? "PUBLIC" : "PRIVATE", FONT.tag, color, 3], [title(n).toUpperCase(), FONT.name, STONE.ink, 2]]
+          ? [[n.public ? "PUBLIC" : "PRIVATE", FONT.tag, n.public ? PUBLIC_INK : color, 3], [title(n).toUpperCase(), FONT.name, PAPER.ink, 0]]
           : n.category
-            ? [[`${title(n)} · ${word}`, FONT.text, STONE.quiet]]
+            ? [[`${title(n)} · ${word}`, FONT.text, PAPER.quiet]]
             : null,
       };
     });
@@ -422,7 +430,7 @@ export function create3d(el, { onSelect }) {
     solidMeshes = Object.entries(shapes).flatMap(([shape, geometry]) => {
       const ids = nodes.flatMap((node, i) => (!node.n.mine && node.shape === shape ? [i] : []));
       if (!ids.length) return [];
-      const mesh = new THREE.InstancedMesh(geometry, mineral, ids.length);
+      const mesh = new THREE.InstancedMesh(geometry, matte, ids.length);
       mesh.userData = { ids, shared: true };
       mesh.setColorAt(0, new THREE.Color());
       return [mesh];
@@ -444,30 +452,31 @@ export function create3d(el, { onSelect }) {
       world.add(lines);
       return lines;
     };
-    // Each transfer line runs dark at the sender and bright at the receiver, and ends in an arrowhead.
+    // Each transfer line runs pale at the sender and dark at the receiver, and ends in an arrowhead.
+    const c = new THREE.Color();
+    const ends = [PAPER.line, PAPER.ink].flatMap((hex) => c.set(hex).toArray());
     edgeLines = line(
       edges,
-      edges.flatMap(() => [0.14, 0.14, 0.14, 0.62, 0.62, 0.62]),
+      edges.flatMap(() => ends),
       new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: LINE })
     );
     arrows = new THREE.InstancedMesh(
       new THREE.ConeGeometry(0.4, 1.5, 8),
-      new THREE.MeshBasicMaterial({ color: STONE.quiet, transparent: true, opacity: LINE }),
+      new THREE.MeshBasicMaterial({ color: PAPER.ink, transparent: true, opacity: LINE }),
       Math.max(edges.length, 1)
     );
     arrows.count = edges.length;
     world.add(arrows);
-    stems = line(coins.map(([, i]) => [i]), null, new THREE.LineBasicMaterial({ color: STONE.ink, transparent: true, opacity: 0.16 }));
+    stems = line(coins.map(([, i]) => [i]), null, new THREE.LineBasicMaterial({ color: PAPER.ink, transparent: true, opacity: 0.2 }));
     // One set of dashed lines per kind of guess: each kind has its own colour and dash.
-    const c = new THREE.Color();
     guessLines = [...new Set(guesses.map((k) => k.kind))].map((kind) => {
       const [dash, gap] = linkDash(kind);
       const own = guesses.flatMap((k, i) => (k.kind === kind ? [[k, guessPairs[i]]] : []));
       return line(
         own.map((x) => x[1]),
-        // Confidence shows as brightness, and as the number on the label.
+        // Confidence shows as strength of colour, and as the number on the label.
         own.flatMap(([k]) => {
-          c.set(linkColor(kind)).multiplyScalar(0.4 + 0.6 * k.confidence);
+          c.set(linkColor(kind)).lerp(paper, 0.6 * (1 - k.confidence));
           return [c.r, c.g, c.b, c.r, c.g, c.b];
         }),
         new THREE.LineDashedMaterial({ vertexColors: true, dashSize: dash * 0.28, gapSize: gap * 0.28, transparent: true })
@@ -501,14 +510,14 @@ export function create3d(el, { onSelect }) {
     faded = ids.length > 1 ? new Set(ids) : null;
     for (const lines of [edgeLines, arrows]) lines.material.opacity = faded ? 0.08 : LINE;
     for (const lines of guessLines) lines.material.opacity = faded ? 0.12 : 1;
-    stems.material.opacity = faded ? 0.04 : 0.16;
+    stems.material.opacity = faded ? 0.05 : 0.2;
     for (const [label, i, j] of linkLabels) label.visible = !faded || (faded.has(i) && faded.has(j));
     if (faded) {
       const material = new THREE.MeshBasicMaterial({ color: PATH });
       const up = new THREE.Vector3(0, 1, 0);
       const dir = new THREE.Vector3();
       ids.slice(1).forEach((id, k) => {
-        // A thick bar from one node's rim to the next, an arrowhead at its end, its number halfway.
+        // A fat orange bar from one node's rim to the next, an arrowhead at its end, its number halfway.
         // Every part carries userData.hop (1, 2, …): trace() reveals them in that order.
         const from = nodes[ids[k]];
         const to = nodes[id];
@@ -516,9 +525,9 @@ export function create3d(el, { onSelect }) {
         const a = from.p.clone().addScaledVector(dir, from.size + 0.4);
         const tip = to.p.clone().addScaledVector(dir, -to.size - 0.4);
         const b = tip.clone().addScaledVector(dir, -2.4);
-        const bar = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.4, Math.max(a.distanceTo(b), 0.1), 10), material);
+        const bar = new THREE.Mesh(new THREE.CylinderGeometry(0.75, 0.75, Math.max(a.distanceTo(b), 0.1), 12), material);
         bar.position.lerpVectors(a, b, 0.5);
-        const head = new THREE.Mesh(new THREE.ConeGeometry(1.1, 2.4, 14), material);
+        const head = new THREE.Mesh(new THREE.ConeGeometry(1.7, 2.4, 16), material);
         head.position.lerpVectors(b, tip, 0.5);
         bar.quaternion.setFromUnitVectors(up, dir);
         head.quaternion.copy(bar.quaternion);
@@ -529,7 +538,7 @@ export function create3d(el, { onSelect }) {
       });
       for (const i of ids) {
         if (nodes[i].label) continue; // strangers on the path get a name while it is shown
-        const label = textSprite([[title(nodes[i].n), FONT.text, STONE.ink]]);
+        const label = textSprite([[title(nodes[i].n), FONT.text, PAPER.ink]]);
         label.position.copy(nodes[i].p).add({ x: 0, y: nodes[i].size + 0.8, z: 0 });
         pathGroup.add(label);
       }
@@ -606,7 +615,7 @@ export function create3d(el, { onSelect }) {
     else if (nodes.length && (born || !facing.equals(camera.quaternion))) placeNodes(performance.now());
     // From afar only my wallets are named; counterparties get their names as the camera nears.
     for (const [label, i] of nodeLabels) label.visible = faded ? faded.has(i) : Boolean(nodes[i].n.mine) || camera.position.distanceTo(nodes[i].p) < NEAR;
-    scene.fog.density = 0.5 / camera.position.distanceTo(controls.target); // same fade at any zoom
+    scene.fog.density = 0.32 / camera.position.distanceTo(controls.target); // same fade at any zoom
     renderer.render(scene, camera);
   }
 

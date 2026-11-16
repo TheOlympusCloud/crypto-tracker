@@ -1,16 +1,18 @@
 // Flat wallet graph (Cytoscape): the fallback for phones, for browsers without WebGL and
 // for anyone who prefers it. Same interface as graph3d.js, same coins and line styles.
-import { KINDS, PATH, STONE, glyphUrl, kindOf, linkColor, linkDash, pct, title } from "./kinds.js";
+import { KINDS, PAPER, PATH, glyphUrl, kindOf, linkColor, linkDash, pct, title } from "./kinds.js";
 
 const COSE_MAX = 250; // nodes; cose is quadratic per pass and freezes the page far beyond this
 
 const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
 const HOP = 320; // ms between the hops of a path as it draws itself
+const PATH_WIDTH = 6; // the selected path at full zoom, in pixels
+const HOP_FONT = 12; // and its hop numbers
 
 export function create2d(el, { onSelect }) {
   const box = el.appendChild(document.createElement("div"));
   box.style.cssText = "position:absolute;inset:0";
-  const outline = { "text-outline-color": STONE.stone, "text-outline-width": 2, "min-zoomed-font-size": 7 }; // labels vanish instead of piling up when zoomed out
+  const outline = { "text-outline-color": PAPER.page, "text-outline-width": 2, "min-zoomed-font-size": 7 }; // labels vanish instead of piling up when zoomed out
   const cy = cytoscape({
     container: box,
     maxZoom: 2,
@@ -19,8 +21,8 @@ export function create2d(el, { onSelect }) {
         selector: "node",
         style: {
           label: "data(label)",
-          color: STONE.quiet,
-          "font-family": "Jost, system-ui, sans-serif",
+          color: PAPER.quiet,
+          "font-family": "Red Hat Text, system-ui, sans-serif",
           "font-size": 10,
           "text-valign": "bottom",
           "text-margin-y": 5,
@@ -36,17 +38,17 @@ export function create2d(el, { onSelect }) {
         },
       },
       // My wallets keep their names at any zoom.
-      { selector: "node[?mine]", style: { color: STONE.ink, "font-family": "Cinzel, serif", "font-weight": 600, "font-size": "data(font)", "min-zoomed-font-size": 0, "text-transform": "uppercase" } },
+      { selector: "node[?mine]", style: { color: PAPER.ink, "font-family": "Red Hat Display, sans-serif", "font-weight": 900, "font-size": "data(font)", "min-zoomed-font-size": 0, "text-transform": "uppercase" } },
       {
         selector: "edge",
         style: {
           "curve-style": "bezier",
           width: "data(width)",
-          "line-color": STONE.quiet,
-          "target-arrow-color": STONE.quiet,
+          "line-color": PAPER.quiet,
+          "target-arrow-color": PAPER.quiet,
           "target-arrow-shape": "triangle",
           "arrow-scale": 0.8,
-          opacity: 0.4,
+          opacity: 0.45,
         },
       },
       {
@@ -65,8 +67,8 @@ export function create2d(el, { onSelect }) {
           ...outline,
         },
       },
-      { selector: "node:selected", style: { "underlay-color": STONE.ink, "underlay-opacity": 0.22, "underlay-padding": 6, "underlay-shape": "ellipse" } },
-      { selector: ".faded", style: { opacity: 0.08 } },
+      { selector: "node:selected", style: { "underlay-color": PATH, "underlay-opacity": 0.35, "underlay-padding": 7, "underlay-shape": "ellipse" } },
+      { selector: ".faded", style: { opacity: 0.12 } },
       {
         selector: "edge.path",
         style: {
@@ -76,20 +78,20 @@ export function create2d(el, { onSelect }) {
           "target-arrow-shape": "triangle",
           "source-arrow-shape": "none",
           "arrow-scale": 1.1,
-          width: 4,
+          width: "data(thick)",
           opacity: 1,
-          // The hop number, as in the path list.
+          // The hop number, as in the path list: paper on an ink pill with an orange edge.
           label: "data(hop)",
-          color: PATH,
+          color: PAPER.card,
           "font-family": "JetBrains Mono, monospace",
-          "font-size": 12,
+          "font-size": "data(hopFont)",
           "text-rotation": "none",
-          "text-background-color": STONE.stone,
+          "text-background-color": PAPER.ink,
           "text-background-opacity": 1,
           "text-background-shape": "roundrectangle",
-          "text-background-padding": 3,
+          "text-background-padding": 4,
           "text-border-color": PATH,
-          "text-border-width": 1,
+          "text-border-width": 2,
           "text-border-opacity": 1,
           "text-outline-width": 0,
         },
@@ -99,7 +101,15 @@ export function create2d(el, { onSelect }) {
   // The names of my wallets stay readable when the whole graph is in view.
   const NAME = 11;
   const names = () => cy.nodes("[?mine]").data("font", Math.max(NAME, (NAME + 1) / cy.zoom()));
-  cy.on("zoom", names);
+  // So does the selected path: its line and hop numbers never thin out below a readable size.
+  const pathStyle = () => {
+    const far = Math.max(1, 1 / cy.zoom());
+    cy.edges("[hop]").data({ thick: PATH_WIDTH * far, hopFont: HOP_FONT * far });
+  };
+  cy.on("zoom", () => {
+    names();
+    pathStyle();
+  });
   cy.on("tap", "node", (e) => onSelect(e.target.data("node")));
   cy.on("tap", (e) => e.target === cy && onSelect(null));
 
@@ -203,7 +213,7 @@ export function create2d(el, { onSelect }) {
   function highlight(path) {
     timers.forEach(clearTimeout);
     timers = [];
-    cy.elements().removeClass("faded path").removeData("hop");
+    cy.elements().removeClass("faded path").removeData("hop thick hopFont");
     if (path.length < 2) return;
     let keep = cy.collection();
     path.forEach((a, i) => {
@@ -211,7 +221,7 @@ export function create2d(el, { onSelect }) {
       if (!i) return;
       // The path draws itself hop by hop.
       const hop = cy.getElementById(a).edgesWith(cy.getElementById(path[i - 1]));
-      hop.data("hop", String(i));
+      hop.data({ hop: String(i), thick: PATH_WIDTH, hopFont: HOP_FONT });
       if (still) hop.addClass("path");
       else timers.push(setTimeout(() => hop.addClass("path"), (i - 1) * HOP));
       keep = keep.union(hop);
