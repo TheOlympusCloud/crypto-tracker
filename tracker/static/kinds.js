@@ -1,22 +1,24 @@
 // Colour, shape and wording per kind of address, guess and verdict: the one place for them.
 // The colours repeat the custom properties in style.css; shape and the type written in every
 // label repeat the colour for colour-blind readers.
-export const STONE = { stone: "#0e0e0e", raised: "#171717", line: "#2e2e2e", lineStrong: "#6e6e6e", ink: "#ededed", quiet: "#b4b4b4" };
-export const METAL = { verdigris: "#62c4a8", gold: "#e6b450", silver: "#c9c9c9", ember: "#f2914a", cinnabar: "#f4705e" };
-export const MINERAL = { lapis: "#8fb2f0", amethyst: "#b79cf0", aqua: "#7fd0e0", rose: "#e58bc0", peridot: "#b8d072", sand: "#d8c9a8", slate: "#9a9a9a" };
+export const PAPER = { page: "#f8eee8", card: "#fdf8f5", blush: "#f9e2e1", line: "#e2cfc3", lineStrong: "#857a73", ink: "#14100d", quiet: "#5c514a" };
+// What a wallet is, and what was found about it. Orange is the loud one: public, and the path.
+export const SIGNAL = { private: "#14100d", public: "#ff5400", none: "#5c514a", tied: "#8a5a00", linked: "#c4161c" };
+// Counterparty types: each dark enough to read on paper.
+export const HUES = { blue: "#1a54e4", purple: "#8134cd", teal: "#006f7a", magenta: "#c2187a", green: "#2b7230", brown: "#8a5a2b", grey: "#857a73" };
 
 // [colour, shape, wording]. The shape names a glyph below; both graphs draw it.
 export const KINDS = {
-  mine: [METAL.verdigris, "sealed-coin", "My wallet, private"],
-  public: [METAL.gold, "open-coin", "My wallet, public"],
-  cex: [MINERAL.lapis, "square", "Exchange"],
-  dex: [MINERAL.amethyst, "diamond", "DEX / swap"],
-  bridge: [MINERAL.aqua, "arch", "Bridge"],
-  mixer: [MINERAL.rose, "star", "Mixer"],
-  defi: [MINERAL.peridot, "hexagon", "DeFi"],
-  service: [MINERAL.sand, "pentagon", "Service"],
-  other: [STONE.quiet, "tag", "Labelled"],
-  external: [MINERAL.slate, "ring", "Unknown address"],
+  mine: [SIGNAL.private, "sealed-coin", "My wallet, private"],
+  public: [SIGNAL.public, "open-coin", "My wallet, public"],
+  cex: [HUES.blue, "square", "Exchange"],
+  dex: [HUES.purple, "diamond", "DEX / swap"],
+  bridge: [HUES.teal, "arch", "Bridge"],
+  mixer: [HUES.magenta, "star", "Mixer"],
+  defi: [HUES.green, "hexagon", "DeFi"],
+  service: [HUES.brown, "pentagon", "Service"],
+  other: [PAPER.quiet, "tag", "Labelled"],
+  external: [HUES.grey, "ring", "Unknown address"],
 };
 KINDS.unknown = KINDS.external;
 // A funds source: one of my wallets counts as public or private, like everywhere else.
@@ -26,27 +28,27 @@ export const HATCHED = new Set(["public", "external", "unknown"]);
 
 // Guesses that two addresses share an owner: colour, and a dash pattern of its own.
 export const LINKS = {
-  "common-input": METAL.ember,
-  change: MINERAL.aqua,
-  bridge: MINERAL.lapis,
-  "exchange-flow": MINERAL.rose,
-  swap: MINERAL.amethyst,
+  "common-input": SIGNAL.tied,
+  change: HUES.teal,
+  bridge: HUES.blue,
+  "exchange-flow": HUES.magenta,
+  swap: HUES.purple,
 };
 export const DASHES = { "common-input": [6, 4], change: [2, 3], bridge: [10, 4], "exchange-flow": [10, 3, 2, 3], swap: [5, 2, 1, 2, 1, 2] };
-export const PATH = METAL.cinnabar; // the selected path, in both graphs
-export const linkColor = (kind) => LINKS[kind] || STONE.ink;
+export const PATH = SIGNAL.public; // the selected path, in both graphs: one fat orange line
+export const linkColor = (kind) => LINKS[kind] || PAPER.ink;
 export const linkDash = (kind) => DASHES[kind] || [4, 4];
 
 // Verdict levels, as judged in app.js: [colour, glyph].
 export const VERDICTS = {
-  ok: [METAL.silver, "none"], // deliberately not green: "not found" is not "safe"
-  warn: [METAL.ember, "tied"],
-  bad: [METAL.cinnabar, "linked"],
-  unknown: [MINERAL.slate, "unchecked"],
+  ok: [SIGNAL.none, "none"], // deliberately not green: "not found" is not "safe"
+  warn: [SIGNAL.tied, "tied"],
+  bad: [SIGNAL.linked, "linked"],
+  unknown: [HUES.grey, "unchecked"],
 };
 
-// Glyphs on a 24 × 24 grid. Each part is painted with the kind's colour ("c") or with stone
-// ("s"), filled or stroked.
+// Glyphs on a 24 × 24 grid. Each part is painted with the kind's colour ("c"), with paper
+// ("s") or with ink ("k"), filled or stroked.
 const circle = (r) => `M${12 - r} 12a${r} ${r} 0 1 0 ${2 * r} 0a${r} ${r} 0 1 0 ${-2 * r} 0z`;
 export const GLYPHS = {
   "sealed-coin": [
@@ -56,10 +58,10 @@ export const GLYPHS = {
     { d: "M9.8 11V9.2a2.2 2.2 0 0 1 4.4 0V11", stroke: "s", w: 1.3 },
   ],
   "open-coin": [
-    { d: circle(10.5), fill: "s", stroke: "c", w: 1.2 },
-    { d: circle(8.4), stroke: "c", w: 0.6, dash: [2, 1.5] },
-    { d: "M6.5 12c1.5-2.5 3.5-3.75 5.5-3.75S16 9.5 17.5 12c-1.5 2.5-3.5 3.75-5.5 3.75S8 14.5 6.5 12z", stroke: "c", w: 1.1 },
-    { d: circle(1.6), fill: "c" },
+    { d: circle(10.5), fill: "c", stroke: "k", w: 1 },
+    { d: circle(8.2), stroke: "k", w: 0.6, dash: [2, 1.5] },
+    { d: "M6.5 12c1.5-2.5 3.5-3.75 5.5-3.75S16 9.5 17.5 12c-1.5 2.5-3.5 3.75-5.5 3.75S8 14.5 6.5 12z", fill: "s", stroke: "k", w: 1.1 },
+    { d: circle(1.7), fill: "k" },
   ],
   square: [{ d: "M4 4h16v16H4z", fill: "c" }],
   diamond: [{ d: "M12 1.5 22.5 12 12 22.5 1.5 12z", fill: "c" }],
@@ -88,7 +90,7 @@ export const GLYPHS = {
 };
 
 const SVG = "http://www.w3.org/2000/svg";
-const paint = (p, color) => ({ c: color, s: STONE.stone })[p] || "none";
+const paint = (p, color) => ({ c: color, s: PAPER.card, k: PAPER.ink })[p] || "none";
 
 // The glyph as an SVG element, for the page.
 export function glyphEl(shape, color, size = 16) {

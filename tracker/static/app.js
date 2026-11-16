@@ -1,5 +1,5 @@
 import { create2d } from "./graph2d.js";
-import { HATCHED, KINDS, LINKS, PATH, STONE, VERDICTS, glyphEl, kindOf, linkDash, pct, short, sourceKind, title } from "./kinds.js";
+import { HATCHED, KINDS, LINKS, PAPER, PATH, VERDICTS, glyphEl, kindOf, linkDash, pct, short, sourceKind, title } from "./kinds.js";
 
 const $ = (id) => document.getElementById(id);
 // All text reaches the DOM as text nodes: labels and token names come from strangers.
@@ -88,7 +88,7 @@ const renderers = {};
 let mode = matchMedia("(max-width: 760px)").matches ? "2d" : "3d";
 let stale = true; // the active renderer has not seen the current data
 // Labels are drawn on canvases, which do not wait for web fonts by themselves.
-const fonts = Promise.all(["600 16px Cinzel", "500 16px Jost", "400 16px 'JetBrains Mono'"].map((f) => document.fonts.load(f))).catch(() => {});
+const fonts = Promise.all(["900 16px 'Red Hat Display'", "500 16px 'Red Hat Text'", "400 16px 'JetBrains Mono'"].map((f) => document.fonts.load(f))).catch(() => {});
 
 async function renderer() {
   if (!renderers[mode]) {
@@ -166,6 +166,13 @@ function renderPortfolio() {
     side("public", "Public", "Wallets tied to your identity: KYC exchange withdrawals, addresses you shared.")
   );
 
+  // The ticker repeats the totals of the table below. Its second half is a copy, so the loop has no seam.
+  const tape = rows.length ? rows.map((r) => [r.asset, num(r.private + r.public)]) : [["Know what you hold"], ["Know what links it"]];
+  const laps = Math.max(2, 2 * Math.ceil(8 / tape.length));
+  $("ticker").replaceChildren(
+    ...Array.from({ length: laps }, (_, lap) => tape.map(([word, figure]) => h("span", { data: lap ? { again: "" } : {} }, word, figure ? h("i", {}, figure) : null))).flat()
+  );
+
   const columns = ["Asset", "Total", "Private", "Public", ...(fiat ? ["Value"] : []), "Split", "Chains"];
   $("assets").replaceChildren(
     rows.length
@@ -204,7 +211,7 @@ function renderPortfolio() {
       return h(
         "button",
         { className: "card wallet", style: `--i:${i}`, onclick: () => openWallet(v.address) },
-        h("span", { className: "head" }, coin(n), h("span", {}, h("span", { className: "name" }, title(n)), h("span", { className: "mono" }, owned ? addresses(owned) : short(v.address)))),
+        h("span", { className: "head" }, coin(n), h("span", {}, h("span", { className: "name" }, title(n)), h("span", { className: "mono" }, owned ? addresses(owned) : short(v.address))), h("span", { className: "go", ariaHidden: "true" })),
         h("span", { className: "tags" }, badge(n), fiat && v.checked === "none" ? h("span", { className: "worth mono", title: "Not checked, so its value is unknown" }, "—") : partly(v, worth(fiat?.wallets?.[v.address], fiat))),
         h("span", { className: "amounts" }, held(n).slice(0, 4).map((b) => amount(b))),
         verdictBox("span", judge(v)),
@@ -383,7 +390,7 @@ function showPath(path, heading, back) {
   };
   panel(
     h("h2", {}, heading),
-    h("p", { className: "hint" }, `${plural(path.length - 1, "hop")}, drawn as the thick red line with numbered hops.`),
+    h("p", { className: "hint" }, `${plural(path.length - 1, "hop")}, drawn as the fat orange line with numbered hops.`),
     h(
       "ol",
       { className: "path" },
@@ -444,6 +451,7 @@ function renderAlerts() {
   $("alerts").hidden = !items.length;
   if (!items.length) $("alertlist").hidden = true;
   $("alertcount").hidden = !unread;
+  $("alertcount").nextElementSibling.hidden = Boolean(unread); // the plain arrow stands in for the count
   $("alertcount").textContent = unread > 99 ? "99+" : String(unread || "");
   $("alerts").ariaLabel = `Alerts, ${unread || 0} unread`;
   $("alertlist").replaceChildren(
@@ -565,7 +573,7 @@ function lineEl(color, dash, width = 1.5) {
 $("legend-wallets").replaceChildren(h("li", {}, icon("mine", 22), "Private: sealed coin, padlock"), h("li", {}, icon("public", 22), "Public: open coin, eye"));
 $("legend-lines").replaceChildren(
   h("li", {}, lineEl(PATH, [], 3.5), "Selected path"),
-  h("li", {}, lineEl(STONE.quiet, [], 1), "Transfers"),
+  h("li", {}, lineEl(PAPER.quiet, [], 1), "Transfers"),
   ...Object.keys(LINKS).map((kind) => h("li", {}, lineEl(LINKS[kind], linkDash(kind)), `Guess: ${kind}`))
 );
 $("legend").replaceChildren(...["cex", "dex", "bridge", "mixer", "defi", "service", "other", "external"].map((k) => h("li", {}, icon(k, 14), KINDS[k][2])));

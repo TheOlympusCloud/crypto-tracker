@@ -3,12 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="theme-color" content="#0e0e0e">
+<meta name="theme-color" content="#f8eee8">
 <title>Crypto tracker</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
-<link rel="preload" href="vendor/fonts/cinzel-600.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="preload" href="vendor/fonts/jost-400.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="vendor/fonts/red-hat-display-900.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="vendor/fonts/red-hat-text-400.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="style.css">
 <script type="importmap">
 { "imports": { "three": "./vendor/three.module.js", "three/addons/controls/OrbitControls.js": "./vendor/OrbitControls.js" } }
@@ -16,52 +16,56 @@
 </head>
 <body data-view="portfolio">
 <header>
-  <div class="brand">
-    <svg class="mark" viewBox="0 0 32 32" width="30" height="30" aria-hidden="true">
-      <circle cx="16" cy="16" r="14.5" fill="none" stroke="currentColor" stroke-width="1.5"/>
-      <circle cx="16" cy="16" r="11" fill="none" stroke="currentColor" stroke-dasharray="1 2.5"/>
-      <path d="M10 20l6-9 6 9z" fill="none" stroke="currentColor" stroke-width="1.3"/>
-      <circle cx="10" cy="20" r="2" fill="currentColor"/><circle cx="22" cy="20" r="2" fill="currentColor"/><circle cx="16" cy="11" r="2" fill="currentColor"/>
-    </svg>
-    <h1>Crypto tracker</h1>
-  </div>
   <nav aria-label="Views">
     <button data-view="portfolio" aria-current="page">Portfolio</button>
     <button data-view="graph">Graph</button>
     <button data-view="manage">Wallets &amp; sync</button>
   </nav>
-  <p id="status" role="status"></p>
-  <!-- Alerts: shown once the API reports any (see renderAlerts in app.js). -->
-  <button id="alerts" class="bell" aria-expanded="false" aria-controls="alertlist" hidden>
-    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M6 17V11a6 6 0 0 1 12 0v6l1.5 2h-15zM10 21h4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
-    <span class="sr">Alerts</span><span id="alertcount" class="pip" hidden></span>
-  </button>
+  <div class="brand">
+    <svg class="mark" viewBox="0 0 32 32" width="28" height="28" aria-hidden="true">
+      <circle cx="16" cy="16" r="13" fill="none" stroke="currentColor" stroke-width="4"/>
+      <circle cx="16" cy="16" r="4.5" fill="currentColor"/>
+    </svg>
+    <h1>Crypto tracker</h1>
+  </div>
+  <div class="side">
+    <p id="status" role="status"></p>
+    <!-- Alerts: shown once the API reports any (see renderAlerts in app.js). -->
+    <button id="alerts" class="bell" aria-expanded="false" aria-controls="alertlist" hidden>
+      Alerts<span id="alertcount" class="pip" hidden></span><span class="none" aria-hidden="true"></span>
+    </button>
+  </div>
   <div id="alertlist" class="hud" hidden></div>
 </header>
-<svg class="key" aria-hidden="true">
-  <defs><pattern id="meander" width="28" height="14" patternUnits="userSpaceOnUse"><path d="M0 13h24V1H6v8h12V5h-8" fill="none" stroke="currentColor"/></pattern></defs>
-  <rect width="100%" height="14" fill="url(#meander)"/>
-</svg>
 
 <main>
   <section id="view-portfolio" aria-label="Portfolio">
-    <div class="titlerow">
-      <h2 class="display">The treasury</h2>
-      <p>Everything you hold, split by who can tie it to you.</p>
+    <div class="hero">
+      <svg class="loops" viewBox="0 0 1440 520" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+        <path pathLength="1" d="M-40 60C120 150 190 330 110 430S-90 470-60 330 150 250 40 560"/>
+        <path pathLength="1" d="M1480 110C1330 70 1200 190 1250 330s250 150 290 20-110-250-250-150"/>
+      </svg>
+      <p class="kicker">Everything you hold</p>
+      <h2 class="display">Who can tell it&rsquo;s yours?</h2>
+      <ul class="stickers" aria-label="How this app works">
+        <li class="sticker">Read-only</li>
+        <li class="sticker">Self-hosted</li>
+        <li class="sticker">No funny business</li>
+      </ul>
+      <!-- Fiat totals: shown once the API reports values (see readFiat in app.js). -->
+      <dl id="totals" class="totals" hidden></dl>
     </div>
-    <!-- Fiat totals: shown once the API reports values (see readFiat in app.js). -->
-    <dl id="totals" class="totals" hidden></dl>
+    <div class="ticker" aria-hidden="true"><div id="ticker"></div></div>
     <div id="summary" class="vaults"></div>
-    <h2 class="eyebrow">Assets</h2>
+    <h2 class="sectionhead"><small>Assets</small>The whole stash</h2>
     <div id="assets"></div>
-    <h2 class="eyebrow">Wallets</h2>
+    <h2 class="sectionhead"><small>Wallets</small>Apparently, they talk</h2>
     <p class="hint">Each card says whether the wallet can be tied to your other wallets, and where its funds came from. Open one for the evidence.</p>
     <div id="walletcards" class="cards"></div>
   </section>
 
   <section id="view-graph" aria-label="Wallet graph" hidden>
     <div id="canvas" role="img" aria-label="Graph of wallets and transfers. The same information is available as lists in the Portfolio view."></div>
-    <div class="mist" aria-hidden="true"></div>
     <div id="tip" hidden></div>
     <details id="legendbox" class="hud">
       <summary>Legend</summary>
@@ -71,7 +75,7 @@
       <ul id="legend-lines"></ul>
       <h3 class="eyebrow">Counterparties</h3>
       <ul id="legend"></ul>
-      <p class="hint">A plain line is transfers: the arrowhead and the brighter end are at the receiver. A dashed coloured line is a guess that two addresses share an owner, with its confidence. The thick red line with numbered hops is the selected path.</p>
+      <p class="hint">A plain line is transfers: the arrowhead and the darker end are at the receiver. A dashed coloured line is a guess that two addresses share an owner, with its confidence. The fat orange line with numbered hops is the selected path.</p>
     </details>
     <div id="graphbar" class="hud">
       <button id="mode" class="seg" aria-pressed="true" title="Switch between the 3D and the flat graph"><span>3D</span><span>2D</span></button>
@@ -82,9 +86,14 @@
   </section>
 
   <section id="view-manage" aria-label="Wallets and sync" hidden>
-    <div class="titlerow">
-      <h2 class="display">Wallets &amp; sync</h2>
-      <p>Name your wallets, say which are public, and fetch their history.</p>
+    <div class="hero">
+      <svg class="loops" viewBox="0 0 1440 520" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+        <path pathLength="1" d="M-60 380C90 300 230 360 210 470S20 600-30 520"/>
+        <path pathLength="1" d="M1500 200C1380 90 1230 130 1220 250s130 190 240 120"/>
+      </svg>
+      <p class="kicker">Wallets &amp; sync</p>
+      <h2 class="display">Round them up</h2>
+      <p class="lede">Name your wallets, say which are public, and fetch their history.</p>
     </div>
     <div class="cards">
       <form id="add" class="card">
