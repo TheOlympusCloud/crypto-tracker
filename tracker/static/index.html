@@ -3,63 +3,99 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="theme-color" content="#0d1117">
+<meta name="theme-color" content="#0e0e0e">
 <title>Crypto tracker</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="preload" href="vendor/fonts/cinzel-600.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="vendor/fonts/jost-400.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="style.css">
 <script type="importmap">
 { "imports": { "three": "./vendor/three.module.js", "three/addons/controls/OrbitControls.js": "./vendor/OrbitControls.js" } }
 </script>
 </head>
-<body>
+<body data-view="portfolio">
 <header>
-  <h1>Crypto tracker</h1>
+  <div class="brand">
+    <svg class="mark" viewBox="0 0 32 32" width="30" height="30" aria-hidden="true">
+      <circle cx="16" cy="16" r="14.5" fill="none" stroke="currentColor" stroke-width="1.5"/>
+      <circle cx="16" cy="16" r="11" fill="none" stroke="currentColor" stroke-dasharray="1 2.5"/>
+      <path d="M10 20l6-9 6 9z" fill="none" stroke="currentColor" stroke-width="1.3"/>
+      <circle cx="10" cy="20" r="2" fill="currentColor"/><circle cx="22" cy="20" r="2" fill="currentColor"/><circle cx="16" cy="11" r="2" fill="currentColor"/>
+    </svg>
+    <h1>Crypto tracker</h1>
+  </div>
   <nav aria-label="Views">
     <button data-view="portfolio" aria-current="page">Portfolio</button>
     <button data-view="graph">Graph</button>
     <button data-view="manage">Wallets &amp; sync</button>
   </nav>
   <p id="status" role="status"></p>
+  <!-- Alerts: shown once the API reports any (see renderAlerts in app.js). -->
+  <button id="alerts" class="bell" aria-expanded="false" aria-controls="alertlist" hidden>
+    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M6 17V11a6 6 0 0 1 12 0v6l1.5 2h-15zM10 21h4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+    <span class="sr">Alerts</span><span id="alertcount" class="pip" hidden></span>
+  </button>
+  <div id="alertlist" class="hud" hidden></div>
 </header>
+<svg class="key" aria-hidden="true">
+  <defs><pattern id="meander" width="28" height="14" patternUnits="userSpaceOnUse"><path d="M0 13h24V1H6v8h12V5h-8" fill="none" stroke="currentColor"/></pattern></defs>
+  <rect width="100%" height="14" fill="url(#meander)"/>
+</svg>
 
 <main>
   <section id="view-portfolio" aria-label="Portfolio">
-    <div id="summary" class="cards"></div>
-    <h2>Assets</h2>
+    <div class="titlerow">
+      <h2 class="display">The treasury</h2>
+      <p>Everything you hold, split by who can tie it to you.</p>
+    </div>
+    <!-- Fiat totals: shown once the API reports values (see readFiat in app.js). -->
+    <dl id="totals" class="totals" hidden></dl>
+    <div id="summary" class="vaults"></div>
+    <h2 class="eyebrow">Assets</h2>
     <div id="assets"></div>
-    <h2>Wallets</h2>
+    <h2 class="eyebrow">Wallets</h2>
     <p class="hint">Each card says whether the wallet can be tied to your other wallets, and where its funds came from. Open one for the evidence.</p>
     <div id="walletcards" class="cards"></div>
   </section>
 
   <section id="view-graph" aria-label="Wallet graph" hidden>
     <div id="canvas" role="img" aria-label="Graph of wallets and transfers. The same information is available as lists in the Portfolio view."></div>
+    <div class="mist" aria-hidden="true"></div>
     <div id="tip" hidden></div>
-    <div id="graphbar">
-      <button id="mode" aria-pressed="true" title="Switch between the 3D and the flat graph">3D</button>
+    <details id="legendbox" class="hud">
+      <summary>Legend</summary>
+      <h3 class="eyebrow">Your wallets</h3>
+      <ul id="legend-wallets"></ul>
+      <h3 class="eyebrow">Lines</h3>
+      <ul id="legend-lines"></ul>
+      <h3 class="eyebrow">Counterparties</h3>
+      <ul id="legend"></ul>
+      <p class="hint">A plain line is transfers: the arrowhead and the brighter end are at the receiver. A dashed coloured line is a guess that two addresses share an owner, with its confidence. The thick red line with numbered hops is the selected path.</p>
+    </details>
+    <div id="graphbar" class="hud">
+      <button id="mode" class="seg" aria-pressed="true" title="Switch between the 3D and the flat graph"><span>3D</span><span>2D</span></button>
       <label>Hide guesses below <output id="minout">0%</output>
         <input type="range" id="minconf" min="0" max="100" value="0" step="5"></label>
       <label class="row"><input type="checkbox" id="spam"> Unknown tokens</label>
-      <details>
-        <summary>Legend</summary>
-        <ul id="legend"></ul>
-        <p class="hint">Grey line: transfers; the arrowhead and the brighter end are at the receiver. Dashed coloured line: a guess that two addresses share an owner, with its confidence. Orange: the selected path.</p>
-      </details>
     </div>
   </section>
 
   <section id="view-manage" aria-label="Wallets and sync" hidden>
+    <div class="titlerow">
+      <h2 class="display">Wallets &amp; sync</h2>
+      <p>Name your wallets, say which are public, and fetch their history.</p>
+    </div>
     <div class="cards">
       <form id="add" class="card">
-        <h2>Add a wallet</h2>
+        <h2 class="eyebrow">Add a wallet</h2>
         <label>Address <input name="address" required placeholder="bc1… / 0x…" autocomplete="off" spellcheck="false"></label>
         <label>Name <input name="name" placeholder="optional" maxlength="80"></label>
         <label class="row"><input type="checkbox" name="public"> Public: tied to my identity (KYC exchange, shared with people)</label>
-        <button>Add wallet</button>
+        <button class="primary">Add wallet</button>
       </form>
       <div class="card">
-        <h2>Sync</h2>
+        <h2 class="eyebrow">Sync</h2>
         <label>Depth
           <select id="depth">
             <option value="0">My wallets only</option>
@@ -69,10 +105,10 @@
         </label>
         <p class="hint">Deeper syncs find links that run through several strangers, and take longer.</p>
         <label class="row"><input type="checkbox" id="labels"> Also download open label sets (first time)</label>
-        <button id="sync">Sync</button>
+        <button id="sync" class="primary">Sync</button>
       </div>
-      <div class="card">
-        <h2>My wallets</h2>
+      <div class="card wide">
+        <h2 class="eyebrow">My wallets</h2>
         <ul id="wallets"></ul>
       </div>
     </div>
