@@ -1,5 +1,5 @@
 import { create2d } from "./graph2d.js";
-import { KINDS, LINKS, kindOf, pct, short, title } from "./kinds.js";
+import { KINDS, LINKS, kindOf, pct, short, sourceKind, title } from "./kinds.js";
 
 const EXPLORER = { bitcoin: "https://mempool.space", ethereum: "https://eth.blockscout.com" };
 const $ = (id) => document.getElementById(id);
@@ -193,8 +193,8 @@ function caveats(v) {
 function originBar(asset) {
   return h(
     "span",
-    { className: "bar", role: "img", ariaLabel: asset.sources.map((s) => `${pct(s.share)} ${KINDS[s.kind][2]}`).join(", ") },
-    asset.sources.map((s) => h("i", { style: `width:${s.share * 100}%;background:${KINDS[s.kind][0]}`, title: `${pct(s.share)} ${s.name || short(s.address)}` }))
+    { className: "bar", role: "img", ariaLabel: asset.sources.map((s) => `${pct(s.share)} ${KINDS[sourceKind(s)][2]}`).join(", ") },
+    asset.sources.map((s) => h("i", { style: `width:${s.share * 100}%;background:${KINDS[sourceKind(s)][0]}`, title: `${pct(s.share)} ${s.name || short(s.address)}` }))
   );
 }
 
@@ -217,17 +217,19 @@ function originRows(address) {
             h(
               "button",
               { className: "rowbtn", onclick: () => showPath(s.path, `Origin of ${a.asset} in ${nameOf(address)}`, address) },
-              h("span", { className: "swatch", style: `background:${KINDS[s.kind][0]}` }),
+              h("span", { className: "swatch", style: `background:${KINDS[sourceKind(s)][0]}` }),
               h("b", {}, pct(s.share)),
-              ` ${s.name || short(s.address)} · ${s.kind === "own" ? "your own wallet" : KINDS[s.kind][2]}`,
+              ` ${s.name || short(s.address)} · ${KINDS[sourceKind(s)][2]}`,
               h("span", { className: "hint" }, ` ${num(s.amount)} ${a.asset} · ${plural(s.path.length - 1, "hop")}${s.reason ? ` · followed no further: ${s.reason}` : ""}`)
             )
           )
-        )
+        ),
+        rest(a) > 0.005 ? h("li", { className: "hint" }, `${pct(rest(a))} from smaller sources not listed (the empty end of the bar)`) : null
       )
     )
   );
 }
+const rest = (asset) => 1 - asset.sources.reduce((sum, s) => sum + s.share, 0);
 
 // ---------- detail panel ----------
 

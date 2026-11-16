@@ -67,7 +67,7 @@ export function create3d(el, { onSelect }) {
   let nodes = [];
   let index = new Map();
   let segments = []; // [i, j] per transfer edge, then per guess
-  let spheres, edgeLines, linkLines, linkLabels, nodeLabels, rings;
+  let spheres, edgeLines, linkLines, arrows, linkLabels, nodeLabels, rings;
   let heat = 0; // > 0 while the layout is still settling
   let faded = null; // Set of node indices kept bright while a path is shown
 
@@ -120,6 +120,16 @@ export function create3d(el, { onSelect }) {
       pos.needsUpdate = true;
       lines.geometry.computeBoundingSphere();
     }
+    const dir = new THREE.Vector3();
+    const up = new THREE.Vector3(0, 1, 0);
+    edgeLines.userData.pairs.forEach(([i, j], k) => {
+      // The arrowhead sits just outside the receiving node, pointing at it.
+      dir.subVectors(nodes[j].p, nodes[i].p).normalize();
+      m.compose(s.copy(nodes[j].p).addScaledVector(dir, -nodes[j].size - 0.9), q.setFromUnitVectors(up, dir), new THREE.Vector3(1, 1, 1));
+      arrows.setMatrixAt(k, m);
+    });
+    arrows.instanceMatrix.needsUpdate = true;
+    arrows.computeBoundingSphere();
     linkLines.computeLineDistances();
     linkLabels.forEach(([sprite, i, j]) => sprite.position.lerpVectors(nodes[i].p, nodes[j].p, 0.5));
     nodeLabels.forEach(([sprite, i]) => sprite.position.copy(nodes[i].p).add({ x: 0, y: nodes[i].size + 1.5, z: 0 }));
@@ -189,12 +199,19 @@ export function create3d(el, { onSelect }) {
       world.add(lines);
       return lines;
     };
-    // Direction without arrowheads: each transfer line runs dark at the sender, bright at the receiver.
+    // Each transfer line runs dark at the sender and bright at the receiver, and ends in an arrowhead.
     edgeLines = line(
       edges,
       edges.flatMap(() => [0.16, 0.18, 0.21, 0.72, 0.76, 0.82]),
       new THREE.LineBasicMaterial({ vertexColors: true, transparent: true })
     );
+    arrows = new THREE.InstancedMesh(
+      new THREE.ConeGeometry(0.55, 1.8, 8),
+      new THREE.MeshBasicMaterial({ color: 0xb8c1cc, transparent: true }),
+      Math.max(edges.length, 1)
+    );
+    arrows.count = edges.length;
+    world.add(arrows);
     const c = new THREE.Color();
     linkLines = line(
       guessPairs,
@@ -236,7 +253,7 @@ export function create3d(el, { onSelect }) {
     clear(pathGroup);
     const ids = path.map((a) => index.get(a)).filter((i) => i !== undefined);
     faded = ids.length > 1 ? new Set(ids) : null;
-    for (const lines of [edgeLines, linkLines]) lines.material.opacity = faded ? 0.12 : 1;
+    for (const lines of [edgeLines, linkLines, arrows]) lines.material.opacity = faded ? 0.12 : 1;
     for (const [sprite, i, j] of linkLabels) sprite.visible = !faded || (faded.has(i) && faded.has(j));
     for (const [sprite, i] of nodeLabels) sprite.visible = !faded || faded.has(i);
     if (faded) {

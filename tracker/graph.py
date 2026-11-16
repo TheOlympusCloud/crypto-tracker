@@ -59,6 +59,18 @@ def build(db, spam=False):
     return {"nodes": list(nodes.values()), "edges": edges, "links": links}
 
 
+def _labels(db):
+    # Only addresses that occur in the graph: the label table holds half a million rows.
+    return {
+        r["address"]: r
+        for r in db.execute(
+            "SELECT * FROM label WHERE address IN "
+            "(SELECT src FROM transfer UNION SELECT dst FROM transfer "
+            "UNION SELECT a FROM link UNION SELECT b FROM link)"
+        )
+    }
+
+
 def _entity(name):
     return re.sub(r"[\s:#]+\d+$", "", name)  # "Binance 14" -> "Binance"
 
@@ -84,7 +96,7 @@ def trace(db, max_hops=4):
         connect(k["a"], k["b"], k["confidence"], k["kind"])
 
     mine = {r["address"] for r in db.execute("SELECT address FROM node WHERE mine")}
-    labels = {r["address"]: r for r in db.execute("SELECT * FROM label")}
+    labels = _labels(db)
     blocked = {a for a, r in labels.items() if r["category"] in SERVICE}
     blocked |= {r["address"] for r in db.execute("SELECT address FROM node WHERE hub AND NOT mine")}
 
@@ -135,7 +147,7 @@ def verdicts(db, max_hops=4):
     of my own wallets (public A - private B - private C exposes C), plus what the answer
     rests on, so that "nothing found" is never read as "safe"."""
     mine = {r["address"]: r for r in db.execute("SELECT * FROM node WHERE mine")}
-    labels = {r["address"]: r for r in db.execute("SELECT * FROM label")}
+    labels = _labels(db)
     synced = {r["address"] for r in db.execute("SELECT address FROM node WHERE synced_at")}
     direct, shared = defaultdict(dict), defaultdict(list)
     for p in trace(db, max_hops):
@@ -222,7 +234,7 @@ def origins(db, max_hops=4):
         inbound[(r["dst"], r["chain"], r["token"])][r["src"]] = r["amount"]
         symbols[(r["chain"], r["token"])] = r["asset"]
     nodes = {r["address"]: r for r in db.execute("SELECT * FROM node")}
-    labels = {r["address"]: r for r in db.execute("SELECT * FROM label")}
+    labels = _labels(db)
 
     def kind(address, hops, chain, token):
         """Why following stops at `address`, or None to keep going upstream."""
@@ -241,23 +253,27 @@ def origins(db, max_hops=4):
             return "unknown:no earlier transfer of this asset"
         return None
 
-    def upstream(address, chain, token, hops, seen):
+    memo = {}
+
+    def upstream(address, chain, token, hops):
         """terminal address -> (share of the money, kind, path to it)."""
+        key = (address, chain, token, hops)
+        if key in memo:  # without this the walk repeats shared ancestors exponentially
+            return memo[key]
         srcs = inbound[(address, chain, token)]
         total = sum(srcs.values())
-        out = {}
+        out = memo[key] = {}
 
         def add(terminal, share, why, path):
             old = out.get(terminal)
             out[terminal] = (share + old[0], old[1], old[2]) if old else (share, why, path)
 
         for src, amount in srcs.items():
-            why = "unknown:loop" if src in seen else kind(src, hops, chain, token)
+            why = kind(src, hops, chain, token)
             if why:
                 add(src, amount / total, why, (src,))
-            else:
-                found = upstream(src, chain, token, hops + 1, seen | {src})
-                for terminal, (share, why, path) in found.items():
+            else:  # money going round in a circle ends at the hop limit
+                for terminal, (share, why, path) in upstream(src, chain, token, hops + 1).items():
                     add(terminal, amount / total * share, why, (src, *path))
         return out
 
@@ -272,12 +288,13 @@ def origins(db, max_hops=4):
                     "name": (nodes[terminal]["name"] if terminal in nodes else "")
                     or (labels[terminal]["name"] if terminal in labels else ""),
                     "kind": why.partition(":")[0],
+                    "public": bool(terminal in nodes and nodes[terminal]["public"]),
                     "reason": why.partition(":")[2],
                     "share": round(share, 4),
                     "amount": share * received,
                     "path": [w, *path],
                 }
-                for terminal, (share, why, path) in upstream(w, chain, token, 1, {w}).items()
+                for terminal, (share, why, path) in upstream(w, chain, token, 1).items()
             ]
             assets.append(
                 {

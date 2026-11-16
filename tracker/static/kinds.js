@@ -12,8 +12,9 @@ export const KINDS = {
   other: ["#b1bac4", "round-tag", "Labelled"],
   external: ["#6e7681", "ellipse", "Unknown address"],
 };
-KINDS.own = KINDS.mine;
 KINDS.unknown = KINDS.external;
+// A funds source: one of my wallets counts as public or private, like everywhere else.
+export const sourceKind = (s) => (s.kind === "own" ? (s.public ? "public" : "mine") : s.kind);
 export const LINKS = { "common-input": "#e3b341", change: "#39c5cf", bridge: "#58a6ff" };
 
 export const kindOf = (n) => (n.mine ? (n.public ? "public" : "mine") : n.category || "external");

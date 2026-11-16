@@ -195,8 +195,32 @@ def test_origins_follow_funds_upstream_pro_rata(db):
         BINANCE: ("cex", "", 0.375, [A, D, BINANCE]),
         C: ("unknown", "not expanded", 0.125, [A, D, C]),
     }
+    assert [s["public"] for s in eth["sources"]] == [False, False, False]
     (eth,) = graph.origins(db, max_hops=1)[A]
     assert {s["address"]: s["reason"] for s in eth["sources"]} == {B: "", D: "hop limit"}
+
+    db.execute("UPDATE node SET public = 1 WHERE address = ?", (B,))  # funds from a public wallet
+    (eth,) = graph.origins(db)[A]
+    assert [(s["kind"], s["public"]) for s in eth["sources"] if s["address"] == B] == [
+        ("own", True)
+    ]
+
+
+def test_origins_stay_fast_on_a_dense_graph_with_cycles(db):
+    import time
+
+    mine(db, A)
+    crowd = [f"0x{i:040x}" for i in range(100, 140)]
+    db.executemany("INSERT INTO node(address, synced_at) VALUES (?, 1)", [(a,) for a in crowd])
+    transfer(db, "ethereum", "in", crowd[0], A, 1)
+    for i, dst in enumerate(crowd):  # everyone is funded by the next 15, in a ring
+        for k in range(1, 16):
+            transfer(db, "ethereum", f"{i}-{k}", crowd[(i + k) % 40], dst, k)
+    start = time.perf_counter()
+    (eth,) = graph.origins(db, max_hops=6)[A]
+    assert time.perf_counter() - start < 2  # took 75 s before the walk was memoised
+    assert 0.5 < sum(s["share"] for s in eth["sources"]) <= 1.0001  # the 12 largest sources
+    assert {s["reason"] for s in eth["sources"]} == {"hop limit"}
 
 
 def test_trace_prefers_strong_path_within_hop_limit(db):
