@@ -898,3 +898,120 @@ def test_a_token_that_only_borrows_a_name_is_not_added_to_the_real_asset(db):
         ("AVAX", True, 2.0, 20.0),
         ("AVAX", False, 5.0, None),
     ]
+
+
+def test_swaps_tie_both_ends_and_label_the_protocol_vaults(db, monkeypatch):
+    import httpx
+
+    from tracker import swaps
+
+    monkeypatch.setattr(chains, "DELAY", 0)
+    monkeypatch.setattr(chains.time, "sleep", lambda s: None)
+    vault_in, vault_out = "0x" + "5" * 40, "bc1q8c6fshw2dlwun7ekn9qwf37cu2rn755upcp6el"
+    mine(db, A, public=1)
+    mine(db, BIP84[0])
+    transfer(db, "ethereum", "0xd48a", A, vault_in, 1920, asset="USDT", token=C)
+    transfer(db, "bitcoin", "736cd5", vault_out, BIP84[0], 0.00028231, asset="BTC")
+    db.commit()
+    action = {
+        "type": "swap",
+        "status": "success",
+        "in": [
+            {
+                "address": A,
+                "txID": "D48A",
+                "coins": [{"amount": "192000000000", "asset": "ETH.USDT-0XDAC1"}],
+            }
+        ],
+        "out": [
+            {
+                "address": "maya1dl7un46w7l7f3ewrnrm6nq58nerjtp0dr2n7aa",
+                "affiliate": True,
+                "coins": [],
+                "txID": "",
+            },
+            {
+                "address": BIP84[0],
+                "txID": "736CD5",
+                "coins": [{"amount": "28231", "asset": "BTC.BTC"}],
+            },
+        ],
+    }
+    asked = []
+
+    def handler(request):
+        asked.append(request.url.params["address"])
+        if request.url.host == "gateway.liquify.com":
+            return httpx.Response(503)
+        hit = request.url.params["address"] == A
+        return httpx.Response(
+            200, json={"actions": [action, {"type": "swap", "status": "pending"}] if hit else []}
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        assert swaps.sync(db, client) == ["THORChain: HTTP 503"]  # one source down, the other used
+    (link,) = db.execute("SELECT * FROM link").fetchall()
+    assert (link["kind"], link["confidence"]) == ("swap", 0.95) and {link["a"], link["b"]} == {
+        A,
+        BIP84[0],
+    }
+    assert link["evidence"] == "Maya Protocol: 1920 ETH.USDT > 0.00028231 BTC.BTC (D48A)"
+    labelled = {r["address"]: (r["name"], r["category"]) for r in db.execute("SELECT * FROM label")}
+    assert labelled == {vault_in: ("Maya Protocol", "dex"), vault_out: ("Maya Protocol", "dex")}
+    (verdict,) = [v for v in graph.verdicts(db) if v["address"] == BIP84[0]]
+    assert verdict["links"][0]["kinds"] == ["swap"] and verdict["links"][0]["public"]
+    (btc,) = graph.origins(db)[BIP84[0]]
+    assert [(s["name"], s["kind"]) for s in btc["sources"]] == [("Maya Protocol", "dex")]
+
+    monkeypatch.setenv("CT_SWAPS", "off")
+    before = len(asked)
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        assert swaps.sync(db, client) == [] and len(asked) == before
+
+
+def test_explorer_links_come_from_the_api(db):
+    by_chain = {c["chain"]: c for c in chains.coverage()}
+    assert set(by_chain) == {*chains.UTXO, *chains.EVM, "tron", "solana"}
+    assert all(
+        "{}" in c["explorer_address"] and "{}" in c["explorer_tx"] for c in by_chain.values()
+    )
+    mine(db, A)
+    mine(db, TRX)
+    nodes = {n["address"]: n for n in graph.build(db)["nodes"]}
+    assert (nodes[A]["chain"], nodes[A]["explorer_address"]) == (
+        "evm",
+        "https://etherscan.io/address/{}",
+    )
+    assert (nodes[TRX]["chain"], nodes[TRX]["explorer_tx"]) == (
+        "tron",
+        "https://tronscan.org/#/transaction/{}",
+    )
+
+
+def test_dogecoin_quota_is_respected_across_addresses_and_runs(db, monkeypatch):
+    import httpx
+
+    from tracker import sync
+
+    monkeypatch.setattr(chains, "DELAY", 0)
+    monkeypatch.setattr(chains, "COOLDOWN", {})
+    slept, calls = [], []
+    monkeypatch.setattr(chains.time, "sleep", slept.append)
+    second = "DSP4tRb1gSftwfTXu9t2CKbeymGMnPVY3T"
+
+    def handler(request):
+        calls.append(request.url.path)
+        if len(calls) > 1:
+            return httpx.Response(429)
+        return httpx.Response(200, json={"final_balance": 100_000_000, "n_tx": 0, "txs": []})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        sync.sync_address(db, client, DOGE)  # within quota
+        sync.sync_address(db, client, second)  # quota spent: no half-minute of retries
+        sync.sync_address(db, client, second)  # cooling down: not even asked
+        sync.sync_address(db, client, DOGE)  # read a moment ago: not asked either
+    assert len(calls) == 2 and [s for s in slept if s] == []
+    rows = {r["address"]: r for r in db.execute("SELECT * FROM node")}
+    assert rows[DOGE]["synced_at"] and rows[DOGE]["error"] is None
+    assert "follows on a later sync" in rows[second]["error"] and rows[second]["synced_at"] is None
+    assert db.execute("SELECT amount FROM balance WHERE address = ?", (DOGE,)).fetchone()[0] == 1.0

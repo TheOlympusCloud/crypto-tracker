@@ -92,6 +92,39 @@ def evm_chains():
         return {**DEFAULT_EVM, **json.load(f)}
 
 
+# chain -> (address page, transaction page); {} is the address or transaction id.
+EXPLORER = {
+    "bitcoin": ("https://mempool.space/address/{}", "https://mempool.space/tx/{}"),
+    "litecoin": ("https://litecoinspace.org/address/{}", "https://litecoinspace.org/tx/{}"),
+    "bitcoincash": (
+        "https://blockchair.com/bitcoin-cash/address/{}",
+        "https://blockchair.com/bitcoin-cash/transaction/{}",
+    ),
+    "dogecoin": (
+        "https://blockchair.com/dogecoin/address/{}",
+        "https://blockchair.com/dogecoin/transaction/{}",
+    ),
+    "ethereum": ("https://etherscan.io/address/{}", "https://etherscan.io/tx/{}"),
+    "base": ("https://basescan.org/address/{}", "https://basescan.org/tx/{}"),
+    "arbitrum": ("https://arbiscan.io/address/{}", "https://arbiscan.io/tx/{}"),
+    "optimism": (
+        "https://optimistic.etherscan.io/address/{}",
+        "https://optimistic.etherscan.io/tx/{}",
+    ),
+    "polygon": ("https://polygonscan.com/address/{}", "https://polygonscan.com/tx/{}"),
+    "bsc": ("https://bscscan.com/address/{}", "https://bscscan.com/tx/{}"),
+    "avalanche": ("https://snowtrace.io/address/{}", "https://snowtrace.io/tx/{}"),
+    "tron": ("https://tronscan.org/#/address/{}", "https://tronscan.org/#/transaction/{}"),
+    "solana": ("https://solscan.io/account/{}", "https://solscan.io/tx/{}"),
+}
+
+
+def explorer(chain):
+    """Link templates for a chain; an EVM address without a chain opens on Ethereum's."""
+    address, tx = EXPLORER.get("ethereum" if chain == "evm" else chain, ("", ""))
+    return {"explorer_address": address, "explorer_tx": tx}
+
+
 def coverage():
     """What is read on each chain, for the UI and for honest verdicts."""
     out = [
@@ -111,7 +144,7 @@ def coverage():
         )
     out.append({"chain": "tron", "asset": "TRX", "status": "ok", "note": SHALLOW["tron"]})
     out.append({"chain": "solana", "asset": "SOL", "status": "ok", "note": SHALLOW["solana"]})
-    return out
+    return [{**c, **explorer(c["chain"])} for c in out]
 
 
 def notes(chain):
@@ -127,16 +160,23 @@ def notes(chain):
     return [note] if note else []
 
 
-def get(client, url, params=None):
-    for attempt in range(4):
+class RateLimited(RuntimeError):
+    pass
+
+
+def get(client, url, params=None, patient=True):
+    """GET with a pause before, and a few retries on 429/5xx. `patient=False` is for APIs
+    with an hourly quota, where waiting half a minute cannot help."""
+    attempts = 4 if patient else 1
+    for attempt in range(attempts):
         time.sleep(DELAY)
         r = client.get(url, params=params)
-        if r.status_code != 429 and r.status_code < 500:
+        if (r.status_code != 429 and r.status_code < 500) or attempt == attempts - 1:
             break
         wait = r.headers.get("retry-after", "")
         time.sleep(min(int(wait), 30) if wait.isdigit() else 2 ** (attempt + 1))
     if r.status_code == 429:
-        raise RuntimeError("rate limited by the API (HTTP 429): raise CT_DELAY or add an API key")
+        raise RateLimited("rate limited by the API (HTTP 429): raise CT_DELAY or add an API key")
     r.raise_for_status()
     return r
 
@@ -189,8 +229,20 @@ def _coin(address, value, kind):
     return {"scriptpubkey_address": address, "value": value or 0, "scriptpubkey_type": kind}
 
 
+COOLDOWN = {}  # indexer URL -> time until which its quota is spent
+
+
 def _blockcypher(client, url, address):
-    data = get(client, f"{url}/addrs/{address}/full", {"limit": 50}).json()
+    # About 100 lookups an hour without a key. Once the quota is spent, stop asking for an
+    # hour: what was fetched stays, and the remaining addresses follow on a later sync.
+    waiting = "the indexer's hourly limit is used up; the rest follows on a later sync"
+    if COOLDOWN.get(url, 0) > time.time():
+        raise RateLimited(waiting)
+    try:
+        data = get(client, f"{url}/addrs/{address}/full", {"limit": 50}, patient=False).json()
+    except RateLimited:
+        COOLDOWN[url] = time.time() + 3600
+        raise RateLimited(waiting) from None
     txs = [
         {
             "txid": t["hash"],

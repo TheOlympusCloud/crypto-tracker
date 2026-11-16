@@ -30,7 +30,7 @@ One web app, installable on a phone as a PWA.
 |---|---|---|
 | Bitcoin, Litecoin | yes | Full: history, common-input and change heuristics, counterparties expanded. HD wallets on Bitcoin. |
 | Bitcoin Cash | yes | Same heuristics; the 100 newest transactions per address. |
-| Dogecoin | yes | Same heuristics; the 50 newest transactions, and the free indexer allows about 100 lookups an hour. |
+| Dogecoin | yes | Same heuristics; the 50 newest transactions. The free indexer allows about 100 lookups an hour: when that is used up the sync moves on, and the remaining addresses are read on a later sync. |
 | Ethereum, Avalanche C | yes | Native coin and ERC-20 transfers, counterparties expanded. |
 | Base, Arbitrum, Optimism, Polygon, BNB Chain | **needs `CT_ETHERSCAN_KEY`** | Same as Ethereum once the key is set. One free Etherscan key covers them. |
 | Tron | yes | TRX and TRC-20 transfers, the 200 newest; counterparties not expanded automatically. |
@@ -68,6 +68,7 @@ docker run -p 8000:8000 -v tracker-data:/data -e CT_PASSWORD=change-me crypto-tr
 | `CT_LITECOIN`, `CT_BITCOINCASH`, `CT_DOGECOIN`, `CT_TRON`, `CT_SOLANA` | public APIs | Base URL of the indexer for that chain (Esplora, Haskoin, BlockCypher, TronGrid, Solana RPC). |
 | `CT_DELAY` | `0.25` | Seconds between API calls. |
 | `CT_SYNC_EVERY` | unset | Sync all wallets every this many minutes while the server runs. |
+| `CT_SWAPS` | `on` | `off` never asks THORChain or Maya about your addresses. `CT_THORCHAIN` and `CT_MAYA` set their Midgard URLs. |
 | `CT_CURRENCY` | `USD` | Currency of the values, e.g. `EUR` (ECB reference rate). |
 | `CT_PRICES` | `on` | `off` never asks for prices. |
 | `CT_BTC_PAGES`, `CT_EVM_ROWS` | `8`, `1000` | History loaded per address (pages of 25 / rows per list). |
@@ -86,6 +87,9 @@ HD wallets: the xpub or descriptor is stored in the database and never sent anyw
 and private keys are refused. But each derived address is looked up at the indexer, which
 therefore learns that they belong together. With a public indexer, an HD wallet is only
 as private as that indexer is discreet.
+
+Swaps: each of your addresses is also looked up at the THORChain and Maya Midgard APIs.
+`CT_SWAPS=off` turns that off.
 
 Prices: only asset identifiers (coin names, token contracts) go to the price API, never
 addresses or amounts.
@@ -118,6 +122,7 @@ in `tracker/heuristics.py` and `tracker/graph.py`.
 | change | 0.5 to 0.75 | In a 2-output payment, the output that matches the input script type (0.6), or is the non-round one (0.5); 0.75 when both rules agree, nothing when they disagree. |
 | bridge | 0.5 to 0.95 | Money leaves one of your wallets on chain X and the same asset reaches another of your wallets on chain Y within 6 hours, 0 to 3% smaller. +0.25 if a labelled bridge is involved, +0.15 if within 0.5%, +0.1 if within 10 minutes; divided by the number of equally plausible matches. |
 | exchange-flow | 0.09 to 0.8 | Money leaves one wallet into an exchange and the same asset, 0 to 2% less, comes out of an exchange into another wallet within 48 hours. Starts at 0.5 (same exchange), 0.3 (two exchanges) or 0.15 (the deposit went to an address that was never expanded); +0.15 within 0.5%, +0.1 within an hour; x0.6 for round amounts; divided by the number of equally plausible matches. |
+| swap | 0.95 | THORChain or Maya Protocol recorded a swap from one address to the other (for example ETH in, BTC out). The record is public and names the destination, so this is close to a fact. |
 
 Several transactions supporting the same guess combine as `1 - (1-c1)(1-c2)...`.
 
@@ -135,8 +140,8 @@ or at the hop limit, and says which.
 
 ## Known limits
 
-- Swaps that change the asset (THORChain, BTC to ETH) are not matched: that needs price
-  data or the swap service's own records.
+- Swaps that change the asset are matched only through THORChain and Maya Protocol,
+  whose records are public. Other swap services and instant exchangers are not.
 - A bridge or exchange flow is only matched when both ends are wallets you declared.
 - Mixers are not correlated by amount: their fixed denominations make it meaningless.
 - HD wallets are Bitcoin only (no Ltub, dgub or EVM account keys yet). A plain xpub is scanned as four address types (legacy,

@@ -51,6 +51,10 @@ def build(db, spam=False):
         x for k in links for x in (k["a"], k["b"])
     }:
         nodes.setdefault(address, {"address": address, "mine": 0, "public": 0, "name": ""})
+    for node in nodes.values():
+        # "evm" for an address that exists on every EVM chain; the edges name the exact one.
+        node["chain"] = database.chain_of(node["address"])
+        node.update(chains.explorer(node["chain"]))
     marks = ",".join("?" * len(nodes))
     for r in db.execute(f"SELECT * FROM label WHERE address IN ({marks})", list(nodes)):
         nodes[r["address"]].update(label=r["name"], category=r["category"])

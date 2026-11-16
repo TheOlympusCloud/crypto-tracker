@@ -5,16 +5,25 @@ import time
 
 import httpx
 
-from . import alerts, chains, hd, heuristics, labels, prices
+from . import alerts, chains, hd, heuristics, labels, prices, swaps
 from . import db as database
 
 EXPAND_PER_LEVEL = 40  # neighbours synced per depth level, most active first
 
-status = {"running": False, "done": 0, "total": 0, "current": "", "error": ""}
+# `notes` are things that did not stop the sync, e.g. a swap API that was down.
+status = {"running": False, "done": 0, "total": 0, "current": "", "error": "", "notes": []}
 _lock = threading.Lock()
 
 
 def sync_address(db, client, address):
+    if database.chain_of(address) == "dogecoin":
+        # The Dogecoin indexer's hourly quota goes to addresses not read in the last hour.
+        fresh = db.execute(
+            "SELECT 1 FROM node WHERE address = ? AND synced_at > ? AND error IS NULL",
+            (address, time.time() - 3600),
+        ).fetchone()
+        if fresh:
+            return
     try:
         data = chains.fetch(client, address)
         error = "; ".join(data.get("errors", []))
@@ -145,6 +154,8 @@ def run(addresses=None, depth=0, import_labels=False):
                     frontier = neighbours(db, [*frontier, *done] if level == 0 else frontier)
                     if not frontier:
                         break
+            status["current"] = "swaps"
+            status["notes"] = swaps.sync(db, client)
             heuristics.match_bridges(db)
             heuristics.match_exchange_flows(db)
             alerts.check(db)
@@ -162,7 +173,7 @@ def start(addresses=None, depth=0, import_labels=False):
     """Run in the background; False when a run is already going."""
     if not _lock.acquire(blocking=False):
         return False
-    status.update(running=True, done=0, total=0, current="", error="")
+    status.update(running=True, done=0, total=0, current="", error="", notes=[])
     threading.Thread(target=run, args=(addresses, depth, import_labels), daemon=True).start()
     return True
 
