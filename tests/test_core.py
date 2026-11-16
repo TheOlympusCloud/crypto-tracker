@@ -161,6 +161,9 @@ def test_trace_finds_exposure_and_refuses_paths_through_services(db):
         "error": None,
         "counterparties": 1,
         "expanded": 0,
+        "notes": [
+            "Not read on base, arbitrum, optimism, polygon, bsc: that needs a free Etherscan API key."
+        ],
     }
 
 
@@ -260,7 +263,7 @@ def test_labels_parse_and_keep_user_labels(db):
     rows += labels.parse_tagpack(
         "label: kraken.com\ncategory: exchange\ncurrency: BTC\n"
         "tags:\n- address: 1Kraken\n- address: 0xABC\n  currency: ETH\n  label: Tornado\n"
-        "  category: mixing_service\n- address: ltc1\n  currency: LTC\n"
+        "  category: mixing_service\n- address: 4xmr\n  currency: XMR\n"
     )
     assert [(r[0], r[2]) for r in rows] == [
         (A, "cex"),
@@ -505,7 +508,7 @@ def test_hd_wallet_is_discovered_grouped_and_treated_as_one_wallet(db, monkeypat
 
     from tracker import prices
 
-    db.execute("INSERT INTO price VALUES ('coingecko:bitcoin', 50000, 1)")
+    db.execute("INSERT INTO price VALUES ('coingecko:bitcoin', 50000, 1, 'BTC', 0.99)")
     db.commit()
     p = prices.portfolio(db)
     (held,) = p["wallets"]
@@ -620,7 +623,8 @@ def test_prices_are_fetched_cached_and_survive_an_outage(db, monkeypatch):
     with httpx.Client(transport=httpx.MockTransport(handler)) as http:
         prices.snapshot(db, http)
         prices.refresh(db, http)  # cached: no second round of calls
-    assert len(calls) == 2 and A not in "".join(calls) and D not in "".join(calls)
+    # Token contracts are asked about (also the unknown one, once); my address never is.
+    assert len(calls) == 2 and A not in "".join(calls) and D in calls[0]
     p = prices.portfolio(db)
     assert (p["currency"], p["total"], p["private"], p["public"]) == ("EUR", 2050.0, 2050.0, 0)
     assert [(a["asset"], a["value"]) for a in p["assets"]] == [("ETH", 2000.0), ("USDC", 50.0)]
@@ -636,3 +640,261 @@ def test_prices_are_fetched_cached_and_survive_an_outage(db, monkeypatch):
     )
     assert client.get("/api/portfolio").json()["total"] == 2050.0
     assert client.get("/api/alerts").json() == [] and client.post("/api/alerts/seen").is_success
+
+
+LTC, DOGE, TRX = (
+    "LaMT348PWRnrqeeWArpwQPbuanpXDZGEUz",
+    "DH5yaieqoZN36fDVciNyRueRGvGLR3mr7L",
+    "TLa2f6VPqDgRE67v1736s7bJ8Ray5wYjU7",
+)
+BCH = "bitcoincash:qpm2qsznhks23z7629mms6s4cwef74vcwvy22gdx6a"
+SOL = "vines1vzrYbzLMRdu58ou5XTby4qAqVRLmqo36NKPTg"
+
+
+def test_addresses_are_recognised_per_chain_and_typos_refused():
+    cases = {
+        "0xD8dA6BF26964aF9D7eEd9e03E53415D37aA96045": (
+            "evm",
+            "0xd8da6bf26964af9d7eed9e03e53415d37aa96045",
+        ),
+        BIP84[0].upper(): ("bitcoin", BIP84[0]),
+        "bc1p8knh0enfv47gmpuf66528zd4jtkgjq4sv5w5l2gqwgk8exu2ynns9g8c9m": ("bitcoin", None),
+        SATOSHI: ("bitcoin", SATOSHI),
+        LTC: ("litecoin", LTC),
+        "ltc1qsph85c96stnph4avsn52ekhvkt3gv72khcfqu9": ("litecoin", None),
+        DOGE: ("dogecoin", DOGE),
+        BCH.removeprefix("bitcoincash:"): ("bitcoincash", BCH),
+        TRX: ("tron", TRX),
+        SOL: ("solana", SOL),
+    }
+    for raw, (chain, canonical) in cases.items():
+        assert database.parse(f" {raw} ") == (chain, canonical or raw)
+    # One wrong character fails the checksum instead of becoming an empty wallet.
+    for typo in (SATOSHI[:-1] + "b", BIP84[0][:-1] + "x", TRX[:-1] + "8", "0x123", "hello", ""):
+        with pytest.raises(ValueError):
+            database.parse(typo)
+
+
+def test_evm_chains_are_built_in_and_say_when_they_need_a_key(monkeypatch):
+    import httpx
+
+    without, with_key = chains.builtin_evm(None), chains.builtin_evm("KEY")
+    assert set(without) == {
+        "ethereum",
+        "base",
+        "arbitrum",
+        "optimism",
+        "polygon",
+        "bsc",
+        "avalanche",
+    }
+    assert [c for c, cfg in without.items() if not cfg.get("needs_key")] == [
+        "ethereum",
+        "avalanche",
+    ]
+    assert not any(cfg.get("needs_key") for cfg in with_key.values())
+    assert with_key["base"]["params"] == {"chainid": "8453"} and with_key["base"]["apikey"] == "KEY"
+    assert (with_key["polygon"]["symbol"], with_key["bsc"]["llama"]) == ("POL", "bsc")
+
+    monkeypatch.setattr(chains, "DELAY", 0)
+    monkeypatch.setattr(chains, "DEFAULT_EVM", without)
+    asked = []
+
+    def handler(request):
+        asked.append(str(request.url))
+        return httpx.Response(200, json={"status": "1", "result": []})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        assert chains.fetch(client, A)["errors"] == []  # a missing key is not an error per address
+    assert {u.split("/evm/")[1].split("/")[0] for u in asked} == {"1", "43114"}
+    status = {c["chain"]: c["status"] for c in chains.coverage()}
+    assert status["base"] == "needs_key" and status["ethereum"] == status["solana"] == "ok"
+    assert (
+        chains.notes("evm")
+        and chains.notes("bitcoin") == []
+        and "25 newest" in chains.notes("solana")[0]
+    )
+
+
+def test_dogecoin_and_bitcoin_cash_reuse_the_utxo_heuristics(monkeypatch):
+    import httpx
+
+    monkeypatch.setattr(chains, "DELAY", 0)
+    other, shop = "DSP4tRb1gSftwfTXu9t2CKbeymGMnPVY3T", "DFPaGaNkRfAAL3X2EHRbsV58gFT4K6ZPzs"
+    doge = {
+        "final_balance": 150_000_000,
+        "n_tx": 7,
+        "txs": [
+            {
+                "hash": "d1",
+                "confirmed": "2026-10-20T15:35:34Z",
+                "inputs": [
+                    {
+                        "addresses": [DOGE],
+                        "output_value": 300_000_000,
+                        "script_type": "pay-to-pubkey-hash",
+                    },
+                    {
+                        "addresses": [other],
+                        "output_value": 100_000_000,
+                        "script_type": "pay-to-pubkey-hash",
+                    },
+                ],
+                "outputs": [
+                    {"addresses": [shop], "value": 390_000_000, "script_type": "pay-to-pubkey-hash"}
+                ],
+            }
+        ],
+    }
+    peer = "bitcoincash:qplwfa57v5y4wya6750u25l29fmkm3v94g6zwperhv"
+    bch = [
+        {
+            "txid": "b1",
+            "time": 1790698978,
+            "inputs": [{"address": peer, "value": 107313874, "pkscript": "76a914aa88ac"}],
+            "outputs": [{"address": BCH, "value": 36900, "pkscript": "76a914bb88ac"}],
+        }
+    ]
+
+    def handler(request):
+        path = request.url.path
+        if "blockcypher" in request.url.host:
+            return httpx.Response(200, json=doge)
+        assert "bitcoincash:" not in path
+        return httpx.Response(
+            200, json={"confirmed": 36900, "txs": 1} if path.endswith("/balance") else bch
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        d, b = chains.fetch(client, DOGE), chains.fetch(client, BCH)
+    assert d["transfers"] == [("dogecoin", "d1", DOGE, shop, "DOGE", "", 2.925, 1792510534)]
+    assert d["links"] == [(*sorted((DOGE, other)), "common-input", 0.9, "d1")]
+    assert d["balances"] == [("dogecoin", "DOGE", "", 1.5)] and d["hub"]
+    assert b["transfers"] == [("bitcoincash", "b1", peer, BCH, "BCH", "", 0.000369, 1790698978)]
+    assert b["balances"] == [("bitcoincash", "BCH", "", 0.000369)] and not b["hub"]
+
+
+def test_tron_transfers_and_balances(monkeypatch):
+    import httpx
+    from embit import base58
+
+    monkeypatch.setattr(chains, "DELAY", 0)
+    usdt, peer = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t", "TCCwQTDPodnpn62a7xeGtEjpujBqHxkL8d"
+    as_hex = lambda a: base58.decode_check(a).hex()
+    answers = {
+        "": {"data": [{"balance": 5_000_000, "trc20": [{usdt: "8500000"}, {"TUnknown": "9"}]}]},
+        "/transactions": {
+            "data": [
+                {
+                    "txID": "n1",
+                    "block_timestamp": 1794686802000,
+                    "ret": [{"contractRet": "SUCCESS"}],
+                    "raw_data": {
+                        "contract": [
+                            {
+                                "type": "TransferContract",
+                                "parameter": {
+                                    "value": {
+                                        "owner_address": as_hex(peer),
+                                        "to_address": as_hex(TRX),
+                                        "amount": 2_500_000,
+                                    }
+                                },
+                            }
+                        ]
+                    },
+                },
+                {
+                    "txID": "n2",
+                    "ret": [{"contractRet": "SUCCESS"}],
+                    "raw_data": {"contract": [{"type": "TriggerSmartContract"}]},
+                },
+            ]
+        },
+        "/transactions/trc20": {
+            "data": [
+                {
+                    "transaction_id": "t1",
+                    "token_info": {"symbol": "USDT", "address": usdt, "decimals": 6},
+                    "block_timestamp": 1794686802000,
+                    "from": peer,
+                    "to": TRX,
+                    "type": "Transfer",
+                    "value": "8500000",
+                }
+            ]
+        },
+    }
+
+    def handler(request):
+        return httpx.Response(200, json=answers[request.url.path.split(TRX)[1]])
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        t = chains.fetch(client, TRX)
+    assert t["transfers"] == [
+        ("tron", "n1", peer, TRX, "TRX", "", 2.5, 1794686802),
+        ("tron", "t1", peer, TRX, "USDT", usdt, 8.5, 1794686802),
+    ]
+    assert t["balances"] == [("tron", "TRX", "", 5.0), ("tron", "USDT", usdt, 8.5)]
+
+
+def test_solana_transfers_come_from_balance_changes():
+    payer, mint = (
+        "775HG7Z2skCZugQ6LERhgbf82TPb2eGh4ucwVkjJm4GB",
+        "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    )
+    amount = lambda n: {"amount": str(n), "decimals": 6}
+    tx = {
+        "blockTime": 1794188391,
+        "transaction": {
+            "message": {"accountKeys": [{"pubkey": payer}, {"pubkey": SOL}, {"pubkey": "ata1"}]}
+        },
+        "meta": {
+            "fee": 5000,
+            "preBalances": [2_000_005_000, 0, 7],
+            "postBalances": [1_000_000_000, 1_000_000_000, 7],  # 1 SOL moved, the fee went nowhere
+            "preTokenBalances": [
+                {
+                    "accountIndex": 2,
+                    "mint": mint,
+                    "owner": payer,
+                    "uiTokenAmount": amount(150_000_000),
+                }
+            ],
+            "postTokenBalances": [
+                {
+                    "accountIndex": 2,
+                    "mint": mint,
+                    "owner": payer,
+                    "uiTokenAmount": amount(37_200_184),
+                },
+                {
+                    "accountIndex": 1,
+                    "mint": mint,
+                    "owner": SOL,
+                    "uiTokenAmount": amount(112_799_816),
+                },
+            ],
+        },
+    }
+    assert chains.solana_transfers(SOL, "sig", tx) == [
+        ("solana", "sig", payer, SOL, "SOL", "", 1.0, 1794188391),
+        ("solana", "sig", payer, SOL, "EPjF...", mint, 112.799816, 1794188391),
+    ]
+    assert chains.solana_transfers("11111111111111111111111111111111", "sig", tx) == []
+
+
+def test_a_token_that_only_borrows_a_name_is_not_added_to_the_real_asset(db):
+    from tracker import prices
+
+    mine(db, A)
+    transfer(db, "avalanche", "1", A, B, 1, asset="AVAX", token=C)  # my wallet sent the look-alike
+    db.executemany(
+        "INSERT INTO balance VALUES (?, 'avalanche', 'AVAX', ?, ?)", [(A, "", 2.0), (A, C, 5.0)]
+    )
+    db.execute("INSERT INTO price VALUES ('coingecko:avalanche-2', 10, 1, 'AVAX', 0.99)")
+    assets = prices.portfolio(db)["assets"]
+    assert [(a["asset"], a["verified"], a["amount"], a["value"]) for a in assets] == [
+        ("AVAX", True, 2.0, 20.0),
+        ("AVAX", False, 5.0, None),
+    ]

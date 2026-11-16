@@ -6,6 +6,8 @@ import re
 from collections import defaultdict
 from itertools import combinations
 
+from . import chains
+from . import db as database
 from .heuristics import SERVICE, TRUSTED
 
 HOP_DECAY = 0.7  # each stranger a trace passes through weakens it by this factor
@@ -243,6 +245,10 @@ def verdicts(db, max_hops=4):
                     "error": "; ".join(r["error"] for r in rows if r["error"]) or None,
                     "counterparties": len(strangers),
                     "expanded": len(strangers & synced),
+                    # Where this wallet's chains are read less thoroughly than Bitcoin or EVM.
+                    "notes": sorted(
+                        {n for a in members[w] for n in chains.notes(database.chain_of(a))}
+                    ),
                 },
             }
         )

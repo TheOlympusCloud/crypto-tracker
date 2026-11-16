@@ -1,36 +1,130 @@
 """Chain adapters: fetch one address from a public or self-hosted indexer and normalise it
-to transfer rows (chain, txid, src, dst, asset, token, amount, ts)."""
+to transfer rows (chain, txid, src, dst, asset, token, amount, ts).
+
+Bitcoin, Litecoin, Bitcoin Cash and Dogecoin share the UTXO code and its heuristics; the
+EVM chains share one Etherscan-style adapter; Tron and Solana are read more shallowly.
+"""
 
 import json
 import os
 import time
 from collections import Counter
+from datetime import datetime
 
 import httpx
+from embit import base58
 
+from . import db as database
 from .heuristics import btc_inputs, btc_links
 
 ESPLORA = os.environ.get("CT_ESPLORA", "https://blockstream.info/api").rstrip("/")
-# Etherscan-compatible APIs: Routescan, Blockscout, Etherscan v2, or your own Blockscout.
-# Only Ethereum has a usable endpoint without a key; see chains.example.json for more chains.
-DEFAULT_EVM = {
-    "ethereum": {
-        "url": "https://api.routescan.io/v2/network/mainnet/evm/1/etherscan/api",
-        "symbol": "ETH",
-    },
+# chain -> asset, API flavour, base URL, and what a reader of a verdict must know about it.
+UTXO = {
+    "bitcoin": ("BTC", "esplora", ESPLORA, ""),
+    "litecoin": ("LTC", "esplora", os.environ.get("CT_LITECOIN", "https://litecoinspace.org/api"), ""),
+    "bitcoincash": (
+        "BCH", "haskoin", os.environ.get("CT_BITCOINCASH", "https://api.haskoin.com/bch"),
+        "Bitcoin Cash: only the 100 newest transactions of an address are read.",
+    ),
+    "dogecoin": (
+        "DOGE", "blockcypher",
+        os.environ.get("CT_DOGECOIN", "https://api.blockcypher.com/v1/doge/main"),
+        "Dogecoin: only the 50 newest transactions are read (about 100 lookups an hour).",
+    ),
+}  # fmt: skip
+TRON = os.environ.get("CT_TRON", "https://api.trongrid.io").rstrip("/")
+SOLANA = os.environ.get("CT_SOLANA", "https://api.mainnet-beta.solana.com")
+SOLANA_TXS = int(os.environ.get("CT_SOLANA_TXS", "25"))
+SHALLOW = {
+    "tron": "Tron: the 200 newest transfers of an address are read; counterparties are not "
+    "expanded automatically.",
+    "solana": f"Solana: only the {SOLANA_TXS} newest transactions are read, transfers are net "
+    "balance changes per transaction, and counterparties are not expanded automatically.",
 }
+DEEP = {"evm", "bitcoin", "litecoin", "bitcoincash"}  # chains whose counterparties get expanded
+
+# EVM chains built in: chain id, native coin, DefiLlama's name for the chain.
+EVM = {
+    "ethereum": (1, "ETH", "ethereum"),
+    "base": (8453, "ETH", "base"),
+    "arbitrum": (42161, "ETH", "arbitrum"),
+    "optimism": (10, "ETH", "optimism"),
+    "polygon": (137, "POL", "polygon"),
+    "bsc": (56, "BNB", "bsc"),
+    "avalanche": (43114, "AVAX", "avax"),
+}
+KEYLESS = {"ethereum", "avalanche"}  # served by Routescan without a key
+
+
+def builtin_evm(key):
+    """Etherscan-style config per built-in chain. Without an Etherscan key only the keyless
+    chains can be read; the others are marked instead of failing on every sync."""
+    out = {}
+    for chain, (chain_id, symbol, llama) in EVM.items():
+        cfg = {"symbol": symbol, "llama": llama}
+        if chain in KEYLESS:
+            cfg["url"] = f"https://api.routescan.io/v2/network/mainnet/evm/{chain_id}/etherscan/api"
+        elif key:
+            cfg |= {
+                "url": "https://api.etherscan.io/v2/api",
+                "params": {"chainid": str(chain_id)},
+                "apikey": key,
+            }
+        else:
+            cfg["needs_key"] = True
+        out[chain] = cfg
+    return out
+
+
+DEFAULT_EVM = builtin_evm(os.environ.get("CT_ETHERSCAN_KEY"))
 BTC_PAGES = int(os.environ.get("CT_BTC_PAGES", "8"))  # 25 transactions per page
 EVM_ROWS = int(os.environ.get("CT_EVM_ROWS", "1000"))  # newest rows per list call
-FANOUT = 50  # counterparties kept per Bitcoin transaction
+FANOUT = 50  # counterparties kept per UTXO transaction
 DELAY = float(os.environ.get("CT_DELAY", "0.25"))  # pause between calls, for free APIs
 
 
 def evm_chains():
+    """Built-in chains, plus or overridden by the CT_CHAINS file (self-hosted indexers)."""
     path = os.environ.get("CT_CHAINS")
     if not path:
         return DEFAULT_EVM
     with open(path) as f:
-        return json.load(f)
+        return {**DEFAULT_EVM, **json.load(f)}
+
+
+def coverage():
+    """What is read on each chain, for the UI and for honest verdicts."""
+    out = [
+        {"chain": chain, "asset": asset, "status": "ok", "note": note}
+        for chain, (asset, _, _, note) in UTXO.items()
+    ]
+    for chain, cfg in evm_chains().items():
+        needs = cfg.get("needs_key")
+        note = "Needs a free Etherscan API key in CT_ETHERSCAN_KEY." if needs else ""
+        out.append(
+            {
+                "chain": chain,
+                "asset": cfg["symbol"],
+                "status": "needs_key" if needs else "ok",
+                "note": note,
+            }
+        )
+    out.append({"chain": "tron", "asset": "TRX", "status": "ok", "note": SHALLOW["tron"]})
+    out.append({"chain": "solana", "asset": "SOL", "status": "ok", "note": SHALLOW["solana"]})
+    return out
+
+
+def notes(chain):
+    """Caveats for a wallet with an address on `chain` (as returned by db.chain_of)."""
+    if chain == "evm":
+        missing = [c for c, cfg in evm_chains().items() if cfg.get("needs_key")]
+        return (
+            [f"Not read on {', '.join(missing)}: that needs a free Etherscan API key."]
+            if missing
+            else []
+        )
+    note = UTXO[chain][3] if chain in UTXO else SHALLOW.get(chain, "")
+    return [note] if note else []
 
 
 def get(client, url, params=None):
@@ -56,7 +150,7 @@ def describe(error):
     return str(error).splitlines()[0][:160] if str(error) else type(error).__name__
 
 
-def btc_transfers(address, tx):
+def utxo_transfers(address, tx, chain="bitcoin", asset="BTC", unit=1e8, token=""):
     ins = btc_inputs(tx)
     total = sum(ins.values()) or 1
     ts = tx["status"].get("block_time") or 0
@@ -67,30 +161,246 @@ def btc_transfers(address, tx):
     # An address graph of a UTXO transaction: each input funds each output pro rata.
     if address in ins:
         flows = [(address, a, v * ins[address] / total) for a, v in outs.items() if a not in ins]
-    else:
+    elif address in outs:
         flows = [(a, address, outs[address] * v / total) for a, v in ins.items()]
+    else:
+        return []
     flows = sorted(flows, key=lambda f: -f[2])[:FANOUT]
-    return [("bitcoin", tx["txid"], s, d, "BTC", "", v / 1e8, ts) for s, d, v in flows]
+    return [(chain, tx["txid"], s, d, asset, token, v / unit, ts) for s, d, v in flows if v > 0]
 
 
-def fetch_btc(client, address):
-    stats = get(client, f"{ESPLORA}/address/{address}").json()["chain_stats"]
+btc_transfers = utxo_transfers
+
+
+def _esplora(client, url, address):
+    stats = get(client, f"{url}/address/{address}").json()["chain_stats"]
     txs, last = [], None
     for _ in range(BTC_PAGES):
-        page = get(client, f"{ESPLORA}/address/{address}/txs/chain" + (f"/{last}" if last else ""))
+        page = get(client, f"{url}/address/{address}/txs/chain" + (f"/{last}" if last else ""))
         page = page.json()
         txs += page
         if len(page) < 25:
             break
         last = page[-1]["txid"]
+    return txs, stats["funded_txo_sum"] - stats["spent_txo_sum"], stats["tx_count"]
+
+
+def _coin(address, value, kind):
+    return {"scriptpubkey_address": address, "value": value or 0, "scriptpubkey_type": kind}
+
+
+def _blockcypher(client, url, address):
+    data = get(client, f"{url}/addrs/{address}/full", {"limit": 50}).json()
+    txs = [
+        {
+            "txid": t["hash"],
+            "vin": [
+                {
+                    "prevout": _coin(
+                        (i.get("addresses") or [None])[0],
+                        i.get("output_value"),
+                        i.get("script_type"),
+                    )
+                }
+                for i in t["inputs"]
+            ],
+            "vout": [
+                _coin((o.get("addresses") or [None])[0], o.get("value"), o.get("script_type"))
+                for o in t["outputs"]
+            ],
+            "status": {
+                "block_time": int(datetime.fromisoformat(t["confirmed"]).timestamp())
+                if t.get("confirmed")
+                else 0
+            },
+        }
+        for t in data.get("txs", [])
+    ]
+    return txs, data["final_balance"], data["n_tx"]
+
+
+def _haskoin(client, url, address):
+    bare = address.removeprefix("bitcoincash:")
+    balance = get(client, f"{url}/address/{bare}/balance").json()
+    data = get(client, f"{url}/address/{bare}/transactions/full", {"limit": 100}).json()
+
+    def kind(coin):  # the first script bytes are enough to tell address types apart
+        return (coin.get("pkscript") or "")[:4]
+
+    txs = [
+        {
+            "txid": t["txid"],
+            "vin": [
+                {"prevout": _coin(i.get("address"), i.get("value"), kind(i))} for i in t["inputs"]
+            ],
+            "vout": [_coin(o.get("address"), o.get("value"), kind(o)) for o in t["outputs"]],
+            "status": {"block_time": t.get("time") or 0},
+        }
+        for t in data
+    ]
+    return txs, balance["confirmed"], balance["txs"]
+
+
+def fetch_utxo(client, address, chain="bitcoin"):
+    asset, api, url, _ = UTXO[chain]
+    txs, balance, count = {"esplora": _esplora, "blockcypher": _blockcypher, "haskoin": _haskoin}[
+        api
+    ](client, url, address)
     return {
-        "transfers": [row for tx in txs for row in btc_transfers(address, tx)],
+        "transfers": [row for tx in txs for row in utxo_transfers(address, tx, chain, asset)],
         "links": [link for tx in txs for link in btc_links(address, tx)],
-        "balances": [
-            ("bitcoin", "BTC", "", (stats["funded_txo_sum"] - stats["spent_txo_sum"]) / 1e8)
-        ],
-        "hub": stats["tx_count"] > len(txs),
+        "balances": [(chain, asset, "", balance / 1e8)],
+        "hub": count > len(txs),
     }
+
+
+def fetch_btc(client, address):
+    return fetch_utxo(client, address, "bitcoin")
+
+
+def fetch_tron(client, address):
+    def b58(hex_address):  # the native transfer list speaks hex
+        return base58.encode_check(bytes.fromhex(hex_address))
+
+    account = (get(client, f"{TRON}/v1/accounts/{address}").json().get("data") or [{}])[0]
+    page = {"limit": 200, "only_confirmed": "true"}
+    native = get(client, f"{TRON}/v1/accounts/{address}/transactions", page).json().get("data", [])
+    tokens = get(client, f"{TRON}/v1/accounts/{address}/transactions/trc20", page).json()
+    tokens = tokens.get("data", [])
+    transfers, info = [], {}
+    for t in native:
+        try:
+            contract = t["raw_data"]["contract"][0]
+            v = contract["parameter"]["value"]
+            if contract["type"] != "TransferContract" or t["ret"][0]["contractRet"] != "SUCCESS":
+                continue
+            row = ("tron", t["txID"], b58(v["owner_address"]), b58(v["to_address"]), "TRX", "")
+            transfers.append((*row, v["amount"] / 1e6, t["block_timestamp"] // 1000))
+        except (KeyError, IndexError, ValueError, TypeError):
+            continue
+    for t in tokens:
+        try:
+            token = t["token_info"]
+            info[token["address"]] = token
+            amount = int(t["value"]) / 10 ** int(token.get("decimals") or 0)
+            if t.get("type") == "Transfer" and amount:
+                row = ("tron", t["transaction_id"], t["from"], t["to"], token["symbol"][:20])
+                transfers.append((*row, token["address"], amount, t["block_timestamp"] // 1000))
+        except (KeyError, ValueError, TypeError):
+            continue
+    balances = [("tron", "TRX", "", account.get("balance", 0) / 1e6)]
+    for entry in account.get("trc20", []):
+        for contract, raw in entry.items():
+            if contract in info and int(raw):  # tokens never seen in a transfer have no name
+                token = info[contract]
+                amount = int(raw) / 10 ** int(token.get("decimals") or 0)
+                balances.append(("tron", token["symbol"][:20], contract, amount))
+    return {
+        "transfers": transfers,
+        "links": [],
+        "balances": balances,
+        "hub": len(native) >= 200 or len(tokens) >= 200,
+    }
+
+
+def _rpc(client, method, *params):
+    for attempt in range(4):
+        time.sleep(DELAY)
+        r = client.post(
+            SOLANA, json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
+        )
+        if r.status_code != 429 and r.status_code < 500:
+            break
+        time.sleep(2 ** (attempt + 1))
+    if r.status_code == 429:
+        raise RuntimeError("rate limited by the Solana RPC (HTTP 429): raise CT_DELAY")
+    data = r.raise_for_status().json()
+    if "error" in data:
+        raise RuntimeError(f"{method}: {str(data['error'].get('message'))[:120]}")
+    return data["result"]
+
+
+def solana_transfers(address, sig, tx):
+    """Solana has no simple transfer list: read each transaction's balance changes and
+    treat the accounts that lost money as inputs and those that gained as outputs."""
+    meta, keys = tx["meta"], tx["transaction"]["message"]["accountKeys"]
+    keys = [k["pubkey"] if isinstance(k, dict) else k for k in keys]
+    status = {"block_time": tx.get("blockTime") or 0}
+
+    def flows(deltas, asset, unit, token=""):
+        pseudo = {
+            "txid": sig,
+            "status": status,
+            "vin": [{"prevout": _coin(a, -d, None)} for a, d in deltas.items() if d < 0],
+            "vout": [_coin(a, d, None) for a, d in deltas.items() if d > 0],
+        }
+        return utxo_transfers(address, pseudo, "solana", asset, unit, token)
+
+    native = {
+        k: post - pre for k, pre, post in zip(keys, meta["preBalances"], meta["postBalances"])
+    }
+    native[keys[0]] += meta.get("fee", 0)  # the fee payer did not send the fee to anybody
+    rows = flows(native, "SOL", 1e9)
+    tokens = {}
+    for sign, side in ((-1, "preTokenBalances"), (1, "postTokenBalances")):
+        for b in meta.get(side) or []:
+            per_owner = tokens.setdefault((b["mint"], b["uiTokenAmount"]["decimals"]), Counter())
+            per_owner[b.get("owner") or keys[b["accountIndex"]]] += sign * int(
+                b["uiTokenAmount"]["amount"]
+            )
+    for (mint, decimals), deltas in tokens.items():
+        # The symbol is not on chain; the portfolio fills it in from the price source.
+        rows += flows(deltas, mint[:4] + "...", 10**decimals, mint)
+    return rows
+
+
+def fetch_solana(client, address):
+    lamports = _rpc(client, "getBalance", address)["value"]
+    held = _rpc(
+        client,
+        "getTokenAccountsByOwner",
+        address,
+        {"programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"},
+        {"encoding": "jsonParsed"},
+    )["value"]
+    balances = Counter()
+    for account in held:
+        token = account["account"]["data"]["parsed"]["info"]
+        balances[token["mint"]] += token["tokenAmount"].get("uiAmount") or 0
+    signatures = _rpc(client, "getSignaturesForAddress", address, {"limit": SOLANA_TXS})
+    transfers = []
+    for s in signatures:
+        if s.get("err"):
+            continue
+        tx = _rpc(
+            client,
+            "getTransaction",
+            s["signature"],
+            {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0},
+        )
+        if tx and tx.get("meta"):
+            transfers += solana_transfers(address, s["signature"], tx)
+    return {
+        "transfers": transfers,
+        "links": [],
+        "balances": [
+            ("solana", "SOL", "", lamports / 1e9),
+            *[
+                ("solana", mint[:4] + "...", mint, amount)
+                for mint, amount in balances.items()
+                if amount
+            ],
+        ],
+        "hub": len(signatures) >= SOLANA_TXS,
+    }
+
+
+def fetch(client, address):
+    """Everything known about `address` on the chain(s) its format belongs to."""
+    chain = database.chain_of(address)
+    if chain in UTXO:
+        return fetch_utxo(client, address, chain)
+    return {"evm": fetch_evm, "tron": fetch_tron, "solana": fetch_solana}[chain](client, address)
 
 
 def evm_transfers(chain, native, items, token=False):
@@ -119,6 +429,8 @@ def evm_transfers(chain, native, items, token=False):
 def fetch_evm(client, address, chains=None):
     out = {"transfers": [], "links": [], "balances": [], "hub": False, "errors": []}
     for chain, cfg in (chains or evm_chains()).items():
+        if cfg.get("needs_key"):
+            continue  # reported once by coverage(), not as an error on every address
 
         def call(action, cfg=cfg, **extra):
             params = {"module": "account", "action": action, "address": address}

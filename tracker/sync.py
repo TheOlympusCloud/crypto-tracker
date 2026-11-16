@@ -15,9 +15,8 @@ _lock = threading.Lock()
 
 
 def sync_address(db, client, address):
-    fetch = chains.fetch_btc if database.family(address) == "btc" else chains.fetch_evm
     try:
-        data = fetch(client, address)
+        data = chains.fetch(client, address)
         error = "; ".join(data.get("errors", []))
     except (httpx.HTTPError, RuntimeError, ValueError, KeyError, TypeError) as e:
         data, error = None, chains.describe(e)
@@ -68,10 +67,13 @@ def neighbours(db, addresses):
               UNION ALL SELECT src FROM transfer WHERE dst IN ({marks}))
             WHERE other NOT IN (SELECT address FROM node WHERE synced_at IS NOT NULL)
               AND other NOT IN (SELECT address FROM label)
-            GROUP BY other ORDER BY n DESC LIMIT ?""",
-        (*addresses, *addresses, EXPAND_PER_LEVEL),
+            GROUP BY other ORDER BY n DESC""",
+        (*addresses, *addresses),
     )
-    return [r["other"] for r in rows]
+    # Chains that are only read shallowly are not crawled outwards.
+    return [r["other"] for r in rows if database.chain_of(r["other"]) in chains.DEEP][
+        :EXPAND_PER_LEVEL
+    ]
 
 
 def used(db, address):

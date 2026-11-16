@@ -8,8 +8,8 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from . import chains, graph, hd, prices, sync
 from . import db as database
-from . import graph, hd, prices, sync
 
 app = FastAPI(title="Crypto tracker", docs_url=None, redoc_url=None)
 CATEGORIES = {"cex", "dex", "bridge", "mixer", "defi", "service", "other"}
@@ -75,6 +75,7 @@ def get_analysis(max_hops: int = 4):
         return {
             "max_hops": max_hops,
             "hop_decay": graph.HOP_DECAY,
+            "chains": chains.coverage(),
             "verdicts": graph.verdicts(db, max_hops),
             "origins": graph.origins(db, max_hops),
         }

@@ -2,6 +2,8 @@ import os
 import re
 import sqlite3
 
+from embit import base58, bech32
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS node(
   address TEXT PRIMARY KEY,
@@ -15,7 +17,8 @@ CREATE TABLE IF NOT EXISTS node(
 CREATE TABLE IF NOT EXISTS hdwallet(
   id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', public INT NOT NULL DEFAULT 0,
   descriptor TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS price(key TEXT PRIMARY KEY, usd REAL, ts INT);
+CREATE TABLE IF NOT EXISTS price(
+  key TEXT PRIMARY KEY, usd REAL, ts INT, symbol TEXT, confidence REAL);
 CREATE TABLE IF NOT EXISTS snapshot(ts INT PRIMARY KEY, private REAL, public REAL, currency TEXT);
 CREATE TABLE IF NOT EXISTS alert(
   id INTEGER PRIMARY KEY, ts INT, wallet TEXT, other TEXT, text TEXT, seen INT NOT NULL DEFAULT 0);
@@ -35,9 +38,12 @@ CREATE TABLE IF NOT EXISTS balance(
 """
 
 EVM_RE = re.compile(r"0x[0-9a-fA-F]{40}")
-BTC_RE = re.compile(
-    r"(bc1[02-9ac-hj-np-z]{11,71}|BC1[02-9AC-HJ-NP-Z]{11,71}|[13][1-9A-HJ-NP-Za-km-z]{25,34})"
-)
+CASHADDR_RE = re.compile(r"(bitcoincash:)?[qp][02-9ac-hj-np-z]{41}")
+BECH32 = {"bc": "bitcoin", "ltc": "litecoin"}
+# Version byte of a base58check address -> chain. Litecoin's old "3..." script addresses
+# share Bitcoin's byte and are read as Bitcoin; its current ones start with M.
+BASE58 = {0x00: "bitcoin", 0x05: "bitcoin", 0x30: "litecoin", 0x32: "litecoin",
+          0x1E: "dogecoin", 0x16: "dogecoin", 0x41: "tron"}  # fmt: skip
 
 
 def connect(path=None):
@@ -47,18 +53,44 @@ def connect(path=None):
     db.executescript(SCHEMA)
     if "wallet" not in [r["name"] for r in db.execute("PRAGMA table_info(node)")]:
         db.execute("ALTER TABLE node ADD COLUMN wallet TEXT")  # databases from before HD wallets
+    if "symbol" not in [r["name"] for r in db.execute("PRAGMA table_info(price)")]:
+        db.execute("DROP TABLE price")  # only a cache; rebuilt with the new columns
+        db.executescript(SCHEMA)
     return db
 
 
-def norm(address):
-    """Canonical form of an address, or ValueError. EVM and bech32 are case-insensitive."""
+def parse(address):
+    """(chain, canonical address) of a pasted address, or ValueError. Checksums are verified
+    where the format has one, so a typo is refused instead of syncing as an empty wallet."""
     address = address.strip()
     if EVM_RE.fullmatch(address):
-        return address.lower()
-    if BTC_RE.fullmatch(address):
-        return address.lower() if address[:3].lower() == "bc1" else address
-    # shortcut: format check only, no checksum; a typo'd address just syncs as empty.
-    raise ValueError(f"not a Bitcoin or EVM address: {address[:80]}")
+        return "evm", address.lower()  # shortcut: EIP-55 mixed-case checksum is not verified
+    low = address.lower()
+    for hrp, chain in BECH32.items():
+        if low.startswith(hrp + "1") and bech32.decode(hrp, low)[0] is not None:
+            return chain, low
+    if CASHADDR_RE.fullmatch(low):  # shortcut: cashaddr checksum is not verified
+        return "bitcoincash", "bitcoincash:" + low.removeprefix("bitcoincash:")
+    try:
+        raw = base58.decode_check(address)
+        if len(raw) == 21 and raw[0] in BASE58:
+            return BASE58[raw[0]], address
+    except (ValueError, KeyError, IndexError):
+        pass
+    try:
+        if len(base58.decode(address)) == 32:  # a Solana account is a bare 32-byte key
+            return "solana", address
+    except (ValueError, KeyError, IndexError):
+        pass
+    raise ValueError(f"not an address of a supported chain: {address[:80]}")
+
+
+def norm(address):
+    return parse(address)[1]
+
+
+def chain_of(address):
+    return parse(address)[0]
 
 
 def valid(address):
@@ -66,7 +98,3 @@ def valid(address):
         return norm(address) == address
     except (ValueError, AttributeError):
         return False
-
-
-def family(address):
-    return "evm" if address.startswith("0x") else "btc"

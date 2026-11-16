@@ -115,7 +115,7 @@ def parse_tagpack(text):
     for tag in pack.get("tags") or []:
         tag = {**pack, **tag}
         address, label = tag.get("address"), tag.get("label")
-        if not address or not label or tag.get("currency") not in ("BTC", "ETH"):
+        if not address or not label or tag.get("currency") not in ("BTC", "ETH", "LTC", "TRX"):
             continue
         address = str(address).lower() if tag["currency"] == "ETH" else str(address)
         slugs = [str(tag.get("category") or ""), *map(str, tag.get("concepts") or [])]

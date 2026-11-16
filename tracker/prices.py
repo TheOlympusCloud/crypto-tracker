@@ -20,7 +20,15 @@ NATIVE = {
     "BNB": "coingecko:binancecoin",
     "AVAX": "coingecko:avalanche-2",
     "XDAI": "coingecko:xdai",
+    "LTC": "coingecko:litecoin",
+    "DOGE": "coingecko:dogecoin",
+    "BCH": "coingecko:bitcoin-cash",
+    "SOL": "coingecko:solana",
+    "TRX": "coingecko:tron",
 }
+# A token shows in the portfolio when one of my wallets has sent it, or when the price
+# source knows it with high confidence. Spam airdrops fail both.
+CONFIDENT = 0.9
 
 
 def currency():
@@ -33,20 +41,34 @@ def key(chain, asset, token):
     return f"{chains.evm_chains().get(chain, {}).get('llama', chain)}:{token}"
 
 
-def _holdings(db):
-    return db.execute(
-        f"""SELECT b.address, b.chain, b.asset, b.token, b.amount, n.name, n.public, n.wallet
-            FROM balance b JOIN node n ON n.address = b.address
-            WHERE n.mine AND {TRUSTED}
-            ORDER BY b.amount DESC"""
+def _holdings(db, everything=False):
+    """My balances. Tokens nobody vouches for are left out unless `everything`."""
+    known = {
+        r["key"]: r for r in db.execute("SELECT * FROM price WHERE confidence >= ?", (CONFIDENT,))
+    }
+    trusted = {
+        r["token"] for r in db.execute(f"SELECT DISTINCT token FROM transfer WHERE {TRUSTED}")
+    }
+    rows = db.execute(
+        """SELECT b.address, b.chain, b.asset, b.token, b.amount, n.name, n.public, n.wallet
+           FROM balance b JOIN node n ON n.address = b.address WHERE n.mine ORDER BY b.amount DESC"""
     ).fetchall()
+    out = []
+    for r in map(dict, rows):
+        price = known.get(key(r["chain"], r["asset"], r["token"]))
+        if price and r["token"] and r["chain"] == "solana":
+            r["asset"] = price["symbol"] or r["asset"]  # Solana does not name its tokens on chain
+        if everything or not r["token"] or r["token"] in trusted or price:
+            out.append(r)
+    return out
 
 
 def refresh(db, client):
     """Fetch prices older than TTL. A failure keeps the old prices: values go stale, not away."""
     if os.environ.get("CT_PRICES", "on") == "off":
         return
-    wanted = {key(r["chain"], r["asset"], r["token"]) for r in _holdings(db)} - {None}
+    held = _holdings(db, everything=True)
+    wanted = {key(r["chain"], r["asset"], r["token"]) for r in held} - {None}
     if currency() != "USD":
         wanted.add(f"fx:{currency()}")
     fresh = {
@@ -58,15 +80,30 @@ def refresh(db, client):
         coins = [k for k in stale if not k.startswith("fx:")]
         for i in range(0, len(coins), 80):
             data = client.get(LLAMA + ",".join(coins[i : i + 80])).raise_for_status().json()
+            found = data.get("coins", {})
             db.executemany(
-                "INSERT OR REPLACE INTO price VALUES (?, ?, ?)",
-                [(k, float(v["price"]), now) for k, v in data.get("coins", {}).items()],
+                "INSERT OR REPLACE INTO price VALUES (?, ?, ?, ?, ?)",
+                [
+                    (
+                        k,
+                        float(v["price"]),
+                        now,
+                        str(v.get("symbol") or "")[:20],
+                        v.get("confidence"),
+                    )
+                    for k, v in found.items()
+                ]
+                # Remember the unknown ones too, or every refresh would ask for them again.
+                + [(k, None, now, "", 0) for k in coins[i : i + 80] if k not in found],
             )
         if f"fx:{currency()}" in stale:
             data = client.get(FX, params={"from": "USD", "to": currency()}, follow_redirects=True)
             rate = float(data.raise_for_status().json()["rates"][currency()])
             db.execute(
-                "INSERT OR REPLACE INTO price VALUES (?, ?, ?)", (f"fx:{currency()}", rate, now)
+                db.execute(
+                    "INSERT OR REPLACE INTO price VALUES (?, ?, ?, '', NULL)",
+                    (f"fx:{currency()}", rate, now),
+                )
             )
     except (httpx.HTTPError, KeyError, ValueError, TypeError):
         pass
@@ -75,7 +112,7 @@ def refresh(db, client):
 
 def portfolio(db):
     """Everything I hold, per asset and per wallet, valued with the cached prices."""
-    price = {r["key"]: r for r in db.execute("SELECT * FROM price")}
+    price = {r["key"]: r for r in db.execute("SELECT * FROM price WHERE usd IS NOT NULL")}
     fx = 1.0 if currency() == "USD" else (price.get(f"fx:{currency()}") or {"usd": None})["usd"]
 
     def unit(r):
@@ -104,9 +141,13 @@ def portfolio(db):
     for r in _holdings(db):
         v = None if unit(r) is None else r["amount"] * unit(r)
         side = "public" if r["public"] else "private"
+        # A token that merely calls itself AVAX or USDC must not be added to the real one:
+        # only the native coin and tokens the price source knows count as that asset.
+        verified = unit(r) is not None
         a = assets.setdefault(
-            r["asset"],
-            {"asset": r["asset"], "chains": set(), "amount": 0.0, "private": 0.0, "public": 0.0,
+            (r["asset"].upper(), verified),
+            {"asset": r["asset"], "verified": verified, "chains": set(), "amount": 0.0,
+             "private": 0.0, "public": 0.0,
              "price": unit(r), "value": None, "private_value": None, "public_value": None},
         )  # fmt: skip
         a["chains"].add(r["chain"])
