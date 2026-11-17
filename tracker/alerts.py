@@ -6,6 +6,7 @@ from . import graph
 from .heuristics import pair
 
 BASELINE = ("baseline", "")  # marker row: a comparison point exists
+FLOOR = 0.5  # a weaker guess is listed in the verdict but is not worth an alarm
 STEP = 0.05  # a confidence rise smaller than this is not news
 
 
@@ -23,7 +24,7 @@ def check(db):
     first = known.pop(BASELINE, None) is None
     for (a, b), confidence in {} if first else now.items():
         before = known.get((a, b))
-        if before is not None and confidence < before + STEP:
+        if confidence < FLOOR or (before is not None and confidence < before + STEP):
             continue
         was = f"was {before:.0%}" if before is not None else "no link was known before"
         exposed = " A private wallet is now tied to a public one." if public[a] != public[b] else ""

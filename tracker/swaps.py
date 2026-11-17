@@ -6,10 +6,11 @@ Each of my addresses is sent to these APIs, like to any other indexer. CT_SWAPS=
 """
 
 import os
+import time
 
 import httpx
 
-from . import chains
+from . import chains, labels
 from . import db as database
 from .heuristics import pair
 
@@ -83,6 +84,16 @@ def vaults(db, sender, tx_in, recipient, tx_out):
 NOTE = "Swaps: only the 50 newest THORChain and Maya swaps of each address are read."
 
 
+def unchecked(db):
+    """Swap sources that did not answer at the last sync, as text for a verdict."""
+    if os.environ.get("CT_SWAPS", "on") == "off":
+        return []
+    return [
+        f"{r['source']} did not answer ({r['error']}), so swaps through it were not checked"
+        for r in db.execute("SELECT * FROM failure ORDER BY source")
+    ]
+
+
 def sync(db, client):
     """Look up the swaps of every address of mine. Returns the sources that did not answer."""
     if os.environ.get("CT_SWAPS", "on") == "off":
@@ -106,14 +117,22 @@ def sync(db, client):
             # only once this protocol has answered for every address: if it is down, its
             # vaults keep their labels, or they would turn into strangers that link wallets.
             db.execute("DELETE FROM label WHERE source = 'swap-protocol' AND name = ?", (protocol,))
-            db.executemany(
-                "INSERT OR IGNORE INTO label VALUES (?, ?, 'dex', 'swap-protocol')",
-                [(v, protocol) for v in found],
+            # Through the ranking: the protocol's own record outranks a contract name or a
+            # guess that got there first, and yields to a label set by hand.
+            labels.store(
+                db, [(v, protocol, "dex", "swap protocol vault", "swap-protocol") for v in found]
             )
+            db.execute("DELETE FROM failure WHERE source = ?", (protocol,))
         except Exception as e:  # noqa: BLE001 - whatever one source sends, the other and the sync go on
             reason = (
                 chains.describe(e) if isinstance(e, httpx.HTTPError | RuntimeError) else "bad reply"
             )
             failed.append(f"{protocol}: {reason}")
+            # Stored, not only reported: until this source answers again no wallet has
+            # been fully checked, and its verdict must say so (see graph.verdicts).
+            db.execute(
+                "INSERT OR REPLACE INTO failure VALUES (?, ?, ?)",
+                (protocol, reason, int(time.time())),
+            )
     db.commit()
     return failed

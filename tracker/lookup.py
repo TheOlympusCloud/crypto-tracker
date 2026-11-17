@@ -11,6 +11,7 @@ from collections import defaultdict
 from . import chains, prices
 from . import db as database
 from .graph import combine
+from .labels import describe
 
 LISTED = 200  # counterparties returned, busiest first
 DRAWN = 60  # of those, how many are in the graph
@@ -111,7 +112,7 @@ def view(db, client, address, evm=()):
         ):
             known[r["address"]].update(dict(r))
         for r in db.execute(f"SELECT * FROM label WHERE address IN ({marks})", some):
-            known[r["address"]].update(label=r["name"], category=r["category"])
+            known[r["address"]].update(describe(r))
     for node in known.values():
         node["chain"] = database.chain_of(node["address"])
         node.update(chains.explorer(node["chain"]))

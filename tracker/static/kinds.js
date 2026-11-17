@@ -144,3 +144,6 @@ export const kindOf = (n) => (n.mine ? (n.public ? "public" : "mine") : n.catego
 export const short = (a) => (a.length > 14 ? `${a.slice(0, 7)}…${a.slice(-5)}` : a);
 export const pct = (c) => `${Math.round(c * 100)}%`;
 export const title = (n) => n.name || n.label || short(n.address);
+// What an address is, in words: the label's own type when it has one ("DEX aggregator",
+// "exchange deposit address"), else the general kind. A label that is a guess says so.
+export const typeOf = (n) => `${n.label_type || n.type || KINDS[n.kind ? sourceKind(n) : kindOf(n)][2]}${n.label_guess || n.guess ? " (guess)" : ""}`;

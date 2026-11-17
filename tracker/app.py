@@ -7,7 +7,7 @@ from pathlib import Path
 import httpx
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from . import alerts, chains, graph, hd, lookup, prices, sync, uri
 from . import db as database
@@ -38,6 +38,13 @@ class Wallet(BaseModel):
     address: str
     name: str = ""
     public: bool = False
+
+    @field_validator("name")
+    @classmethod
+    def tidy(cls, name):
+        """A name is one line of at most 80 characters: line breaks, tabs and runs of
+        spaces become single spaces. Posting a wallet again with another name renames it."""
+        return " ".join(name.split())[:80]
 
 
 class Label(BaseModel):
@@ -250,7 +257,7 @@ def put_label(label: Label):
         raise HTTPException(422, f"category must be one of {sorted(CATEGORIES)}")
     if label.name:
         write(
-            "INSERT OR REPLACE INTO label VALUES (?, ?, ?, 'user')",
+            "INSERT OR REPLACE INTO label(address, name, category, source) VALUES (?, ?, ?, 'user')",
             (address(label.address), label.name[:80], label.category),
         )
     else:

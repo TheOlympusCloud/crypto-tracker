@@ -27,6 +27,21 @@ descriptor and all its used addresses are found and treated as one wallet.
 
 One web app, installable on a phone as a PWA.
 
+## Screenshots
+
+All taken from a demo instance with invented wallets and addresses.
+
+| | |
+|---|---|
+| ![A wallet's verdict: linked to a public wallet at 70%, with the evidence and what the check may have missed](docs/screenshots/verdict.webp) | ![3D graph with the path from a private wallet to a public one, hop by hop](docs/screenshots/graph-3d.webp) |
+| **Verdict** for one wallet: what it can be tied to, how strongly, and what the check could not cover. | **3D graph**: the path between a private and a public wallet, numbered hop by hop. |
+| ![The same path in the flat 2D graph](docs/screenshots/graph-2d.webp) | ![Lookup of an address that is not yours: what it holds and its links to your wallets](docs/screenshots/lookup.webp) |
+| **2D graph**: the same path, flat. The default on phones. | **Lookup** of any address: what it holds and how it connects to your wallets. |
+
+<img src="docs/screenshots/mobile.webp" alt="Portfolio totals on a phone, split into private and public" width="280">
+
+**On a phone**: the portfolio, split into private and public.
+
 ## Chains
 
 | Chain | Works without a key | How deep it is read |
@@ -112,7 +127,48 @@ docker run -p 8000:8000 -v tracker-data:/data -e CT_PASSWORD=change-me crypto-tr
 | `CT_SWAPS` | `on` | `off` never asks THORChain or Maya about your addresses. `CT_THORCHAIN` and `CT_MAYA` set their Midgard URLs. |
 | `CT_CURRENCY` | `USD` | Currency of the values, e.g. `EUR` (ECB reference rate). |
 | `CT_PRICES` | `on` | `off` never asks for prices. |
+| `CT_LABELS` | `on` | `off` never downloads label sets or asks an explorer for contract names. |
 | `CT_BTC_PAGES`, `CT_EVM_ROWS` | `8`, `1000` | History loaded per address (pages of 25 / rows per list). |
+
+## Android
+
+The web app installs from Chrome's menu ("Add to Home screen") when your server has HTTPS
+with a certificate the phone trusts. For a server on the LAN over plain http, or with a
+self-signed certificate, there is a small Android app instead. It is only a frame around
+the same pages: it asks where your server is and shows it.
+
+Install:
+
+1. Copy `crypto-tracker.apk` to the phone (Android 10 or newer) and open it. Android asks
+   once to allow installing from that source.
+2. Type the server's address, for example `192.168.1.20:8000` or `https://tracker.example`.
+   - **Plain http** only works after ticking its box. Nothing is encrypted then: anyone on
+     the same network can read your wallets and the password.
+   - **Self-signed certificate**: tick its box. On first contact the app shows the
+     certificate's SHA-256 fingerprint; accept only if it equals the one on your server
+     (`openssl x509 -in cert.pem -noout -fingerprint -sha256`). The app then accepts that
+     certificate and no other.
+3. Enter the server's password when asked. It is remembered on the phone.
+
+To change the server later, or to forget the password and certificate, long-press the app
+icon and choose "Server settings".
+
+A photo taken for the scanner is kept in the app's private storage, never in the gallery,
+and nothing the app stores is included in backups or copied to a new phone.
+
+The QR scanner uses the camera live over https (also self-signed, once accepted). Over
+plain http a page is not allowed a live camera, so the scanner's "Take a photo" is used.
+
+Build it yourself with the Android SDK and a JDK, no Gradle:
+
+```sh
+keytool -genkeypair -keystore release.jks -alias crypto-tracker -keyalg RSA -keysize 3072 -validity 10950
+ANDROID_HOME=~/Android/Sdk ANDROID_KEYSTORE=release.jks ANDROID_KEYSTORE_PASS=... android/build.sh
+```
+
+Both commands run from the top of the repository. Keystores (`*.jks`, `*.keystore`) are
+git-ignored, but the better place for one is outside the checkout. An update only installs
+over the old app when it is signed with the same key, so keep it safe. The app has not been run on a real phone yet.
 
 ## Look up an address
 
@@ -180,10 +236,31 @@ addresses or amounts.
   `CT_CHAINS`. Public Blockscout instances allow only a handful of calls without a key.
 - Prices: [DefiLlama](https://defillama.com/docs/api) coin prices, no key, cached for
   10 minutes; exchange rate from the ECB via frankfurter.app.
-- Labels: [etherscan-labels](https://github.com/brianleect/etherscan-labels) (EVM, MIT, a
-  2023 snapshot) and [GraphSense TagPacks](https://github.com/graphsense/graphsense-tagpacks)
-  (Bitcoin and Ethereum, MIT). They are downloaded on request, not shipped. Labels you set
-  by hand in the UI always win.
+- Labels: see [Who is on the other side](#who-is-on-the-other-side).
+
+## Who is on the other side
+
+Every counterparty the app can name gets a service name and a type (exchange, DEX, DEX
+aggregator, bridge, mixer, lending, NFT marketplace, payment processor, contract...),
+shown wherever the address appears, together with where the name comes from:
+
+| Source | What it is | Trust |
+|---|---|---|
+| you | A label set by hand in the app. | Always wins. |
+| the protocol | THORChain and Maya vaults, from the protocols' own swap records. | Fact. |
+| an open label set | [etherscan-labels](https://github.com/brianleect/etherscan-labels) for Ethereum, BNB Chain, Polygon, Arbitrum, Optimism, Avalanche and Fantom (a 2023 snapshot), [GraphSense TagPacks](https://github.com/graphsense/graphsense-tagpacks) for Bitcoin, Ethereum, Litecoin and Tron, and the program names of the [Solana explorer](https://github.com/solana-labs/explorer). All MIT. | Fact. |
+| the explorer | The verified contract name of an EVM address ("UniswapV2Router02"). The name is a fact; the type read from it is a guess. | Guess, 80%. |
+| behaviour | An address that forwards everything to an exchange (a deposit address); one that takes one asset from you and returns another in the same transaction (a pool or router); one with too much history to read (some service). | Guess, 60%. |
+
+The label sets are downloaded whole (about 540,000 labels) on the first sync and again
+every 30 days, and looked up locally, so naming an address tells nobody which addresses
+you care about. Contract names are asked from the explorer that already served your
+wallets' histories, 15 addresses per sync, each only once. `CT_LABELS=off` turns both off.
+
+A known service ends a trace: two people using Binance are not linked. A guessed one
+does not end it, it weakens it by how sure the guess is, because a wrong guess must not
+hide a link. A guess is always shown as "(guess)", and disappears again when the
+behaviour it was read from is no longer in the data.
 
 ## What is a fact and what is a guess
 
@@ -195,10 +272,11 @@ in `tracker/heuristics.py` and `tracker/graph.py`.
 |---|---|---|
 | common-input | 0.9 | Two addresses are inputs of one Bitcoin transaction. |
 | common-input, CoinJoin | 0.2 | Same, but the transaction has 3+ inputs and 3+ equal outputs. |
+| coinjoin | 0.2 | A transfer inside such a transaction. Its amount is still a fact, but a CoinJoin exists so that nobody can tell which input paid which output: it is never read as a certain link, and never raises an alert. |
 | change | 0.5 to 0.75 | In a 2-output payment, the output that matches the input script type (0.6), or is the non-round one (0.5); 0.75 when both rules agree, nothing when they disagree. |
 | bridge | 0.5 to 0.95 | Money leaves one of your wallets on chain X and the same asset reaches another of your wallets on chain Y within 6 hours, 0 to 3% smaller. +0.25 if a labelled bridge is involved, +0.15 if within 0.5%, +0.1 if within 10 minutes; divided by the number of equally plausible matches. |
 | exchange-flow | 0.09 to 0.8 | Money leaves one wallet into an exchange and the same asset, 0 to 2% less, comes out of an exchange into another wallet within 48 hours. Starts at 0.5 (same exchange), 0.3 (two exchanges) or 0.15 (the deposit went to an address that was never expanded); +0.15 within 0.5%, +0.1 within an hour; x0.6 for round amounts; divided by the number of equally plausible matches. Repeated matches between the same two wallets are not independent proof: they lift the best single match at most halfway to 0.8, never past it. |
-| swap | 0.95 | THORChain or Maya Protocol recorded a swap from one address to the other (for example ETH in, BTC out). The record is public and names the destination, so this is close to a fact. |
+| swap | 0.95 | THORChain or Maya Protocol recorded a swap from one address to the other (for example ETH in, BTC out). The record is public and names the destination, so this is close to a fact. Several swaps between the same two addresses stay at 0.95. |
 
 Several transactions supporting the same guess combine as `1 - (1-c1)(1-c2)...`.
 
@@ -231,6 +309,13 @@ or at the hop limit, and says which.
   as the first characters of their mint address.
 - A token that only borrows a known name (a fake USDC) is listed apart, unpriced.
 - Very active addresses load only their newest history and are flagged in the UI.
+- A transaction with more than 50 counterparties (a CoinJoin, an exchange batch) keeps
+  its 50 largest and every wallet of yours; the wallet's verdict says how many were cut,
+  and amounts for those transactions are lower than on a block explorer.
+- If THORChain or Maya does not answer during a sync, every wallet reads "Partly checked"
+  until it answers again (or until `CT_SWAPS=off`): a swap may have gone unseen.
+- Alerts are raised for links of 50% confidence or more; weaker guesses are listed in
+  the verdict only.
 - Token balances come from the transfer history unless the indexer has a token-balance
   call (`"tokenlist": true`), so rebasing tokens are off.
 - Address checksums are verified, except the mixed-case form of EVM addresses and

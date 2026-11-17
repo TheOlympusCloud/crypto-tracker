@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="cloud.theolympus.cryptotracker">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Only for scanning a wallet's QR code, asked for the first time a scan starts. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+
+    <queries>
+        <intent><action android:name="android.media.action.IMAGE_CAPTURE" /></intent>
+    </queries>
+
+    <!-- usesCleartextTraffic lets the app reach a plain-http server at all; the app itself
+         refuses http unless the user ticked the box for it (Server.normalise). -->
+    <application
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:icon="@drawable/icon"
+        android:label="@string/app"
+        android:theme="@android:style/Theme.DeviceDefault.DayNight"
+        android:usesCleartextTraffic="true">
+        <activity
+            android:name=".MainActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden|uiMode"
+            android:exported="true"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
+        </activity>
+        <activity
+            android:name=".SetupActivity"
+            android:exported="false"
+            android:label="@string/settings" />
+        <!-- One private file for the camera app to write a QR photo into, per capture. -->
+        <provider
+            android:name=".PhotoProvider"
+            android:authorities="cloud.theolympus.cryptotracker.photo"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+    </application>
+</manifest>

@@ -29,7 +29,9 @@ apt-get update -q
 apt-get install -y -q --no-install-recommends ca-certificates curl python3
 
 echo "==> uv $UV_VERSION"
-if [ "$("$APP/bin/uv" --version 2>/dev/null)" != "uv $UV_VERSION" ]; then
+# "uv --version" prints "uv 0.13.6 (platform)": compare the version field only, so that
+# an update does not download the installer and run it as root again.
+if [[ "$("$APP/bin/uv" --version 2>/dev/null) " != "uv $UV_VERSION "* ]]; then
     curl -LsSf "https://astral.sh/uv/$UV_VERSION/install.sh" |
         env UV_UNMANAGED_INSTALL="$APP/bin" sh
 fi
@@ -93,7 +95,10 @@ systemctl restart crypto-tracker
 # 401 is the app asking for the password, 200 a loopback-only setup without one.
 port=$(sed -n 's/^CT_PORT=//p' "$ENV_FILE")
 host=$(sed -n 's/^CT_HOST=//p' "$ENV_FILE")
-case "$host" in "" | 0.0.0.0 | ::) host=127.0.0.1 ;; esac
+case "$host" in
+"" | 0.0.0.0 | ::) host=127.0.0.1 ;;
+*:*) host="[$host]" ;; # an IPv6 literal goes in brackets in a URL
+esac
 code=
 for _ in $(seq 30); do
     code=$(curl -s -o /dev/null -w '%{http_code}' "http://$host:${port:-8000}/" || true)
@@ -119,6 +124,7 @@ if [ -n "$password" ]; then
   User name  anything
   Password   $password
              Shown only this once; it is kept in $ENV_FILE (root only).
+             It crosses the network unencrypted until HTTPS is set up (README).
 EOF
 else
     echo "  Password   unchanged, in $ENV_FILE"
@@ -131,6 +137,7 @@ cat <<EOF
   Update     get the new code, then run this script again
   Uninstall  systemctl disable --now crypto-tracker
              rm -r $UNIT $APP $(dirname "$ENV_FILE")
+             systemctl daemon-reload
              userdel $RUN_AS
              rm -r $DATA      # your wallets, labels and history
 

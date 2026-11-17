@@ -9,7 +9,8 @@ from itertools import combinations
 
 from . import chains, swaps
 from . import db as database
-from .heuristics import EXCHANGE_CAP, SERVICE, TRUSTED
+from .heuristics import COMMON_INPUT_COINJOIN, EXCHANGE_CAP, SERVICE, TRUSTED
+from .labels import CONFIDENCE, describe
 
 HOP_DECAY = 0.7  # each stranger a trace passes through weakens it by this factor
 
@@ -17,6 +18,20 @@ HOP_DECAY = 0.7  # each stranger a trace passes through weakens it by this facto
 def combine(confidences):
     """Independent pieces of evidence for the same link: 1 - prod(1 - c)."""
     return round(1 - math.prod(1 - c for c in confidences), 3)
+
+
+CUT = (
+    "{n} very large transaction(s) of this wallet show only their "
+    f"{chains.FANOUT} biggest counterparties here (and any wallet of yours), so the amounts "
+    "for them are lower than on a block explorer."
+)
+# True for a transfer row that is part of a transaction recorded as a CoinJoin.
+MIXED = (
+    "EXISTS (SELECT 1 FROM coinjoin c WHERE c.chain = transfer.chain AND c.txid = transfer.txid)"
+)
+# How several rows of one kind of guess between the same pair combine. Independent evidence
+# compounds (`combine`); the same observation made again does not.
+COMBINE = {"exchange-flow": lambda c: repeated(c), "swap": max}
 
 
 def repeated(confidences, cap=EXCHANGE_CAP):
@@ -36,9 +51,7 @@ def _links(db):
             "a": a,
             "b": b,
             "kind": kind,
-            "confidence": (repeated if kind == "exchange-flow" else combine)(
-                [r["confidence"] for r in rows]
-            ),
+            "confidence": COMBINE.get(kind, combine)([r["confidence"] for r in rows]),
             "evidence": [r["evidence"] for r in rows[:5]],
             "count": len(rows),
         }
@@ -52,7 +65,7 @@ def build(db, spam=False):
         dict(r)
         for r in db.execute(
             f"""SELECT chain, src, dst, asset, token, COUNT(*) count, SUM(amount) amount,
-                       MIN(ts) first, MAX(ts) last, MIN(txid) txid
+                       MIN(ts) first, MAX(ts) last, MIN(txid) txid, MIN({MIXED}) coinjoin
                 FROM transfer WHERE {where} GROUP BY chain, src, dst, token"""
         )
     ]
@@ -68,7 +81,7 @@ def build(db, spam=False):
         node.update(chains.explorer(node["chain"]))
     marks = ",".join("?" * len(nodes))
     for r in db.execute(f"SELECT * FROM label WHERE address IN ({marks})", list(nodes)):
-        nodes[r["address"]].update(label=r["name"], category=r["category"])
+        nodes[r["address"]].update(describe(r))
     for r in db.execute(f"SELECT * FROM balance WHERE {where} ORDER BY amount DESC"):
         nodes[r["address"]].setdefault("balances", []).append(
             {"chain": r["chain"], "asset": r["asset"], "amount": r["amount"]}
@@ -132,14 +145,29 @@ def trace(db, max_hops=4):
         if a != b and conf > adj[a].get(b, (0,))[0]:
             adj[a][b] = adj[b][a] = (conf, kind)
 
-    for r in db.execute(f"SELECT DISTINCT src, dst FROM transfer WHERE {TRUSTED}"):
-        connect(r["src"], r["dst"], 1.0, "transfer")
+    # A transfer ties two addresses together for certain, except inside a CoinJoin, whose
+    # whole point is that inputs cannot be matched to outputs: there it is worth no more
+    # than the common-input guess of such a transaction. A pair that also has an ordinary
+    # transfer keeps the certain link.
+    for r in db.execute(
+        f"SELECT src, dst, MIN({MIXED}) mixed FROM transfer WHERE {TRUSTED} GROUP BY src, dst"
+    ):
+        if r["mixed"]:
+            connect(r["src"], r["dst"], COMMON_INPUT_COINJOIN, "coinjoin")
+        else:
+            connect(r["src"], r["dst"], 1.0, "transfer")
     for k in _links(db):
         connect(k["a"], k["b"], k["confidence"], k["kind"])
 
     mine = _wallets(db)  # address -> wallet it belongs to
     labels = _labels(db)
-    blocked = {a for a, r in labels.items() if r["category"] in SERVICE}
+    # A service everybody uses links nobody: a path never runs through one that is known
+    # for sure. One that is only guessed to be a service (a label from a contract name or
+    # from behaviour) weakens the path by how sure the guess is, and does not cut it:
+    # being wrong there must not hide a link.
+    services_ = {a: r for a, r in labels.items() if r["category"] in SERVICE}
+    blocked = {a for a, r in services_.items() if r["source"] not in CONFIDENCE}
+    damp = {a: 1 - CONFIDENCE[r["source"]] for a, r in services_.items() if a not in blocked}
     blocked |= {r["address"] for r in db.execute("SELECT address FROM node WHERE hub AND NOT mine")}
 
     def best_paths(start):
@@ -155,7 +183,8 @@ def trace(db, max_hops=4):
                 continue
             for other, (conf, kind) in adj[node].items():
                 if other not in path:
-                    step = -math.log(conf) - (0 if node == start else math.log(HOP_DECAY))
+                    through = 1.0 if node == start else HOP_DECAY * damp.get(node, 1.0)
+                    step = -math.log(conf) - math.log(through)
                     heapq.heappush(
                         heap, (cost + step, hops + 1, other, (*path, other), (*kinds, kind))
                     )
@@ -213,6 +242,7 @@ def verdicts(db, max_hops=4):
             shared[b].setdefault(a, set()).add(name)
 
     scans = {r["id"]: r for r in db.execute("SELECT * FROM hdwallet")}
+    missed = swaps.unchecked(db)  # swap sources that were down: nobody was fully checked
     out = [
         {  # an HD wallet no address of which was found: say so, never show it as clean
             "address": w, "wallet": w, "addresses": [], "name": r["name"], "checked": "none",
@@ -263,7 +293,7 @@ def verdicts(db, max_hops=4):
             )
         }
         services = {
-            (_entity(labels[a]["name"]), labels[a]["category"])
+            (_entity(labels[a]["name"]), labels[a]["category"], labels[a]["source"] in CONFIDENCE)
             for a in others
             if a in labels and labels[a]["category"] in SERVICE
         }
@@ -274,7 +304,7 @@ def verdicts(db, max_hops=4):
             if not all(a in synced for a in members[w]):
                 return "none"
             failed = (w in scans and scans[w]["error"]) or any(r["error"] for r in rows)
-            return "partial" if failed else "full"
+            return "partial" if failed or missed else "full"
 
         out.append(
             {
@@ -286,7 +316,9 @@ def verdicts(db, max_hops=4):
                 "name": rows[0]["name"],
                 "public": bool(rows[0]["public"]),
                 "links": sorted(links, key=lambda k: -k["confidence"]),
-                "services": [{"name": n, "category": c} for n, c in sorted(services)],
+                "services": [
+                    {"name": n, "category": c, "guess": g} for n, c, g in sorted(services)
+                ],
                 "shared_services": [
                     {"wallet": first[v], "services": sorted(names)}
                     for v, names in sorted(shared[w].items())
@@ -299,6 +331,7 @@ def verdicts(db, max_hops=4):
                         for e in [
                             scans[w]["error"] if w in scans else None,
                             *[r["error"] for r in rows],
+                            *missed,
                         ]
                         if e
                     )
@@ -309,6 +342,7 @@ def verdicts(db, max_hops=4):
                     "notes": sorted(
                         {n for a in members[w] for n in chains.notes(database.chain_of(a))}
                         | ({swaps.NOTE} if os.environ.get("CT_SWAPS", "on") != "off" else set())
+                        | ({CUT.format(n=cut)} if (cut := sum(r["cut"] for r in rows)) else set())
                     ),
                 },
             }
@@ -344,17 +378,23 @@ def origins(db, max_hops=4):
         node = nodes.get(address)
         if node and node["mine"]:
             return "own"
-        if address in labels:
-            return labels[address]["category"]
+        label = labels.get(address)
+        if label and label["source"] not in CONFIDENCE:
+            return label["category"]
         if not node or not node["synced_at"]:
-            return "unknown:not expanded"
-        if node["hub"]:
-            return "unknown:very active address"
-        if hops >= max_hops:
-            return "unknown:hop limit"
-        if not inbound.get((address, chain, token)):
-            return "unknown:no earlier transfer of this asset"
-        return None
+            stop = "unknown:not expanded"
+        elif node["hub"]:
+            stop = "unknown:very active address"
+        elif hops >= max_hops:
+            stop = "unknown:hop limit"
+        elif not inbound.get((address, chain, token)):
+            stop = "unknown:no earlier transfer of this asset"
+        else:
+            return None
+        # A label that is only a guess is the answer where the walk cannot go on anyway.
+        # Where it can, the money is followed past it: a wrong guess must not become the
+        # origin and hide the real one.
+        return label["category"] if label else stop
 
     memo = {}
 
@@ -408,6 +448,9 @@ def origins(db, max_hops=4):
                     "name": (nodes[terminal]["name"] if terminal in nodes else "")
                     or (labels[terminal]["name"] if terminal in labels else ""),
                     "kind": why.partition(":")[0],
+                    # True when the label is a guess (contract name or behaviour).
+                    "guess": terminal in labels and labels[terminal]["source"] in CONFIDENCE,
+                    "type": labels[terminal]["type"] if terminal in labels else "",
                     "public": bool(terminal in nodes and nodes[terminal]["public"]),
                     "reason": why.partition(":")[2],
                     "share": round(amount / received, 4),

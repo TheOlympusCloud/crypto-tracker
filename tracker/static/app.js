@@ -1,5 +1,5 @@
 import { create2d } from "./graph2d.js";
-import { HATCHED, KINDS, LINKS, PAPER, PATH, VERDICTS, glyphEl, kindOf, linkDash, pct, short, sourceKind, title } from "./kinds.js";
+import { HATCHED, KINDS, LINKS, PAPER, PATH, VERDICTS, glyphEl, kindOf, linkDash, pct, short, sourceKind, title, typeOf } from "./kinds.js";
 
 const $ = (id) => document.getElementById(id);
 // All text reaches the DOM as text nodes: labels and token names come from strangers.
@@ -230,6 +230,8 @@ function judge(v) {
   const best = (v.public ? v.links : exposing)[0] || v.links[0];
   // Only a complete check may say that nothing was found.
   if (!best) return v.checked === "full" ? { level: "ok", headline: "No link to your other wallets found" } : { level: "unknown", headline: "Partly checked: the last sync had errors" };
+  // Below even odds a link is a guess to look at, not a finding (a CoinJoin, a weak match).
+  if (best.confidence < 0.5) return { level: "warn", headline: `Weak guess: may be tied to ${best.public ? "public" : "private"} wallet ${nameOf(best.wallet)} (${pct(best.confidence)})` };
   if (v.public) return { level: "warn", headline: `Tied to ${plural(v.links.length, "other wallet")} of yours` };
   if (exposing.length) return { level: "bad", headline: `Linked to public wallet ${nameOf(best.wallet)} (${pct(best.confidence)})` };
   return { level: "warn", headline: `Linked to private wallet ${nameOf(best.wallet)} (${pct(best.confidence)})` };
@@ -258,7 +260,7 @@ function caveats(v) {
 function originBar(asset) {
   return h(
     "span",
-    { className: "bar", role: "img", ariaLabel: asset.sources.map((s) => `${pct(s.share)} ${KINDS[sourceKind(s)][2]}`).join(", ") },
+    { className: "bar", role: "img", ariaLabel: asset.sources.map((s) => `${pct(s.share)} ${typeOf(s)}`).join(", ") },
     asset.sources.map((s) => seg(sourceKind(s), s.share, `${pct(s.share)} ${s.name || short(s.address)}`))
   );
 }
@@ -284,7 +286,7 @@ function originRows(address) {
               { className: "rowbtn", onclick: () => showPath(s.path, `Origin of ${a.asset} in ${nameOf(address)}`, address) },
               icon(sourceKind(s), 14),
               h("b", { className: "mono" }, pct(s.share)),
-              h("span", {}, `${s.name || short(s.address)} · ${KINDS[sourceKind(s)][2]}`, h("small", {}, `${num(s.amount)} ${a.asset} · ${plural(s.path.length - 1, "hop")}${s.reason ? ` · followed no further: ${s.reason}` : ""}`))
+              h("span", {}, `${s.name || short(s.address)} · ${typeOf(s)}`, h("small", {}, `${num(s.amount)} ${a.asset} · ${plural(s.path.length - 1, "hop")}${s.reason ? ` · followed no further: ${s.reason}` : ""}`))
             )
           )
         ),
@@ -345,7 +347,17 @@ function openWallet(address) {
   if (leave()) drawGraph().catch(fail);
   const fiat = readFiat();
   const owned = readAddresses(n);
-  const wallet = (pub) => act(() => api("wallets", { address: n.addresses && !n.addresses.length ? n.wallet : address, name: n.name, public: pub }));
+  // An HD wallet none of whose addresses is known yet is addressed by its id.
+  const id = n.addresses && !n.addresses.length ? n.wallet : address;
+  const wallet = (pub) => act(() => api("wallets", { address: id, name: n.name, public: pub }));
+  const rename = h("form", { className: "rename", hidden: true }, h("label", {}, "Name ", h("input", { name: "alias", value: n.name || "", maxLength: 80, autocomplete: "off", enterKeyHint: "done" })), h("button", { className: "primary" }, "Save name"));
+  rename.onsubmit = (e) => {
+    e.preventDefault();
+    api("wallets", { address: id, name: rename.elements.alias.value, public: Boolean(n.public) })
+      .then(refresh)
+      .then(() => openWallet(address)) // the panel again, with the new name
+      .catch(fail);
+  };
   panel(
     heading(coin(n, 48), title(n), badge(n), partly(v, worth(fiat?.wallets?.[address], fiat))),
     h("div", { className: "mono" }, address),
@@ -355,8 +367,14 @@ function openWallet(address) {
       { className: "buttons" },
       h("button", { className: "primary", onclick: () => showPath([], "", address) }, "Show in graph"),
       h("button", { onclick: wallet(!n.public) }, n.public ? "Make private" : "Make public"),
-      h("button", { onclick: () => startSync([n.wallet || address]) }, "Re-sync")
+      h("button", { onclick: () => startSync([n.wallet || address]) }, "Re-sync"),
+      h("button", { ariaExpanded: "false", onclick: (e) => {
+        rename.hidden = !rename.hidden;
+        e.currentTarget.ariaExpanded = String(!rename.hidden);
+        if (!rename.hidden) rename.elements.alias.select();
+      } }, "Rename")
     ),
+    rename,
     owned.length ? h("h3", {}, addresses(owned.length)) : null,
     owned.length ? h("ul", { className: "rows addresses" }, owned.map((a) => h("li", {}, h("span", { className: "mono" }, a.address), h("span", { className: "amounts" }, (a.balances || []).map((b) => amount(b)))))) : null,
     h("h3", {}, "Can it be tied to your other wallets?"),
@@ -374,7 +392,7 @@ function hopText(a, b) {
   const facts = graph.edges.filter((e) => (e.src === a && e.dst === b) || (e.src === b && e.dst === a));
   const guesses = graph.links.filter((k) => (k.a === a && k.b === b) || (k.a === b && k.b === a));
   return [
-    ...facts.map((e) => `${e.src === a ? "sent" : "received"} ${num(e.amount)} ${e.asset} on ${e.chain} (${plural(e.count, "transfer")}, ${e.first === e.last ? day(e.first) : `${day(e.first)} to ${day(e.last)}`})`),
+    ...facts.map((e) => `${e.src === a ? "sent" : "received"} ${num(e.amount)} ${e.asset} on ${e.chain} (${plural(e.count, "transfer")}, ${e.first === e.last ? day(e.first) : `${day(e.first)} to ${day(e.last)}`})${e.coinjoin ? " · inside a CoinJoin, which does not show who paid whom" : ""}`),
     ...guesses.map((k) => `guess: ${k.kind}, ${pct(k.confidence)} confidence (${plural(k.count, "transaction")})`),
   ];
 }
@@ -401,7 +419,7 @@ function showPath(path, heading, back) {
         h(
           "li",
           {},
-          h("button", { className: "rowbtn", onclick: () => selectNode(byAddress.get(a)) }, mark(a), h("span", {}, nameOf(a), h("small", {}, KINDS[kindOf(byAddress.get(a) || {})][2]))),
+          h("button", { className: "rowbtn", onclick: () => selectNode(byAddress.get(a)) }, mark(a), h("span", {}, nameOf(a), h("small", {}, typeOf(byAddress.get(a) || {})))),
           i < path.length - 1 ? h("div", { className: "hop" }, h("span", { className: "conf bad" }, String(i + 1)), h("ul", { className: "hint" }, hopText(a, path[i + 1]).map((t) => h("li", {}, t)))) : null
         )
       )
@@ -428,7 +446,9 @@ function selectNode(n) {
   };
   const facts = h("dl", {});
   const row = (term, value) => value && facts.append(h("dt", {}, term), h("dd", {}, value));
-  row("Type", KINDS[kindOf(n)][2]);
+  row("Type", typeOf(n));
+  // Where the name comes from, so a guess is never taken for a fact.
+  row("Named by", n.label && { user: "you", dataset: "an open label set", protocol: "the swap protocol's own records", explorer: "its verified contract name at the explorer", heuristic: `its behaviour: a guess, ${pct(n.label_confidence)} sure` }[n.label_source]);
   row("Label", n.label);
   row("Synced", n.synced_at ? day(n.synced_at) : "not yet, so its own counterparties are unknown");
   row("Note", n.hub && "very active address: only its newest transactions are loaded, and traces do not pass through it");
@@ -523,7 +543,7 @@ function renderLookup() {
   const track = set({ mine: 1, public: 0, watched: false }, () => api("wallets", { address: v.address, name: "", public: false }).then(() => startSync([v.address])));
   const watch = v.watched ? set({ watched: false }, () => api(`watch/${encodeURIComponent(v.address)}`, null, "DELETE")) : set({ watched: true }, () => api("watch", { address: v.address }));
   const party = (c) => {
-    const kind = KINDS[kindOf(c)][2];
+    const kind = typeOf(c);
     const moved = [c.received.length ? `in ${sums(c.received)}` : "", c.sent.length ? `out ${sums(c.sent)}` : "", c.count ? plural(c.count, "transfer") : "", c.count ? (c.first === c.last ? day(c.first) : `${day(c.first)} to ${day(c.last)}`) : ""];
     return h(
       "li",
