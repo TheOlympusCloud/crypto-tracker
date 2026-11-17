@@ -16,8 +16,13 @@ def sources(address):
     """The histories one address has, each read and bookmarked on its own."""
     chain = database.chain_of(address)
     if chain == "evm":
-        readable = [c for c, cfg in chains.evm_chains().items() if not cfg.get("needs_key")]
-        return [f"{c}:{action}" for c in readable for action in LISTS]
+        return [
+            f"{c}:{action}"
+            for c, cfg in chains.evm_chains().items()
+            if not cfg.get("needs_key")
+            # NodeReal reads the three lists at once (chains.page_nodereal)
+            for action in (("transfers",) if cfg.get("api") == "nodereal" else LISTS)
+        ]
     if chain == "tron":
         return ["tron:native", "tron:trc20"]
     return [chain]
@@ -57,7 +62,9 @@ def state(db, address):
     return {"complete": False, "oldest_ts": None if None in open_ else max(open_)}
 
 
-BUDGET = {"default": 40, "solana": 8}  # pages per source per sync (Solana: 25 transactions each)
+# Pages per source per sync. Solana: 25 transactions each. BNB Chain: a window of 100,000
+# blocks (about a day), two paced queries, about 4 s.
+BUDGET = {"default": 40, "solana": 8, "bsc": 20}
 
 
 def _reader(client, source, address):
@@ -68,6 +75,9 @@ def _reader(client, source, address):
     if action in LISTS:
         cfg = chains.evm_chains()[chain]
         return lambda cursor, stop: chains.page_evm(client, cfg, address, action, cursor)
+    if action == "transfers":
+        cfg = chains.evm_chains()[chain]
+        return lambda cursor, stop: chains.page_nodereal(client, cfg, address, cursor)
     if chain == "tron":
         return lambda cursor, stop: chains.page_tron(client, address, action, cursor)
     if chain == "solana":
@@ -85,6 +95,9 @@ def _convert(source, address, items, keep):
     if chain == "solana":
         rows = [r for sig, tx in items if tx for r in chains.solana_transfers(address, sig, tx)]
         return {"transfers": rows, **nothing}
+    if action == "transfers":
+        lists = chains.nodereal_lists(chain, chains.evm_chains()[chain], address, items)
+        return {**nothing, **lists}
     if action in LISTS:
         symbol = chains.evm_chains()[chain]["symbol"]
         mine = [it for it in items if action == "txlist" and str(it.get("from")).lower() == address]

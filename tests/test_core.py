@@ -167,8 +167,8 @@ def test_trace_finds_exposure_and_refuses_paths_through_services(db):
             ),
             "Not read on base, optimism. Needs a free Blockscout key (CT_BLOCKSCOUT_KEY).",
             (
-                "Not read on bsc. Etherscan's free plan no longer covers BNB Chain; a paid key "
-                "can be set in a CT_CHAINS file."
+                "Not read on bsc. Needs a free NodeReal key (CT_NODEREAL_KEY): Etherscan's free "
+                "plan no longer covers BNB Chain."
             ),
             swaps.NOTE,
         ],
