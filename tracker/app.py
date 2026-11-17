@@ -21,10 +21,26 @@ SESSION = "ct_session"
 SESSION_DAYS = 400  # the longest a browser keeps a cookie
 
 
+SECRETS = {}  # database path -> the random secret its install keys session cookies with
+
+
 def session(password):
-    """The session cookie's value: it proves the password without carrying it, and a new
-    password ends every session."""
-    return hmac.new(password.encode(), b"crypto-tracker session", "sha256").hexdigest()
+    """The session cookie's value: the password's HMAC under a secret made once per install,
+    so the cookie tells nothing about the password, and a new password ends every session."""
+    path = os.environ.get("CT_DB", "tracker.db")
+    if path not in SECRETS:
+        db = database.connect()
+        try:
+            with db:
+                db.execute(
+                    "INSERT OR IGNORE INTO meta VALUES ('session_secret', ?)",
+                    (secrets.token_hex(32),),
+                )
+            row = db.execute("SELECT value FROM meta WHERE key = 'session_secret'").fetchone()
+            SECRETS[path] = bytes.fromhex(row[0])
+        finally:
+            db.close()
+    return hmac.new(SECRETS[path], password.encode(), "sha256").hexdigest()
 
 
 @app.middleware("http")

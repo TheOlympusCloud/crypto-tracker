@@ -316,7 +316,7 @@ def test_api_wallets_labels_and_auth(db, monkeypatch):
     assert client.get("/api/graph", auth=("any", "s3cret"), headers=remote).status_code == 200
 
 
-def test_one_good_password_keeps_a_phone_signed_in(db, monkeypatch):
+def test_one_good_password_keeps_a_phone_signed_in(db, monkeypatch, tmp_path):
     """Home-screen apps and the Android app's WebView forget HTTP Basic between launches, so
     one good password earns a cookie, which they keep."""
     from tracker.app import app
@@ -344,6 +344,15 @@ def test_one_good_password_keeps_a_phone_signed_in(db, monkeypatch):
     # A made-up cookie is refused, and a new password signs every device out.
     forged = TestClient(app, base_url="http://localhost", cookies={"ct_session": "0" * 64})
     assert forged.get("/api/graph").status_code == 401
+    # The cookie is keyed by a random secret of this install: it tells nothing about the
+    # password, outlives a restart, and is worth nothing at another install.
+    import tracker.app as server
+
+    server.SECRETS.clear()  # a restart
+    assert phone.get("/api/graph").status_code == 200
+    monkeypatch.setenv("CT_DB", str(tmp_path / "another-install.db"))
+    assert phone.get("/api/graph").status_code == 401
+    monkeypatch.setenv("CT_DB", str(tmp_path / "t.db"))
     monkeypatch.setenv("CT_PASSWORD", "n3w")
     assert phone.get("/api/graph").status_code == 401
 
