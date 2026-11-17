@@ -129,6 +129,42 @@ docker run -p 8000:8000 -v tracker-data:/data -e CT_PASSWORD=change-me crypto-tr
 | `CT_PRICES` | `on` | `off` never asks for prices. |
 | `CT_BTC_PAGES`, `CT_EVM_ROWS` | `8`, `1000` | History loaded per address (pages of 25 / rows per list). |
 
+## Android
+
+The web app installs from Chrome's menu ("Add to Home screen") when your server has HTTPS
+with a certificate the phone trusts. For a server on the LAN over plain http, or with a
+self-signed certificate, there is a small Android app instead. It is only a frame around
+the same pages: it asks where your server is and shows it.
+
+Install:
+
+1. Copy `crypto-tracker.apk` to the phone (Android 10 or newer) and open it. Android asks
+   once to allow installing from that source.
+2. Type the server's address, for example `192.168.1.20:8000` or `https://tracker.example`.
+   - **Plain http** only works after ticking its box. Nothing is encrypted then: anyone on
+     the same network can read your wallets and the password.
+   - **Self-signed certificate**: tick its box. On first contact the app shows the
+     certificate's SHA-256 fingerprint; accept only if it equals the one on your server
+     (`openssl x509 -in cert.pem -noout -fingerprint -sha256`). The app then accepts that
+     certificate and no other.
+3. Enter the server's password when asked. It is remembered on the phone.
+
+To change the server later, or to forget the password and certificate, long-press the app
+icon and choose "Server settings".
+
+The QR scanner uses the camera live over https (also self-signed, once accepted). Over
+plain http a page is not allowed a live camera, so the scanner's "Take a photo" is used.
+
+Build it yourself with the Android SDK and a JDK, no Gradle:
+
+```sh
+keytool -genkeypair -keystore release.jks -alias crypto-tracker -keyalg RSA -keysize 3072 -validity 10950
+ANDROID_HOME=~/Android/Sdk ANDROID_KEYSTORE=release.jks ANDROID_KEYSTORE_PASS=... android/build.sh
+```
+
+An update only installs over the old app when it is signed with the same key, so keep the
+keystore. The app has not been run on a real phone yet.
+
 ## Look up an address
 
 The box at the top takes an address or a payment URI (`bitcoin:`, `litecoin:`,
