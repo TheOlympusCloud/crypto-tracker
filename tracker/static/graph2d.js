@@ -1,6 +1,6 @@
 // Flat wallet graph (Cytoscape): the fallback for phones, for browsers without WebGL and
 // for anyone who prefers it. Same interface as graph3d.js, same coins and line styles.
-import { KINDS, PAPER, PATH, glyphUrl, kindOf, linkColor, linkDash, pct, title } from "./kinds.js";
+import { KINDS, PAPER, PATH, chainOf, glyphUrl, kindOf, linkColor, linkDash, pct, title } from "./kinds.js";
 
 const COSE_MAX = 250; // nodes; cose is quadratic per pass and freezes the page far beyond this
 
@@ -161,7 +161,7 @@ export function create2d(el, { onSelect }) {
         data: {
           id: n.address,
           label: n.category ? `${title(n)} · ${word}` : title(n),
-          image: glyphUrl(shape, color, !n.mine && !n.synced_at && !n.category), // dim: not expanded yet
+          image: glyphUrl(shape, color, !n.mine && !n.synced_at && !n.category, chainOf(n)), // dim: not expanded yet
           size: n.mine ? 40 * big : n.category ? 24 * big : 16,
           font: NAME,
           mine: Boolean(n.mine),

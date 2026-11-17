@@ -72,6 +72,32 @@ nav button[aria-current] { background: var(--ink); color: var(--paper); }
 label.button { margin: 0; }
 label.button:focus-within { outline: 3px solid var(--ink); outline-offset: 2px; }
 .holdings li { align-items: baseline; font-size: 17px; }
+/* Chain marks: beside every address, and in the lookup box as soon as what is typed reads as one. */
+.chainmark { display: inline-block; vertical-align: -.2em; margin-right: 6px; }
+#boxchain { display: flex; flex: none; padding-left: 12px; }
+#boxchain:empty { display: none; }
+#boxchain:not(:empty) + input { padding-left: 4px; }
+.addr { display: flex; align-items: center; gap: 8px; overflow-wrap: anywhere; }
+.addr .chainmark { margin: 0; }
+/* Before a transfer: the summary line with its reason, then everything it rests on. */
+.verdict .why { display: block; font-weight: 400; }
+.signals { margin: 10px 0 0; padding: 0 0 0 20px; color: var(--ink); font-size: 14px; }
+.signals li + li { margin-top: 4px; }
+.signals .bad { color: var(--linked-ink); font-weight: 500; }
+.signals .warn { color: var(--tied-ink); }
+.signals .unknown { color: var(--ink-quiet); }
+/* A token's trust: a pill that opens on its reason. */
+.trust { margin-left: auto; color: var(--ink-quiet); }
+.trust summary { display: inline-flex; align-items: center; gap: 5px; padding: 6px 12px; border: 1.5px dashed currentColor; border-radius: var(--pill); cursor: pointer; list-style: none; font: 700 11px/1 var(--sans); letter-spacing: .06em; text-transform: uppercase; }
+.trust summary::-webkit-details-marker { display: none; }
+.trust.verified { color: #006f7a; }
+.trust.verified summary { border-style: solid; }
+.trust.scam { color: var(--linked-ink); }
+.trust.scam summary { border-style: solid; background: var(--linked-wash); }
+.trust[open] { display: flex; flex-direction: column; align-items: flex-end; flex-basis: 100%; }
+.trust p { align-self: stretch; margin: 8px 0 0; color: var(--ink); font: 400 14px/1.4 var(--sans); }
+.trust p small { display: block; margin-top: 4px; overflow-wrap: anywhere; color: var(--ink-quiet); }
+.scams > summary { padding: 10px 8px; cursor: pointer; color: var(--linked-ink); font: 700 14px var(--sans); }
 
 /* ---------- type ---------- */
 h2, h3, h4 { font-family: var(--display); font-weight: 800; font-stretch: condensed; margin: 0; }

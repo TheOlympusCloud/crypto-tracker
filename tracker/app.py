@@ -13,7 +13,7 @@ from . import alerts, chains, graph, hd, lookup, prices, sync, uri
 from . import db as database
 
 app = FastAPI(title="Crypto tracker", docs_url=None, redoc_url=None)
-CATEGORIES = {"cex", "dex", "bridge", "mixer", "defi", "service", "other"}
+CATEGORIES = {"cex", "dex", "bridge", "mixer", "flagged", "defi", "service", "other"}
 
 
 @app.middleware("http")
@@ -84,7 +84,7 @@ def get_analysis(max_hops: int = 4):
             "fiat": prices.summary(db),
             "alerts": alerts.recent(db),
             "watched": [
-                dict(r)
+                {**r, "chain": database.chain_of(r["address"])}
                 for r in db.execute(
                     "SELECT w.address, l.name label, l.category FROM watch w "
                     "LEFT JOIN label l USING (address) ORDER BY w.ts DESC"
@@ -184,6 +184,7 @@ def resolve(pasted: Pasted):
         # the chains it can read are offered instead, and the missing one is named.
         "hint": hint if hint in readable else None,
         "needs_key": hint if hint and hint not in readable else None,
+        "icon": chains.icon(chain, [hint] if hint in readable else []),
     }
 
 

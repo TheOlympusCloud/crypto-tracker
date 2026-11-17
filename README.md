@@ -34,10 +34,10 @@ One web app, installable on a phone as a PWA.
 | Bitcoin, Litecoin | yes | Full: history, common-input and change heuristics, counterparties expanded. HD wallets on Bitcoin. |
 | Bitcoin Cash | yes | Same heuristics; the 100 newest transactions per address. |
 | Dogecoin | yes | Same heuristics; the 50 newest transactions. The free indexer allows about 100 lookups an hour: when that is used up the sync moves on, and the remaining addresses are read on a later sync. |
-| Ethereum, Avalanche C | yes | Native coin and ERC-20 transfers, counterparties expanded. |
+| Ethereum, Avalanche C | yes | Native coin and ERC-20 transfers, every ERC-20 token held, counterparties expanded. |
 | Base, Arbitrum, Optimism, Polygon, BNB Chain | **needs `CT_ETHERSCAN_KEY`** | Same as Ethereum once the key is set. One free Etherscan key covers them. |
 | Tron | yes | TRX and TRC-20 transfers, the 200 newest; counterparties not expanded automatically. |
-| Solana | yes | SOL and SPL tokens, the 25 newest transactions, read as net balance changes; counterparties not expanded automatically. |
+| Solana | yes | SOL and SPL tokens (Token-2022 too, e.g. xStocks), the 25 newest transactions, read as net balance changes; counterparties not expanded automatically. |
 
 The same EVM address is read on every EVM chain. Chains that are read less deeply say so
 in each wallet's verdict, and chains waiting for a key are listed as such instead of
@@ -84,9 +84,33 @@ other parameters are dropped. The chain follows from the format. Only an EVM add
 needs a question, because it exists on every EVM chain: you pick the chains to read,
 unless the URI names one.
 
-The view shows what the address holds per chain, with values, and who it deals with:
-your own wallets first, then its counterparties with their labels, drawn around it in the
-graph. Tokens the price source does not know well are left out, with their transfers.
+Each address shows the mark of its chain: in the box as soon as what you type or scan
+reads as an address, in the wallet views and lists, and on the nodes of the graph. An EVM
+address shows the generic EVM mark until one chain is chosen.
+
+The view opens on a summary for whoever is about to send money there: **risky to send
+to**, **check before sending**, **not fully checked** or **no red flags found**, with the
+reason, then what it rests on: the chain, how old and how active the address is, its
+label, your wallets it dealt with, and the red flags looked for. Those are a label that
+flags it (scam, hack or sanctions, from the open label sets or set by you), a mixer, direct
+dealings with either, an address that was never used, a new one, and an address that
+starts and ends like one of your wallets or an address you paid: the trap of address
+poisoning. It never says safe.
+
+Then what the address holds per chain, every token included, with values, and who it
+deals with: your own wallets first, then its counterparties with their labels, drawn
+around it in the graph. Each token carries a badge, its reason one tap away:
+
+- **verified**: the native coin, or a token whose exact contract is on Uniswap's default
+  token list (EVM, Solana) or Jupiter's verified list (Solana);
+- **likely scam**: a name that advertises a website or a reward; a token that calls itself
+  like a listed one (USDC, also with lookalike letters) without being it; or a token that
+  arrived unasked, in transactions the address took no part in, was never moved and has
+  no reliable price. These are folded away under the rest;
+- **unknown**: everything else. It is the default: a market price alone is no list match.
+
+Only tokens with a reliable price get a value, and only their transfers make
+counterparties: anyone can airdrop a token to anybody.
 
 A lookup is read-only. The address is fetched live and nothing about it is stored, so it
 is not treated as yours and no verdict or alert changes. From the view you can:
@@ -132,6 +156,10 @@ Swaps: each of your addresses is also looked up at the THORChain and Maya Midgar
 Prices: only asset identifiers (coin names, token contracts) go to the price API, never
 addresses or amounts.
 
+Token checks: Uniswap's token list is downloaded whole, so it learns nothing. The Solana
+mints a looked-up address holds go to Jupiter's token API, like token contracts to the
+price API; `CT_PRICES=off` spares it too.
+
 ## Data sources
 
 - Bitcoin and Litecoin: any Esplora API (blockstream.info, litecoinspace.org). No key.
@@ -142,10 +170,15 @@ addresses or amounts.
   `CT_CHAINS`. Public Blockscout instances allow only a handful of calls without a key.
 - Prices: [DefiLlama](https://defillama.com/docs/api) coin prices, no key, cached for
   10 minutes; exchange rate from the ECB via frankfurter.app.
+- Tokens: Routescan lists every ERC-20 an address holds; [Uniswap's default token
+  list](https://tokens.uniswap.org) and [Jupiter's token API](https://dev.jup.ag/docs/token-api)
+  (names and verified flag of Solana tokens), no key, cached for a day.
 - Labels: [etherscan-labels](https://github.com/brianleect/etherscan-labels) (EVM, MIT, a
   2023 snapshot) and [GraphSense TagPacks](https://github.com/graphsense/graphsense-tagpacks)
   (Bitcoin and Ethereum, MIT). They are downloaded on request, not shipped. Labels you set
-  by hand in the UI always win.
+  by hand in the UI always win. Phishing, hack, scam and sanctions labels are filed as
+  **flagged**; a database labelled before that keeps them as "other" until the label sets
+  are downloaded again.
 
 ## What is a fact and what is a guess
 
@@ -189,8 +222,10 @@ or at the hop limit, and says which.
   Assets without a known price are listed but left out of the totals.
 - XRP, TON, Cardano, Cosmos and Monero are not supported.
 - Litecoin's old script addresses starting with 3 are read as Bitcoin; use the M form.
-- On Solana a token's symbol comes from the price source; tokens it does not know show
-  as the first characters of their mint address.
+- On Solana a token's symbol comes from Jupiter or the price source; tokens neither knows
+  show as the first characters of their mint address.
+- The token badge knows only the lists above and its own rules: a scam token can still be
+  "unknown", and a lookup with an incomplete history never calls a token unasked.
 - A token that only borrows a known name (a fake USDC) is listed apart, unpriced.
 - Very active addresses load only their newest history and are flagged in the UI.
 - Token balances come from the transfer history unless the indexer has a token-balance

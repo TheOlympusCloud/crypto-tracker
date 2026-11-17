@@ -40,6 +40,25 @@ CEX = [
 ]
 CATEGORIES = [  # first match wins
     ("mixer", ["tornado-cash", "mixing_service", "mixer", "coinjoin"]),
+    (
+        "flagged",  # scams, hacks and sanctions: never send money there
+        [
+            "phish-hack",
+            "phishing",
+            "scam",
+            "heist",
+            "exploit",
+            "hack",
+            "ransomware",
+            "sextortion",
+            "fraud",
+            "ponzi",
+            "take-action",
+            "spam-token",
+            "ofac-sanctions-lists",
+            "sanctions",
+        ],
+    ),
     ("bridge", ["bridge", "cross-chain", "multichain", "hop-protocol"]),
     ("cex", CEX),
     (
@@ -89,11 +108,18 @@ CATEGORIES = [  # first match wins
 ]
 
 
+FLAGGED_NAMES = re.compile(r"phish|scam|exploiter|hacker|drainer|heist|sanction", re.IGNORECASE)
+
+
 def categorize(slugs, name=""):
     slugs = {s.lower() for s in slugs}
     first = re.split(r"[\s:.]", name.lower(), maxsplit=1)[0]
     for category, keys in CATEGORIES:
-        if slugs & set(keys) or (category == "cex" and first in CEX[:-1]):
+        if (
+            slugs & set(keys)
+            or (category == "cex" and first in CEX[:-1])
+            or (category == "flagged" and FLAGGED_NAMES.search(name))
+        ):
             return category
     return "other"
 

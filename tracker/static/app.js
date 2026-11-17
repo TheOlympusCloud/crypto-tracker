@@ -1,5 +1,5 @@
 import { create2d } from "./graph2d.js";
-import { HATCHED, KINDS, LINKS, PAPER, PATH, VERDICTS, glyphEl, kindOf, linkDash, pct, short, sourceKind, title } from "./kinds.js";
+import { HATCHED, KINDS, LINKS, PAPER, PATH, TRUST, VERDICTS, chainEl, chainLabel, glyphEl, kindOf, linkDash, pct, short, sourceKind, title } from "./kinds.js";
 
 const $ = (id) => document.getElementById(id);
 // All text reaches the DOM as text nodes: labels and token names come from strangers.
@@ -10,7 +10,8 @@ function h(tag, props, ...children) {
   el.append(...children.flat().filter((c) => c != null && c !== false));
   return el;
 }
-const num = (x) => Number(x).toLocaleString("en", { maximumSignificantDigits: 5 });
+// Spam tokens come in absurd amounts: those are written 1E38, not with 38 digits.
+const num = (x) => Number(x).toLocaleString("en", { maximumSignificantDigits: 5, notation: Math.abs(x) >= 1e15 ? "scientific" : "standard" });
 const day = (ts) => (ts ? new Date(ts * 1000).toISOString().slice(0, 10) : "?");
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 const addresses = (n) => `${n} address${n === 1 ? "" : "es"}`;
@@ -211,7 +212,7 @@ function renderPortfolio() {
       return h(
         "button",
         { className: "card wallet", style: `--i:${i}`, onclick: () => openWallet(v.address) },
-        h("span", { className: "head" }, coin(n), h("span", {}, h("span", { className: "name" }, title(n)), h("span", { className: "mono" }, owned ? addresses(owned) : short(v.address))), h("span", { className: "go", ariaHidden: "true" })),
+        h("span", { className: "head" }, coin(n), h("span", {}, h("span", { className: "name" }, title(n)), h("span", { className: "mono" }, chainEl(n.chain, 14), owned ? addresses(owned) : short(v.address))), h("span", { className: "go", ariaHidden: "true" })),
         h("span", { className: "tags" }, badge(n), fiat && v.checked === "none" ? h("span", { className: "worth mono", title: "Not checked, so its value is unknown" }, "—") : partly(v, worth(fiat?.wallets?.[v.address], fiat))),
         h("span", { className: "amounts" }, held(n).slice(0, 4).map((b) => amount(b))),
         verdictBox("span", judge(v)),
@@ -348,7 +349,7 @@ function openWallet(address) {
   const wallet = (pub) => act(() => api("wallets", { address: n.addresses && !n.addresses.length ? n.wallet : address, name: n.name, public: pub }));
   panel(
     heading(coin(n, 48), title(n), badge(n), partly(v, worth(fiat?.wallets?.[address], fiat))),
-    h("div", { className: "mono" }, address),
+    h("div", { className: "mono addr" }, chainEl(n.chain, 18), address),
     h("ul", { className: "amounts" }, held(n).map((b) => h("li", {}, amount(b, `${b.asset} · ${b.chain}`)))),
     h(
       "div",
@@ -416,7 +417,7 @@ function selectNode(n) {
     "form",
     {},
     h("label", {}, "Label ", h("input", { name: "label", value: n.label || "", maxLength: 80, placeholder: "e.g. Kraken deposit" })),
-    h("label", {}, "Type ", h("select", { name: "category" }, ["cex", "dex", "bridge", "mixer", "defi", "service", "other"].map((c) => h("option", { value: c, selected: c === (n.category || "other") }, KINDS[c][2])))),
+    h("label", {}, "Type ", h("select", { name: "category" }, ["cex", "dex", "bridge", "mixer", "flagged", "defi", "service", "other"].map((c) => h("option", { value: c, selected: c === (n.category || "other") }, KINDS[c][2])))),
     h("button", {}, "Save label")
   );
   form.onsubmit = (e) => {
@@ -429,6 +430,7 @@ function selectNode(n) {
   const facts = h("dl", {});
   const row = (term, value) => value && facts.append(h("dt", {}, term), h("dd", {}, value));
   row("Type", KINDS[kindOf(n)][2]);
+  row("Chain", chainLabel(n.chain));
   row("Label", n.label);
   row("Synced", n.synced_at ? day(n.synced_at) : "not yet, so its own counterparties are unknown");
   row("Note", n.hub && "very active address: only its newest transactions are loaded, and traces do not pass through it");
@@ -436,7 +438,7 @@ function selectNode(n) {
   for (const b of n.balances || []) row(`${b.asset} · ${b.chain}`, num(b.amount));
   panel(
     heading(n.mine ? coin(n, 48) : h("span", { className: "coin" }, icon(kindOf(n), 32)), title(n), n.mine ? badge(n) : null),
-    h("div", { className: "mono" }, n.address),
+    h("div", { className: "mono addr" }, chainEl(n.chain, 18), n.address),
     facts,
     h(
       "div",
@@ -466,11 +468,22 @@ function leave() {
 const chainName = (c) => (analysis.chains || []).find((x) => x.chain === c)?.name || c;
 const sums = (list) => list.map((b) => `${num(b.amount)} ${b.asset}`).join(", ");
 
+// The chain's mark in the box, as soon as what is typed, pasted or scanned reads as an address.
+const markBox = (key) => $("boxchain").replaceChildren(...[chainEl(key, 20)].filter(Boolean));
+let typing = 0;
+$("lookup").elements.q.oninput = (e) => {
+  clearTimeout(typing);
+  markBox("");
+  const q = e.target.value.trim();
+  if (q) typing = setTimeout(() => api("resolve", { q }).then((f) => e.target.value.trim() === q && markBox(f.icon), () => {}), 300);
+};
+
 // From a pasted or scanned line to the wallet view. Only an EVM address needs a question.
 async function lookUp(text) {
   $("status").textContent = "";
   const found = await api("resolve", { q: text });
   $("lookup").elements.q.value = found.address;
+  markBox(found.icon);
   const missing = found.needs_key ? `This code is for ${chainName(found.needs_key)}, which this server cannot read without an Etherscan API key (CT_ETHERSCAN_KEY). The address can still be read on these chains.` : "";
   if (found.chain === "evm" && !found.hint && (missing || found.chains.length > 1)) return askChains(found.address, found.chains, found.chains, missing);
   return openLookup(found.address, found.hint ? [found.hint] : []);
@@ -480,7 +493,7 @@ function askChains(address, chains, picked, missing = "") {
   const form = h(
     "form",
     {},
-    chains.map((c) => h("label", { className: "row" }, h("input", { type: "checkbox", value: c, checked: picked.includes(c) }), chainName(c))),
+    chains.map((c) => h("label", { className: "row" }, h("input", { type: "checkbox", value: c, checked: picked.includes(c) }), chainEl(c, 18), chainName(c))),
     h("button", { className: "primary" }, "Look up")
   );
   form.onsubmit = (e) => {
@@ -496,6 +509,7 @@ async function openLookup(address, chains = []) {
   try {
     const v = await api(`lookup/${encodeURIComponent(address)}${chains.length ? `?chains=${chains.join(",")}` : ""}`);
     if (mine !== asked) return;
+    if ($("lookup").elements.q.value === address) markBox(v.icon); // an EVM address now has its chain
     scope = v;
     stale = true;
     shownPath = [];
@@ -532,7 +546,7 @@ function renderLookup() {
         "button",
         { className: "rowbtn", onclick: () => selectNode(c) },
         c.mine ? coin(c, 28) : icon(kindOf(c), 14),
-        h("span", {}, c.mine ? `${title(c)} (${c.public ? "public" : "private"})` : `${title(c)} · ${kind}`, h("small", {}, moved.filter(Boolean).join(" · "))),
+        h("span", {}, chainEl(c.chain, 14), c.mine ? `${title(c)} (${c.public ? "public" : "private"})` : `${title(c)} · ${kind}`, h("small", {}, moved.filter(Boolean).join(" · "))),
         c.guess ? h("span", { className: `conf ${c.mine ? "bad" : "warn"}`, title: `Guess that both have one owner: ${c.guess.kind}, ${pct(c.guess.confidence)} confidence` }, pct(c.guess.confidence), h("span", { className: "sr" }, ` ${c.guess.kind} guess`)) : null
       )
     );
@@ -542,16 +556,23 @@ function renderLookup() {
   const gaps = [
     ...v.errors.map((e) => `Not everything could be read (${e}).`),
     v.truncated ? "This address is very active and only its newest transactions are loaded: older counterparties and the tokens it holds are missing." : null,
-    v.hidden ? `${plural(v.hidden, "token")} without a trusted price ${v.hidden === 1 ? "is" : "are"} left out, with the transfers of such tokens: anyone can airdrop those.` : null,
+    v.unvouched ? `Transfers of the ${plural(v.unvouched, "token")} without a reliable price are left out of the counterparties: anyone can airdrop those.` : null,
     v.more ? `${plural(v.more, "quieter counterparty").replace("partys", "parties")} not listed.` : null,
     ...v.notes,
     v.mine ? null : "Only direct dealings with your wallets show here. Links that run through other addresses are searched once you track it.",
     "It was read live and nothing about it is kept: it takes no part in your verdicts unless you track it. The indexer of its chain did see this lookup.",
   ];
+  // Every token is listed; likely scams are folded away under the rest.
+  const holding = (b) => h("li", {}, amount(b, `${b.asset} · ${chainName(b.chain)}`), b.value == null ? h("span", { className: "worth" }, "no price") : worth(b.value, fiat), trustEl(b));
+  const kept = v.assets.filter((b) => b.trust.level !== "scam");
+  const scams = v.assets.filter((b) => b.trust.level === "scam");
+  const r = v.risk;
   panel(
     heading(v.mine ? coin(v, 48) : h("span", { className: "coin" }, icon(kindOf(v), 32)), title(v), state, worth(v.value, fiat)),
-    h("div", { className: "mono" }, v.address),
-    v.chain === "evm" ? h("p", { className: "hint" }, `Read on ${v.chains.map(chainName).join(", ") || "no chain"}.`) : null,
+    h("div", { className: "mono addr" }, chainEl(v.icon, 18), v.address),
+    // Before a transfer, at a glance: is it risky to send to, and why.
+    verdictBox("div", { level: r.level, headline: r.headline }, h("span", { className: "why" }, r.reason)),
+    h("ul", { className: "signals" }, r.reasons.filter((x) => x.text !== r.reason).map((x) => h("li", { className: x.level }, x.text))),
     h(
       "div",
       { className: "buttons" },
@@ -563,7 +584,8 @@ function renderLookup() {
     ),
     v.mine ? null : h("p", { className: "hint" }, "Tracking adds it to your wallets, as private, and syncs it. Watching only keeps it at hand."),
     h("h3", {}, "What it holds"),
-    v.assets.length ? h("ul", { className: "rows addresses holdings" }, v.assets.map((b) => h("li", {}, amount(b, `${b.asset} · ${chainName(b.chain)}`), worth(b.value, fiat)))) : h("p", { className: "hint" }, "Nothing found."),
+    kept.length ? h("ul", { className: "rows addresses holdings" }, kept.map(holding)) : scams.length ? null : h("p", { className: "hint" }, "Nothing found."),
+    scams.length ? h("details", { className: "scams" }, h("summary", {}, plural(scams.length, "likely scam token")), h("ul", { className: "rows addresses holdings" }, scams.map(holding))) : null,
     h("h3", {}, v.mine ? "Your other wallets it dealt with" : "Links to your wallets"),
     yours.length
       ? h("ul", { className: "rows" }, yours.map(party))
@@ -576,6 +598,17 @@ function renderLookup() {
   );
 }
 
+// A token's trust, its reason one tap away. "verified" only means that a list names it.
+function trustEl(b) {
+  const [color, shape, word] = TRUST[b.trust.level];
+  return h(
+    "details",
+    { className: `trust ${b.trust.level}` },
+    h("summary", {}, glyphEl(shape, color, 14), word),
+    h("p", {}, b.trust.reason, b.name ? ` Its name: “${b.name}”.` : "", b.token ? h("small", { className: "mono" }, b.token) : null)
+  );
+}
+
 function renderWatched() {
   const watched = analysis.watched || [];
   $("watched").replaceChildren(
@@ -584,7 +617,7 @@ function renderWatched() {
       h(
         "li",
         {},
-        h("button", { className: "rowbtn", onclick: () => lookUp(w.address).catch(fail) }, icon(kindOf(w), 14), h("span", {}, title(w), h("small", { className: "mono" }, w.address)), h("span", { className: "tag watched" }, "watched")),
+        h("button", { className: "rowbtn", onclick: () => lookUp(w.address).catch(fail) }, icon(kindOf(w), 14), h("span", {}, title(w), h("small", { className: "mono" }, chainEl(w.chain, 14), w.address)), h("span", { className: "tag watched" }, "watched")),
         h("span", { className: "buttons" }, h("button", { onclick: act(() => api(`watch/${encodeURIComponent(w.address)}`, null, "DELETE")) }, "Remove"))
       )
     )
@@ -718,7 +751,7 @@ function renderWallets() {
       h(
         "li",
         {},
-        h("button", { className: "rowbtn", onclick: () => openWallet(n.address) }, coin(n, 28), h("span", {}, title(n), h("small", { className: "mono" }, n.addresses ? addresses(n.addresses.length) : short(n.address))), badge(n), n.error || failed.get(n.address) ? h("span", { className: "tag error", title: n.error || failed.get(n.address) }, "sync error") : null),
+        h("button", { className: "rowbtn", onclick: () => openWallet(n.address) }, coin(n, 28), h("span", {}, title(n), h("small", { className: "mono" }, chainEl(n.chain, 14), n.addresses ? addresses(n.addresses.length) : short(n.address))), badge(n), n.error || failed.get(n.address) ? h("span", { className: "tag error", title: n.error || failed.get(n.address) }, "sync error") : null),
         h("span", { className: "buttons" }, h("button", { onclick: act(() => api("wallets", { address: n.addresses && !n.addresses.length ? n.wallet : n.address, name: n.name, public: !n.public })) }, n.public ? "Make private" : "Make public"), h("button", { onclick: act(() => api(`wallets/${encodeURIComponent(n.wallet || n.address)}`, null, "DELETE")) }, "Remove"))
       )
     )
@@ -828,7 +861,7 @@ $("legend-lines").replaceChildren(
   h("li", {}, lineEl(PAPER.quiet, [], 1), "Transfers"),
   ...Object.keys(LINKS).map((kind) => h("li", {}, lineEl(LINKS[kind], linkDash(kind)), `Guess: ${kind}`))
 );
-$("legend").replaceChildren(...["cex", "dex", "bridge", "mixer", "defi", "service", "other", "external"].map((k) => h("li", {}, icon(k, 14), KINDS[k][2])));
+$("legend").replaceChildren(...["cex", "dex", "bridge", "mixer", "flagged", "defi", "service", "other", "external"].map((k) => h("li", {}, icon(k, 14), KINDS[k][2])));
 $("legendbox").open = !matchMedia("(max-width: 760px)").matches;
 
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js");
