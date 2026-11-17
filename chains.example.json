@@ -1,0 +1,14 @@
+{
+  "ethereum": {
+    "url": "http://blockscout.lan/api",
+    "tokenlist": true,
+    "symbol": "ETH",
+    "llama": "ethereum"
+  },
+  "gnosis": {
+    "url": "https://your-etherscan-compatible-indexer.example/api",
+    "apikey": "KEY_IF_IT_NEEDS_ONE",
+    "symbol": "XDAI",
+    "llama": "xdai"
+  }
+}
