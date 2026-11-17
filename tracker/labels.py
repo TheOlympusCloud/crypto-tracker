@@ -195,7 +195,9 @@ def stale(db):
     date, so one that failed is tried again on the next sync without re-reading the rest."""
     if os.environ.get("CT_LABELS", "on") == "off":
         return []
-    at = {r["key"]: float(r["value"]) for r in db.execute("SELECT * FROM meta")}
+    # meta is shared (the session cookie's secret is there too): read only the sets' dates.
+    rows = db.execute("SELECT key, value FROM meta WHERE key LIKE 'labels_at:%'")
+    at = {r["key"]: float(r["value"]) for r in rows}
     return [name for name in SETS if time.time() - at.get(f"labels_at:{name}", 0) > REFRESH]
 
 
