@@ -161,7 +161,15 @@ def test_trace_finds_exposure_and_refuses_paths_through_services(db):
         "expanded": 0,
         "filling": None,  # no full history being read
         "notes": [
-            "Not read on base, arbitrum, optimism, polygon, bsc: that needs a free Etherscan API key.",
+            (
+                "Not read on arbitrum, polygon. Needs a free Blockscout key (CT_BLOCKSCOUT_KEY) "
+                "or a free Etherscan key (CT_ETHERSCAN_KEY)."
+            ),
+            "Not read on base, optimism. Needs a free Blockscout key (CT_BLOCKSCOUT_KEY).",
+            (
+                "Not read on bsc. Etherscan's free plan no longer covers BNB Chain; a paid key "
+                "can be set in a CT_CHAINS file."
+            ),
             swaps.NOTE,
         ],
     }
@@ -765,10 +773,46 @@ def test_addresses_are_recognised_per_chain_and_typos_refused():
             database.parse(typo)
 
 
+def test_blockscout_answers_with_what_it_has_and_names_its_tokens(monkeypatch):
+    import httpx
+
+    token = "0x" + "ab" * 20
+    answers = {
+        "txlist": {"status": "1", "message": "OK", "result": []},
+        # Blockscout (seen on Optimism): some blocks are not traced yet, here is the rest.
+        "txlistinternal": {
+            "status": "2",
+            "message": "Some internal transactions within this block range have not yet been "
+            "processed",
+            "result": [],
+        },
+        "tokentx": {"status": "0", "message": "No token transfers found", "result": []},
+        "balance": {"status": "1", "result": "0"},
+        "tokenlist": {
+            "status": "1",
+            "result": [
+                {"type": "ERC-20", "balance": "5000000", "decimals": "6", "symbol": "USDC"}
+                | {"name": "USD Coin", "contractAddress": token.upper().replace("0X", "0x")},
+                {"type": "ERC-721", "balance": "1", "decimals": "", "symbol": "NFT"}
+                | {"name": "x", "contractAddress": "0x" + "cd" * 20},
+            ],
+        },
+    }
+    monkeypatch.setattr(chains, "DELAY", 0)
+    reply = lambda r: httpx.Response(200, json=answers[r.url.params["action"]])
+    op = {"op": {"url": "http://bs/api", "symbol": "ETH", "tokenlist": True}}
+    with httpx.Client(transport=httpx.MockTransport(reply)) as client:
+        out = chains.fetch_evm(client, A, op)
+    assert out["errors"] == []  # the chain's other lists and its tokens are still read
+    assert out["balances"] == [("op", "USDC", token, 5.0)]
+    assert out["names"] == {("op", token): "USD Coin"}  # the fake-token check reads names
+
+
 def test_evm_chains_are_built_in_and_say_when_they_need_a_key(monkeypatch):
     import httpx
 
-    without, with_key = chains.builtin_evm(None), chains.builtin_evm("KEY")
+    without = chains.builtin_evm()
+    etherscan, blockscout = chains.builtin_evm(etherscan="KEY"), chains.builtin_evm(blockscout="BK")
     assert set(without) == {
         "ethereum",
         "base",
@@ -778,13 +822,31 @@ def test_evm_chains_are_built_in_and_say_when_they_need_a_key(monkeypatch):
         "bsc",
         "avalanche",
     }
-    assert [c for c, cfg in without.items() if not cfg.get("needs_key")] == [
-        "ethereum",
-        "avalanche",
-    ]
-    assert not any(cfg.get("needs_key") for cfg in with_key.values())
-    assert with_key["base"]["params"] == {"chainid": "8453"} and with_key["base"]["apikey"] == "KEY"
-    assert (with_key["polygon"]["symbol"], with_key["bsc"]["llama"]) == ("POL", "bsc")
+
+    def readable(evm):
+        return [c for c, cfg in evm.items() if not cfg.get("needs_key")]
+
+    assert readable(without) == ["ethereum", "avalanche"]  # Routescan, without a key
+    # Etherscan's free plan still covers Arbitrum and Polygon, no longer Base, OP or BNB Chain:
+    # asking it for those fails on every sync.
+    assert readable(etherscan) == ["ethereum", "arbitrum", "polygon", "avalanche"]
+    assert etherscan["polygon"]["params"] == {"chainid": "137"}
+    assert etherscan["polygon"]["apikey"] == "KEY"
+    # One free Blockscout key reads Base, Arbitrum, Optimism and Polygon, token list included.
+    assert readable(blockscout) == [
+        "ethereum", "base", "arbitrum", "optimism", "polygon", "avalanche"
+    ]  # fmt: skip
+    base = blockscout["base"]
+    assert (base["url"], base["params"], base["apikey"]) == (
+        "https://api.blockscout.com/v2/api",
+        {"chain_id": "8453"},
+        "BK",
+    )
+    assert base["tokenlist"]
+    # Each chain not read says what it takes.
+    assert "CT_BLOCKSCOUT_KEY" in without["base"]["needs_key"]
+    assert "BNB Chain" in blockscout["bsc"]["needs_key"]
+    assert (without["polygon"]["symbol"], without["bsc"]["llama"]) == ("POL", "bsc")
 
     monkeypatch.setattr(chains, "DELAY", 0)
     monkeypatch.setattr(chains, "DEFAULT_EVM", without)

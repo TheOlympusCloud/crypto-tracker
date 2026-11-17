@@ -610,3 +610,49 @@ def test_a_failure_half_way_moves_no_bookmark(db, monkeypatch):
     with pytest.raises(ValueError):
         history.advance(None, db, A)
     assert history.get(db, A, "one") is None
+
+
+def test_untraced_internal_transactions_keep_the_history_open(db, monkeypatch, evm):
+    import httpx
+    from test_core import mine
+
+    from tracker import sync
+
+    class Blockscout(Etherscan):
+        """Blockscout answers status 2, with what it has, while some blocks are not traced."""
+
+        untraced = True
+
+        def __call__(self, request):
+            reply = super().__call__(request)
+            if self.untraced and request.url.params["action"] == "txlistinternal":
+                body = reply.json() | {
+                    "status": "2",
+                    "message": "Some internal transactions "
+                    "within this block range have not yet been processed",
+                }
+                body["result"] = body["result"][:1]
+                return httpx.Response(200, json=body)
+            return reply
+
+    monkeypatch.setattr(chains, "DELAY", 0)
+    mine(db, A)
+    db.commit()
+    fake = Blockscout(5)
+    contract = "0x" + "c" * 40
+    fake.rows["txlistinternal"] = [
+        {"from": contract, "to": A, "hash": f"i{i}", "value": "1000"}
+        | {"timeStamp": str(1_600_000_000 + 9_000 - i), "blockNumber": str(9_000 - i)}
+        for i in range(3)
+    ]  # fmt: skip
+
+    def run():
+        with httpx.Client(transport=httpx.MockTransport(fake)) as client:
+            sync.sync_address(db, client, A)
+
+    run()
+    assert stored(db) == 5 + 1  # the snapshot shows what Blockscout has...
+    assert not history.state(db, A)["complete"]  # ...but the history is not called complete
+    fake.untraced = False  # Blockscout traced the rest
+    run()
+    assert stored(db) == 5 + 3 and history.state(db, A)["complete"]
