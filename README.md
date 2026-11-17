@@ -53,6 +53,44 @@ uv run python -m tracker          # http://127.0.0.1:8000
 Under "Wallets & sync" add your wallets, tick "Also download open label sets" the first time (about 500,000
 labels, takes a minute), and press Sync.
 
+### Install on a server
+
+On a Debian 12 or 13 host, from a copy of this repository:
+
+```sh
+sudo ./install.sh
+```
+
+It installs what is missing (Python, uv, the dependencies), creates the unprivileged
+user `crypto-tracker` and a systemd service that starts on boot and restarts on failure,
+and listens on port 8000 behind a generated password. The password is printed once, at
+the end, with the URL and the commands for logs, stopping and uninstalling.
+
+| Path | What |
+|---|---|
+| `/opt/crypto-tracker` | Code and dependencies, replaced on every run. |
+| `/var/lib/crypto-tracker` | The database: wallets, labels, history. |
+| `/etc/crypto-tracker/env` | The password and the variables of the table below, readable by root only. Restart after a change: `systemctl restart crypto-tracker`. |
+
+To update, get the new code (`git pull`) and run the same command again. The database,
+the password and the settings are kept.
+
+The phone camera (see [Scanning a QR code](#scanning-a-qr-code)) needs HTTPS, which the
+script does not set up. Put a reverse proxy with a certificate in front. With
+[Caddy](https://caddyserver.com) and a DNS name that points at the host, this
+`/etc/caddy/Caddyfile` is all of it, certificate included:
+
+```
+tracker.example.org {
+    reverse_proxy 127.0.0.1:8000
+}
+```
+
+Then set `CT_HOST=127.0.0.1` in `/etc/crypto-tracker/env` so that only the proxy reaches
+the app, and restart it. Keep the password.
+
+### Docker
+
 With Docker (the image is not exercised by the test suite):
 
 ```sh
