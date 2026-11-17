@@ -689,7 +689,7 @@ def test_prices_are_fetched_cached_and_survive_an_outage(db, monkeypatch):
     mine(db, A)
     transfer(db, "ethereum", "1", A, B, 1, asset="USDC", token=C)  # makes USDC a trusted token
     db.executemany(
-        "INSERT INTO balance VALUES (?, 'ethereum', ?, ?, ?)",
+        "INSERT INTO balance(address, chain, asset, token, amount) VALUES (?, 'ethereum', ?, ?, ?)",
         [(A, "ETH", "", 2.0), (A, "USDC", C, 100.0), (A, "SCAM", D, 9e9)],
     )
     calls = []
@@ -979,7 +979,8 @@ def test_a_token_that_only_borrows_a_name_is_not_added_to_the_real_asset(db):
     mine(db, A)
     transfer(db, "avalanche", "1", A, B, 1, asset="AVAX", token=C)  # my wallet sent the look-alike
     db.executemany(
-        "INSERT INTO balance VALUES (?, 'avalanche', 'AVAX', ?, ?)", [(A, "", 2.0), (A, C, 5.0)]
+        "INSERT INTO balance(address, chain, asset, token, amount) VALUES (?, 'avalanche', 'AVAX', ?, ?)",
+        [(A, "", 2.0), (A, C, 5.0)],
     )
     db.execute("INSERT INTO price VALUES ('coingecko:avalanche-2', 10, 1, 'AVAX', 0.99)")
     assets = prices.portfolio(db)["assets"]

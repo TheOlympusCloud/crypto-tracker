@@ -212,3 +212,35 @@ def judge(db, client, price, held, transfers, address, complete, names=None, sen
         level = trust(c, token, asset, name, on, famed, p, unasked)
         out[(c, token)] = {"asset": asset, "name": name, "trust": level}
     return out
+
+
+def mark(db, client):
+    """Judge every token my addresses hold, and keep the verdict with the balance, where the
+    portfolio and the graph read it."""
+    price, _ = prices.rates(db)
+    rows = db.execute(
+        "SELECT b.*, n.hub FROM balance b JOIN node n USING (address) WHERE n.mine"
+    ).fetchall()
+    for address in {r["address"] for r in rows}:
+        own = [r for r in rows if r["address"] == address]
+        held = {(r["chain"], r["token"]): (r["asset"], r["amount"]) for r in own}
+        names = {(r["chain"], r["token"]): r["name"] for r in own if r["name"]}
+        transfers = db.execute(
+            "SELECT chain, txid, src, dst, asset, token, amount, ts FROM transfer "
+            "WHERE ?1 IN (src, dst)",
+            (address,),
+        ).fetchall()
+        sent = [r[0] for r in db.execute("SELECT txid FROM sent WHERE address = ?", (address,))]
+        judged = judge(
+            db, client, price, held, [tuple(t) for t in transfers], address,
+            not own[0]["hub"], names, sent,
+        )  # fmt: skip
+        db.executemany(
+            "UPDATE balance SET asset = ?, name = ?, trust = ?, reason = ? "
+            "WHERE address = ? AND chain = ? AND token = ?",
+            [
+                (j["asset"], j["name"], j["trust"]["level"], j["trust"]["reason"], address, *key)
+                for key, j in judged.items()
+            ],
+        )
+    db.commit()

@@ -38,7 +38,9 @@ CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS contract(address TEXT PRIMARY KEY, name TEXT, ts INT);
 CREATE TABLE IF NOT EXISTS balance(
   address TEXT, chain TEXT, asset TEXT, token TEXT, amount REAL,
+  name TEXT NOT NULL DEFAULT '', trust TEXT NOT NULL DEFAULT '', reason TEXT NOT NULL DEFAULT '',
   PRIMARY KEY(address, chain, token));
+CREATE TABLE IF NOT EXISTS sent(address TEXT, txid TEXT, PRIMARY KEY(address, txid));
 CREATE TABLE IF NOT EXISTS watch(address TEXT PRIMARY KEY, ts INT);
 CREATE TABLE IF NOT EXISTS coinjoin(chain TEXT, txid TEXT, PRIMARY KEY(chain, txid));
 CREATE TABLE IF NOT EXISTS failure(source TEXT PRIMARY KEY, error TEXT, ts INT);
@@ -66,6 +68,10 @@ def connect(path=None):
         db.execute("ALTER TABLE label ADD COLUMN type TEXT NOT NULL DEFAULT ''")
     if "cut" not in [r["name"] for r in db.execute("PRAGMA table_info(node)")]:
         db.execute("ALTER TABLE node ADD COLUMN cut INT NOT NULL DEFAULT 0")
+    have = {r["name"] for r in db.execute("PRAGMA table_info(balance)")}
+    for column in ("name", "trust", "reason"):  # databases from before the token check
+        if column not in have:
+            db.execute(f"ALTER TABLE balance ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
     if "symbol" not in [r["name"] for r in db.execute("PRAGMA table_info(price)")]:
         db.execute("DROP TABLE price")  # only a cache; rebuilt with the new columns
         db.executescript(SCHEMA)

@@ -5,7 +5,7 @@ import time
 
 import httpx
 
-from . import alerts, chains, detect, hd, heuristics, labels, prices, swaps
+from . import alerts, chains, detect, hd, heuristics, labels, prices, swaps, tokens
 from . import db as database
 
 EXPAND_PER_LEVEL = 40  # neighbours synced per depth level, most active first
@@ -42,6 +42,10 @@ def sync_address(db, client, address):
             "INSERT OR REPLACE INTO link VALUES (?,?,?,?,?)",
             [k for k in data["links"] if ok(k[0]) and ok(k[1])],
         )
+        # The transactions it sent, also those that move no value (a claim()): see tokens.judge.
+        db.executemany(
+            "INSERT OR IGNORE INTO sent VALUES (?, ?)", [(address, t) for t in data.get("sent", ())]
+        )
         db.executemany(
             "INSERT OR IGNORE INTO coinjoin VALUES (?, ?)",
             [(database.chain_of(address), txid) for txid in data.get("coinjoins", [])],
@@ -49,14 +53,15 @@ def sync_address(db, client, address):
         db.execute("UPDATE node SET cut = ? WHERE address = ?", (data.get("cut", 0), address))
         db.execute("DELETE FROM balance WHERE address = ?", (address,))
         db.executemany(
-            "INSERT OR REPLACE INTO balance VALUES (?,?,?,?,?)",
-            [(address, *b) for b in data["balances"]],
+            "INSERT OR REPLACE INTO balance(address, chain, asset, token, amount, name) "
+            "VALUES (?,?,?,?,?,?)",
+            [(address, *b, data.get("names", {}).get((b[0], b[2]), "")) for b in data["balances"]],
         )
         if not data["hub"]:
             # The whole history is loaded, so token balances follow from it; this covers
             # indexers without a token-balance call. Rebasing tokens will be off.
             db.execute(
-                """INSERT OR IGNORE INTO balance
+                """INSERT OR IGNORE INTO balance(address, chain, asset, token, amount)
                    SELECT ?1, chain, asset, token, SUM(CASE WHEN dst = ?1 THEN amount ELSE -amount END)
                    FROM transfer WHERE token != '' AND ?1 IN (src, dst)
                    GROUP BY chain, token HAVING SUM(CASE WHEN dst = ?1 THEN amount ELSE -amount END) > 1e-9""",
@@ -192,6 +197,8 @@ def run(addresses=None, depth=0, import_labels=False, wallets=()):
             alerts.check(db)
             status["current"] = "prices"
             prices.snapshot(db, client)
+            status["current"] = "tokens"
+            tokens.mark(db, client)  # with fresh prices: a reliable price spares a token
     except Exception as e:  # noqa: BLE001 - a background thread must report, not die silently
         status["error"] = str(e)[:200]
     finally:
