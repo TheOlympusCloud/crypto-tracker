@@ -42,7 +42,8 @@ def key(chain, asset, token):
 
 
 def _holdings(db, everything=False):
-    """My balances. Tokens nobody vouches for are left out unless `everything`."""
+    """My balances. Tokens nobody vouches for are left out unless `everything`; those judged
+    fake are always in, so that they can be shown as worth 0."""
     known = {
         r["key"]: r for r in db.execute("SELECT * FROM price WHERE confidence >= ?", (CONFIDENT,))
     }
@@ -50,7 +51,8 @@ def _holdings(db, everything=False):
         r["token"] for r in db.execute(f"SELECT DISTINCT token FROM transfer WHERE {TRUSTED}")
     }
     rows = db.execute(
-        """SELECT b.address, b.chain, b.asset, b.token, b.amount, n.name, n.public, n.wallet
+        """SELECT b.address, b.chain, b.asset, b.token, b.amount, b.trust, n.name, n.public,
+                  n.wallet
            FROM balance b JOIN node n ON n.address = b.address WHERE n.mine ORDER BY b.amount DESC"""
     ).fetchall()
     out = []
@@ -58,7 +60,7 @@ def _holdings(db, everything=False):
         price = known.get(key(r["chain"], r["asset"], r["token"]))
         if price and r["token"] and r["chain"] == "solana":
             r["asset"] = price["symbol"] or r["asset"]  # Solana does not name its tokens on chain
-        if everything or not r["token"] or r["token"] in trusted or price:
+        if everything or not r["token"] or r["token"] in trusted or price or r["trust"] == "scam":
             out.append(r)
     return out
 
@@ -145,16 +147,19 @@ def portfolio(db):
         )  # fmt: skip
         w["addresses"].append(r["address"])
     for r in _holdings(db):
-        v = None if unit(r) is None else r["amount"] * unit(r)
+        # A token judged fake is worth 0, whatever price it shows: the price is part of the bait.
+        fake = r["trust"] == "scam"
+        price_of = 0.0 if fake else unit(r)
+        v = None if price_of is None else r["amount"] * price_of
         side = "public" if r["public"] else "private"
         # A token that merely calls itself AVAX or USDC must not be added to the real one:
         # only the native coin and tokens the price source knows count as that asset.
-        verified = unit(r) is not None
+        verified = not fake and price_of is not None
         a = assets.setdefault(
-            (r["asset"].upper(), verified),
-            {"asset": r["asset"], "verified": verified, "chains": set(), "amount": 0.0,
-             "private": 0.0, "public": 0.0,
-             "price": unit(r), "value": None, "private_value": None, "public_value": None},
+            (r["asset"].upper(), "fake" if fake else verified),
+            {"asset": r["asset"], "verified": verified, "fake": fake, "chains": set(),
+             "amount": 0.0, "private": 0.0, "public": 0.0,
+             "price": price_of, "value": None, "private_value": None, "public_value": None},
         )  # fmt: skip
         a["chains"].add(r["chain"])
         a["amount"] += r["amount"]

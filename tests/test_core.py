@@ -593,7 +593,7 @@ def test_hd_wallet_is_discovered_grouped_and_treated_as_one_wallet(db, monkeypat
         rows
     )
     assert card["wallet_balances"] == [
-        {"chain": "bitcoin", "asset": "BTC", "amount": pytest.approx(2900e-8)}
+        {"chain": "bitcoin", "asset": "BTC", "token": "", "amount": pytest.approx(2900e-8)}
     ]
     assert client.get("/api/analysis").json()["fiat"]["wallets"] == {
         card["address"]: pytest.approx(1.45)
@@ -689,7 +689,7 @@ def test_prices_are_fetched_cached_and_survive_an_outage(db, monkeypatch):
     mine(db, A)
     transfer(db, "ethereum", "1", A, B, 1, asset="USDC", token=C)  # makes USDC a trusted token
     db.executemany(
-        "INSERT INTO balance VALUES (?, 'ethereum', ?, ?, ?)",
+        "INSERT INTO balance(address, chain, asset, token, amount) VALUES (?, 'ethereum', ?, ?, ?)",
         [(A, "ETH", "", 2.0), (A, "USDC", C, 100.0), (A, "SCAM", D, 9e9)],
     )
     calls = []
@@ -979,7 +979,8 @@ def test_a_token_that_only_borrows_a_name_is_not_added_to_the_real_asset(db):
     mine(db, A)
     transfer(db, "avalanche", "1", A, B, 1, asset="AVAX", token=C)  # my wallet sent the look-alike
     db.executemany(
-        "INSERT INTO balance VALUES (?, 'avalanche', 'AVAX', ?, ?)", [(A, "", 2.0), (A, C, 5.0)]
+        "INSERT INTO balance(address, chain, asset, token, amount) VALUES (?, 'avalanche', 'AVAX', ?, ?)",
+        [(A, "", 2.0), (A, C, 5.0)],
     )
     db.execute("INSERT INTO price VALUES ('coingecko:avalanche-2', 10, 1, 'AVAX', 0.99)")
     assets = prices.portfolio(db)["assets"]
@@ -1879,3 +1880,79 @@ def test_a_protocol_vault_outranks_a_contract_name_and_cuts_the_path(db, monkeyp
     assert (
         db.execute("SELECT name FROM label WHERE address = ?", (router,)).fetchone()[0] == "My note"
     )
+
+
+def test_a_fake_usdc_is_its_own_row_worth_0(db):
+    from tracker import graph, prices
+
+    mine(db, A)
+    mine(db, B)
+    db.executemany(
+        "INSERT INTO balance(address, chain, asset, token, amount, trust, reason) "
+        "VALUES (?, 'ethereum', 'USDC', ?, ?, ?, ?)",
+        [
+            (A, C, 100.0, "verified", "This exact contract is on Uniswap's default token list."),
+            (B, D, 5000.0, "scam", "It calls itself USDC, like USDC, but it is not the real one."),
+        ],
+    )
+    db.execute(f"INSERT INTO price VALUES ('ethereum:{C}', 1.0, 1, 'USDC', 0.99)")
+    db.execute(f"INSERT INTO price VALUES ('ethereum:{D}', 1.0, 1, 'USDC', 0.95)")  # bait price
+    db.commit()
+    p = prices.portfolio(db)
+    rows = sorted((a["asset"], a["fake"], a["amount"], a["value"]) for a in p["assets"])
+    assert rows == [("USDC", False, 100.0, 100.0), ("USDC", True, 5000.0, 0)]
+    assert p["total"] == 100.0 and p["unpriced"] == []
+    assert prices.summary(db)["assets"] == {"USDC": 100.0}
+    # The graph data carries the mark, also without "Unknown tokens", so the page can show it.
+    (fake,) = next(n for n in graph.build(db)["nodes"] if n["address"] == B)["balances"]
+    assert (fake["token"], fake["trust"]["level"]) == (D, "scam") and "real" in fake["trust"][
+        "reason"
+    ]
+
+
+def test_an_hd_wallet_keeps_its_fake_token_apart(db):
+    from tracker import graph
+
+    for address in (A, B):
+        db.execute("INSERT INTO node(address, mine, wallet) VALUES (?, 1, 'hd:x')", (address,))
+    db.executemany(
+        "INSERT INTO balance(address, chain, asset, token, amount, trust) "
+        "VALUES (?, 'ethereum', 'USDC', ?, ?, ?)",
+        [(A, C, 100.0, "verified"), (B, C, 50.0, "verified"), (B, D, 5000.0, "scam")],
+    )
+    db.commit()
+    (hd,) = [n for n in graph.build(db)["nodes"] if n.get("wallet_balances")]
+    got = sorted((b["amount"], b.get("trust", {}).get("level")) for b in hd["wallet_balances"])
+    assert got == [(150.0, "verified"), (5000.0, "scam")]  # never 5150 USDC
+
+
+def test_wallets_that_only_sent_fake_tokens_are_not_in_the_graph(db):
+    """Pablo: the wallets that only sent me tokens without value are not shown in the graph."""
+    from tracker import graph, sync
+
+    fake = "0x" + "9" * 40
+    airdropper, payer, both = ("0x" + c * 40 for c in "456")
+    mine(db, A)
+    db.execute("INSERT INTO node(address, synced_at) VALUES (?, 1)", (airdropper,))  # expanded once
+    db.execute(  # its gas money: a balance of a node that is not shown must not break the graph
+        "INSERT INTO balance(address, chain, asset, token, amount) VALUES (?, 'ethereum', 'ETH', '', 0.5)",
+        (airdropper,),
+    )
+    db.execute(
+        "INSERT INTO balance(address, chain, asset, token, amount, trust) "
+        "VALUES (?, 'ethereum', 'USDC', ?, 1000, 'scam')",
+        (A, fake),
+    )
+    transfer(db, "ethereum", "t1", airdropper, A, 1000, asset="USDC", token=fake)
+    transfer(db, "ethereum", "t2", payer, A, 1, asset="ETH")
+    transfer(db, "ethereum", "t3", both, A, 5, asset="USDC", token=fake)
+    transfer(db, "ethereum", "t4", both, A, 2, asset="ETH")
+    transfer(db, "ethereum", "t5", A, B, 1000, asset="USDC", token=fake)  # I passed the fake on
+    db.commit()
+    for spam in (False, True):  # also with "Unknown tokens" ticked
+        g = graph.build(db, spam)
+        shown = {n["address"] for n in g["nodes"]}
+        assert airdropper not in shown and B not in shown, spam
+        assert {A, payer, both} <= shown, spam
+        assert all(e["token"] != fake for e in g["edges"]), spam
+    assert set(sync.neighbours(db, [A])) == {payer, both}  # nobody crawls an airdropper

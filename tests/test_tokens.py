@@ -7,7 +7,12 @@ from tracker import chains, labels, lookup, tokens
 
 USDC = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
 FAKE = "0x" + "f" * 40
-LISTED = {(1, USDC): "USDC", (137, "0x" + "e" * 40): "WETH"}
+USDT = "0xdac17f958d2ee523a2206206994597c13d831ec7"
+LISTED = {
+    (1, USDC): ("USDC", "USD Coin"),
+    (1, USDT): ("USDT", "Tether USD"),
+    (137, "0x" + "e" * 40): ("WETH", "Wrapped Ether"),
+}
 FAMOUS = tokens.famous(LISTED)
 SURE = {"usd": 1.0, "confidence": 0.99}
 SHAKY = {"usd": 0.4, "confidence": 0.5}
@@ -64,6 +69,27 @@ def test_a_name_that_advertises_a_site_or_a_reward_is_a_likely_scam(symbol, name
     assert trust(symbol=symbol, name=name, price=SURE)["level"] == "unknown"
 
 
+@pytest.mark.parametrize(
+    ("symbol", "name"),
+    [
+        ("USDC2", "USD Coin"),  # borrows a listed token's name
+        ("FOO", "Tether USD"),
+        ("XUSD", ""),  # a dollar token on no list, with no market
+        ("ETH2", "Ether"),
+        ("BTCB2", ""),
+    ],
+)
+def test_a_token_dressed_as_a_dollar_or_ether_is_fake(symbol, name):
+    t = trust(symbol=symbol, name=name)
+    assert t["level"] == "scam" and "not the real" in t["reason"]
+    assert "worth 0" not in t["reason"]  # the badge says that
+
+
+def test_a_real_dollar_token_with_a_market_is_never_fake():
+    assert trust(symbol="USDe", name="USDe", price=SURE)["level"] == "unknown"
+    assert trust(symbol="METHANE")["level"] == "unknown"  # "ETH" inside a word is no dress
+
+
 def test_unasked_dust_without_a_price_is_a_likely_scam():
     # Sent to the wallet in transactions it did not take part in, never moved, no market.
     assert trust(unasked=True)["level"] == "scam"
@@ -94,8 +120,8 @@ def test_lists_keep_contracts_per_chain_and_mints_verbatim():
     }
     listed = tokens.parse_list(data)
     assert listed == {
-        (1, USDC): "USDC",
-        (tokens.SOLANA_ID, "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"): "USDC",
+        (1, USDC): ("USDC", ""),
+        (tokens.SOLANA_ID, "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"): ("USDC", ""),
     }
     assert tokens.listed_on(listed, "ethereum", USDC) and not tokens.listed_on(listed, "base", USDC)
     assert tokens.listed_on(listed, "solana", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")
@@ -149,3 +175,22 @@ def test_open_label_sets_flag_scams_hacks_and_sanctions():
 )
 def test_a_lookalike_starts_and_ends_like_an_address_in_use(a, b, alike):
     assert lookup.lookalike(a, b) is alike
+
+
+def test_a_token_list_that_does_not_answer_is_not_asked_again_at_once(monkeypatch):
+    import httpx
+
+    monkeypatch.setattr(tokens, "CACHE", {})
+    calls = []
+
+    def down(request):
+        calls.append(request.url.host)
+        return httpx.Response(503)
+
+    with httpx.Client(transport=httpx.MockTransport(down)) as client:
+        assert tokens.uniswap(client) == {} and tokens.uniswap(client) == {}
+    assert calls == ["tokens.uniswap.org"]  # one sync with many wallets waits once, not per wallet
+
+
+def test_the_reason_names_what_is_imitated_as_written():
+    assert "like Tether USD," in trust(symbol="FOO", name="Tether USD")["reason"]

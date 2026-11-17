@@ -64,6 +64,8 @@ const readFiat = () => (analysis.fiat && analysis.fiat.currency ? analysis.fiat 
 const readAddresses = (n) => n.addresses || [];
 // What a wallet holds: summed over its addresses when it is an HD wallet.
 const held = (n) => n.wallet_balances || n.balances || [];
+// A token judged fake (dressed as a real one, or an unasked airdrop): shown, marked, worth 0.
+const fake = (b) => b.trust?.level === "scam";
 // { unread: 2, items: [{ time: 1794789576, text: "…", address: "…" }] }
 const readAlerts = () => analysis.alerts || { unread: 0, items: [] };
 
@@ -153,15 +155,18 @@ function show(view) {
 function renderPortfolio() {
   const mine = graph.nodes.filter((n) => n.mine);
   const fiat = readFiat();
-  const assets = new Map(); // symbol -> totals
+  const assets = new Map(); // symbol, and whether it is fake -> totals
   for (const n of mine)
     for (const b of n.balances || []) {
-      const a = assets.get(b.asset) || { asset: b.asset, private: 0, public: 0, chains: new Set() };
+      const key = `${b.asset}${fake(b) ? "|fake" : ""}`; // a fake USDC never joins the real one
+      const a = assets.get(key) || { ...b, private: 0, public: 0, chains: new Set() };
       a[n.public ? "public" : "private"] += b.amount;
       a.chains.add(b.chain);
-      assets.set(b.asset, a);
+      assets.set(key, a);
     }
-  const rows = [...assets.values()].sort((a, b) => a.asset.localeCompare(b.asset));
+  const sorted = [...assets.values()].sort((a, b) => a.asset.localeCompare(b.asset));
+  const rows = sorted.filter((a) => !fake(a));
+  const fakes = sorted.filter(fake);
 
   $("totals").hidden = !fiat;
   if (fiat)
@@ -197,7 +202,7 @@ function renderPortfolio() {
 
   const columns = ["Asset", "Total", "Private", "Public", ...(fiat ? ["Value"] : []), "Split", "Chains"];
   $("assets").replaceChildren(
-    rows.length
+    sorted.length
       ? h(
           "table",
           {},
@@ -205,17 +210,17 @@ function renderPortfolio() {
           h(
             "tbody",
             {},
-            rows.map((a) => {
+            [...rows, ...fakes].map((a) => {
               const total = a.private + a.public;
               const share = total ? a.private / total : 0;
               return h(
                 "tr",
                 {},
-                h("th", { scope: "row" }, a.asset),
+                h("th", { scope: "row" }, a.asset, fake(a) ? trustEl(a) : null),
                 h("td", { className: "mono", data: { l: "Total" } }, num(total)),
                 h("td", { className: "mono", data: { l: "Private" } }, num(a.private)),
                 h("td", { className: "mono", data: { l: "Public" } }, num(a.public)),
-                fiat ? h("td", { className: "mono", data: { l: "Value" } }, fiat.assets?.[a.asset] == null ? "–" : money(fiat.assets[a.asset], fiat.currency)) : null,
+                fiat ? h("td", { className: "mono", data: { l: "Value" } }, fake(a) ? money(0, fiat.currency) : fiat.assets?.[a.asset] == null ? "–" : money(fiat.assets[a.asset], fiat.currency)) : null,
                 h("td", { className: "splitcell" }, h("span", { className: "bar", role: "img", ariaLabel: `${Math.round(share * 100)}% private, ${Math.round(100 - share * 100)}% public` }, seg("mine", share), seg("public", 1 - share))),
                 h("td", { className: "chains", data: { l: "Chains" } }, [...a.chains].join(", "))
               );
@@ -235,7 +240,7 @@ function renderPortfolio() {
         { className: "card wallet", style: `--i:${i}`, onclick: () => openWallet(v.address) },
         h("span", { className: "head" }, coin(n), h("span", {}, h("span", { className: "name" }, title(n)), h("span", { className: "mono" }, chainEl(n.chain, 14), owned ? addresses(owned) : short(v.address))), h("span", { className: "go", ariaHidden: "true" })),
         h("span", { className: "tags" }, badge(n), fiat && v.checked === "none" ? h("span", { className: "worth mono", title: "Not checked, so its value is unknown" }, "—") : partly(v, worth(fiat?.wallets?.[v.address], fiat))),
-        h("span", { className: "amounts" }, held(n).slice(0, 4).map((b) => amount(b))),
+        h("span", { className: "amounts" }, held(n).filter((b) => !fake(b)).slice(0, 4).map((b) => amount(b))),
         verdictBox("span", judge(v)),
         origin ? h("span", { className: "origin hint" }, `${origin.asset} came from`, originBar(origin)) : null
       );
@@ -383,7 +388,8 @@ function openWallet(address) {
   panel(
     heading(coin(n, 48), title(n), badge(n), partly(v, worth(fiat?.wallets?.[address], fiat))),
     h("div", { className: "mono addr" }, chainEl(n.chain, 18), address),
-    h("ul", { className: "amounts" }, held(n).map((b) => h("li", {}, amount(b, `${b.asset} · ${b.chain}`)))),
+    h("ul", { className: "amounts" }, held(n).filter((b) => !fake(b)).map((b) => h("li", {}, amount(b, `${b.asset} · ${b.chain}`), b.trust && b.token ? trustEl(b) : null))),
+    fakeList(held(n).filter(fake)),
     h(
       "div",
       { className: "buttons" },
@@ -398,7 +404,7 @@ function openWallet(address) {
     ),
     rename,
     owned.length ? h("h3", {}, addresses(owned.length)) : null,
-    owned.length ? h("ul", { className: "rows addresses" }, owned.map((a) => h("li", {}, h("span", { className: "mono" }, a.address), h("span", { className: "amounts" }, (a.balances || []).map((b) => amount(b)))))) : null,
+    owned.length ? h("ul", { className: "rows addresses" }, owned.map((a) => h("li", {}, h("span", { className: "mono" }, a.address), h("span", { className: "amounts" }, (a.balances || []).map((b) => (fake(b) ? h("span", {}, amount(b), trustEl(b)) : amount(b))))))) : null,
     h("h3", {}, "Can it be tied to your other wallets?"),
     verdictBox("p", judge(v)),
     h("ul", { className: "rows" }, v.links.map((k) => evidence(address, v, k))),
@@ -479,7 +485,7 @@ function selectNode(n) {
   row("Synced", n.synced_at ? day(n.synced_at) : "not yet, so its own counterparties are unknown");
   row("Note", n.hub && "very active address: only its newest transactions are loaded, and traces do not pass through it");
   row("Error", n.error);
-  for (const b of n.balances || []) row(`${b.asset} · ${b.chain}`, num(b.amount));
+  for (const b of n.balances || []) row(`${b.asset} · ${b.chain}`, fake(b) ? h("span", {}, num(b.amount), trustEl(b)) : num(b.amount));
   panel(
     heading(n.mine ? coin(n, 48) : h("span", { className: "coin" }, icon(kindOf(n), 32)), title(n), n.mine ? badge(n) : null),
     h("div", { className: "mono addr" }, chainEl(chainOf(n), 18), n.address),
@@ -631,7 +637,7 @@ function renderLookup() {
     v.mine ? null : h("p", { className: "hint" }, "Tracking adds it to your wallets, as private, and syncs it. Watching only keeps it at hand."),
     h("h3", {}, "What it holds"),
     kept.length ? h("ul", { className: "rows addresses holdings" }, kept.map(holding)) : scams.length ? null : h("p", { className: "hint" }, "Nothing found."),
-    scams.length ? h("details", { className: "scams" }, h("summary", {}, plural(scams.length, "likely scam token")), h("ul", { className: "rows addresses holdings" }, scams.map(holding))) : null,
+    scams.length ? h("details", { className: "scams" }, h("summary", {}, `${plural(scams.length, "fake token")} · worth 0`), h("ul", { className: "rows addresses holdings" }, scams.map(holding))) : null,
     h("h3", {}, v.mine ? "Your other wallets it dealt with" : "Links to your wallets"),
     yours.length
       ? h("ul", { className: "rows" }, yours.map(party))
@@ -653,6 +659,12 @@ function trustEl(b) {
     h("summary", {}, glyphEl(shape, color, 14), word),
     h("p", {}, b.trust.reason, b.name ? ` Its name: “${b.name}”.` : "", b.token ? h("small", { className: "mono" }, b.token) : null)
   );
+}
+
+// The fake tokens a wallet holds, folded away: each marked worth 0, its reason one tap away.
+function fakeList(list) {
+  if (!list.length) return null;
+  return h("details", { className: "scams" }, h("summary", {}, `${plural(list.length, "fake token")} · worth 0`), h("ul", { className: "rows addresses holdings" }, list.map((b) => h("li", {}, amount(b, `${b.asset} · ${b.chain}`), trustEl(b)))));
 }
 
 function renderWatched() {

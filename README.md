@@ -201,12 +201,17 @@ around it in the graph. Each token carries a badge, its reason one tap away:
 
 - **verified**: the native coin, or a token whose exact contract is on Uniswap's default
   token list (EVM, Solana) or Jupiter's verified list (Solana);
-- **likely scam**, unless it has a reliable price: a name that advertises a website or a
+- **fake · worth 0** (a likely scam), unless it has a reliable price: a name that advertises a website or a
   reward; a token that calls itself like a listed one (USDC, also with lookalike letters)
   without being it; or a token that arrived unasked, from strangers (not your wallets, not
   a labelled exchange or service) in transactions the address took no part in, and was
   never moved. These are folded away under the rest;
 - **unknown**: everything else. It is the default: a market price alone is no list match.
+
+The same check runs on your own wallets at every sync. A token judged fake, because it is
+dressed as a real one (named like a listed token, or a dollar, ETH or BTC token on no list)
+or because it arrived unasked from a stranger, is marked **fake · worth 0** wherever your
+wallets' tokens show: it never counts in a total, and a fake USDC never joins the real one.
 
 Only tokens with a reliable price get a value, and only their transfers make
 counterparties: anyone can airdrop a token to anybody.

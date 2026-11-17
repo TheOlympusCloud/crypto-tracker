@@ -495,3 +495,89 @@ def test_risk_names_each_label_it_dealt_with_once():
         r["text"] for r in lookup.risk("Ethereum address", {}, [], parties, [], now=NOW)["reasons"]
     ]
     assert sum("OFAC SDN list" in t for t in said) == 1 and sum("Kraken" in t for t in said) == 1
+
+
+def judged(db, address):
+    rows = db.execute("SELECT asset, chain, trust FROM balance WHERE address = ?", (address,))
+    return {(r["chain"], r["asset"]): r["trust"] for r in rows}
+
+
+def sync_and_mark(db):
+    from tracker import prices, sync
+
+    with httpx.Client() as web:  # the fake internet of the `client` fixture
+        sync.sync_address(db, web, A)
+        prices.refresh(db, web)
+        tokens.mark(db, web)
+
+
+def test_sync_marks_the_fake_tokens_of_my_wallets(db, client, monkeypatch):
+    mine(db, A)
+    db.commit()
+    # An airdrop the wallet claimed itself: its claim() moves no value, but was wanted.
+    claim = {"from": A, "to": D, "hash": "h7", "timeStamp": "5", "value": "0"}
+    gov = {"from": D, "to": A, "hash": "h7", "timeStamp": "5", "tokenDecimal": "6"}
+    gov |= {"value": "1000000", "tokenSymbol": "GOV", "contractAddress": "0x" + "8" * 40}
+    monkeypatch.setitem(EXTRA, "txlist", [claim])
+    monkeypatch.setitem(EXTRA, "tokentx", [gov])
+    sync_and_mark(db)
+    marks = judged(db, A)
+    assert marks[("ethereum", "ETH")] == "verified" and marks[("polygon", "POL")] == "verified"
+    assert marks[("ethereum", "USDC")] == "verified"  # on the token list
+    assert marks[("ethereum", "USDС")] == "scam"  # a Cyrillic Es: dressed as USDC
+    assert marks[("ethereum", "FREE")] == "scam"  # airdropped by a stranger, never moved
+    assert marks[("ethereum", "GOV")] == "unknown"  # claimed by the wallet itself
+    reason = db.execute("SELECT reason FROM balance WHERE asset = 'FREE'").fetchone()[0]
+    assert "unasked" in reason
+
+
+def test_marking_without_the_token_list_marks_nothing_fake_by_the_list(db, client, monkeypatch):
+    import test_lookup
+
+    real = test_lookup.indexers
+
+    def down(request):
+        if request.url.host == "tokens.uniswap.org":
+            return httpx.Response(503)
+        return real(request)
+
+    monkeypatch.setattr(test_lookup, "indexers", down)
+    mine(db, A)
+    db.commit()
+    sync_and_mark(db)
+    marks = judged(db, A)
+    assert marks[("ethereum", "ETH")] == "verified"
+    assert marks[("ethereum", "USDC")] == "unknown"  # a reliable price, but no list to name it
+    assert marks[("ethereum", "FREE")] == "scam"  # the airdrop rule needs no list
+
+
+def test_a_database_from_before_trust_opens(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "old.db"
+    old = sqlite3.connect(path)
+    old.execute(
+        "CREATE TABLE balance(address TEXT, chain TEXT, asset TEXT, token TEXT, amount REAL, "
+        "PRIMARY KEY(address, chain, token))"
+    )
+    old.execute("INSERT INTO balance VALUES ('a', 'bitcoin', 'BTC', '', 1)")
+    old.commit()
+    old.close()
+    db = database.connect(str(path))
+    assert {"name", "trust", "reason"} <= {
+        r["name"] for r in db.execute("PRAGMA table_info(balance)")
+    }
+    assert tuple(db.execute("SELECT amount, trust FROM balance").fetchone()) == (1.0, "")
+
+
+def test_a_new_sync_keeps_the_marks_until_they_are_judged_again(db, client):
+    from tracker import sync
+
+    mine(db, A)
+    db.commit()
+    sync_and_mark(db)
+    with httpx.Client() as web:
+        sync.sync_address(db, web, A)  # a sync that stops before marking (swaps or prices down)
+    assert judged(db, A)[("ethereum", "FREE")] == "scam"
+    assert judged(db, A)[("ethereum", "USDC")] == "verified"
+    assert judged(db, A)[("polygon", "USDC")] == "scam"  # a balance derived from the history

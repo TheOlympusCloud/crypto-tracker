@@ -10,10 +10,12 @@ import os
 import re
 import time
 import unicodedata
+from collections import defaultdict
 
 import httpx
 
 from . import chains, prices
+from .heuristics import SERVICE
 
 UNISWAP = "https://tokens.uniswap.org"  # Uniswap Labs' default list: the built-in EVM chains
 JUPITER = "https://lite-api.jup.ag/tokens/v2/search"  # Jupiter's token API, up to 100 mints a call
@@ -49,16 +51,19 @@ def _cached(key, fetch):
 
 
 def parse_list(data):
-    """(chain id, contract) -> symbol of a token list; EVM contracts in lower case."""
+    """(chain id, contract) -> (symbol, name) of a token list; EVM contracts in lower case."""
     out = {}
     for t in data.get("tokens", []):
         try:
             address = str(t["address"])
             key = address.lower() if address.startswith("0x") else address
-            out[(int(t["chainId"]), key)] = str(t["symbol"])[:20]
+            out[(int(t["chainId"]), key)] = (str(t["symbol"])[:20], str(t.get("name") or "")[:40])
         except (KeyError, ValueError, TypeError):
             continue
     return out
+
+
+RETRY = 600  # seconds before a list that did not answer is asked again
 
 
 def uniswap(client):
@@ -67,6 +72,8 @@ def uniswap(client):
     try:
         return _cached(UNISWAP, lambda: parse_list(client.get(UNISWAP).raise_for_status().json()))
     except (httpx.HTTPError, ValueError, AttributeError):
+        # Remembered for a while: one sync asks it once, not once per wallet.
+        CACHE[UNISWAP] = (time.time() - TTL + RETRY, {})
         return {}
 
 
@@ -76,8 +83,25 @@ def listed_on(listed, chain, token):
 
 
 def famous(listed):
-    """Symbols worth imitating: those of listed tokens on any chain, and the native coins."""
-    return {skeleton(s) for s in listed.values()} | set(prices.NATIVE)
+    """What is worth imitating: the symbols and names of listed tokens on any chain, and the
+    native coins."""
+    return {skeleton(text) for pair in listed.values() for text in pair if text} | set(
+        prices.NATIVE
+    )
+
+
+# What a fake dollar, ether or bitcoin is dressed as: one of these at the start or the end of
+# its symbol (XUSD, USDC2, ETH2), never in the middle of a word (METHANE).
+DRESS = {"USD": "a dollar token", "ETH": "ETH", "BTC": "BTC"}
+
+
+def dressed(symbol, name, famous):
+    """What a token pretends to be, from its symbol or name, or None."""
+    for text in (symbol, name):
+        if text and skeleton(text) in famous:
+            return text
+    bare = skeleton(symbol)
+    return next((what for k, what in DRESS.items() if bare.startswith(k) or bare.endswith(k)), None)
 
 
 def jupiter(client, mints):
@@ -121,9 +145,10 @@ def trust(chain, token, symbol, name="", listed="", famous=frozenset(), price=No
     if BAIT.search(f"{symbol} {name}") and not sure:
         reason = "Its name advertises a website or a reward: the usual bait of airdrop scams."
         return {"level": "scam", "reason": reason + " Never visit it or sign anything there."}
-    twin = skeleton(symbol) in famous
+    twin = dressed(symbol, name, famous)
     if twin and not sure:
-        reason = f"It calls itself {symbol}, but it is not the real {skeleton(symbol)}: no token "
+        like = "," if skeleton(twin) == skeleton(symbol) else f", like {twin},"
+        reason = f"It calls itself {symbol}{like} but it is not the real one: no token "
         return {"level": "scam", "reason": reason + "list names it, and it has no reliable price."}
     if unasked and not sure:
         reason = "It arrived unasked, in transactions this wallet took no part in, was never "
@@ -134,3 +159,94 @@ def trust(chain, token, symbol, name="", listed="", famous=frozenset(), price=No
     if sure:
         return {"level": "unknown", "reason": "It has a market price, but is on no token list."}
     return {"level": "unknown", "reason": "It is on no token list and has no reliable price."}
+
+
+def wanted(db, addresses):
+    """Those of `addresses` that are my wallets or labelled as a service other than a mixer."""
+    some, out = list(addresses), set()
+    services = sorted(SERVICE - {"mixer"})
+    for i in range(0, len(some), 400):
+        part = some[i : i + 400]
+        marks = ",".join("?" * len(part))
+        out |= {
+            r[0]
+            for r in db.execute(
+                f"SELECT address FROM node WHERE mine AND address IN ({marks}) UNION "
+                f"SELECT address FROM label WHERE category IN ({','.join('?' * len(services))}) "
+                f"AND address IN ({marks})",
+                [*part, *services, *part],
+            )
+        }
+    return out
+
+
+def judge(db, client, price, held, transfers, address, complete, names=None, sent=()):
+    """How far each token held can be trusted: {(chain, token): {"asset", "name", "trust"}}.
+    `held` is {(chain, token): (asset, amount)}, `transfers` the address's transfer rows,
+    `price` the cached prices by key, `complete` whether the whole history is loaded, `names`
+    the tokens' full names where the indexer gave them, `sent` the transactions it sent.
+
+    A token was not asked for when it arrived from strangers, in transactions this address
+    took no part in, and was never moved: what my wallets or a known service (an exchange
+    withdrawal) send was wanted."""
+    names = names or {}
+    took_part = {t[1] for t in transfers if t[2] == address} | set(sent)
+    arrived, moved, senders = defaultdict(set), set(), defaultdict(set)
+    for c, txid, src, dst, _, token, _, _ in transfers:
+        if token and dst == address:
+            arrived[(c, token)].add(txid)
+            senders[(c, token)].add(src)
+        if token and src == address:
+            moved.add((c, token))
+    known_senders = wanted(db, set().union(*senders.values()))
+    listed = uniswap(client) if any(token for _, token in held) else {}
+    famed = famous(listed)
+    known = jupiter(client, [t for c, t in held if c == "solana" and t])
+    out = {}
+    for (c, token), (asset, _) in held.items():
+        p = price.get(prices.key(c, asset, token))
+        jup = known.get(token) if c == "solana" else None
+        if token and c == "solana":  # Solana does not name its tokens on chain
+            asset = (jup or {}).get("symbol") or (p and p["symbol"]) or asset
+        name = (jup or {}).get("name") or names.get((c, token), "")
+        on = "Uniswap's default token list" if listed_on(listed, c, token) else ""
+        on = on or ("Jupiter's verified list" if (jup or {}).get("verified") else "")
+        unasked = None  # the history is incomplete, or never showed the token arriving
+        if complete and arrived[(c, token)]:
+            unasked = (c, token) not in moved and not arrived[(c, token)] & took_part
+            unasked = unasked and not senders[(c, token)] & known_senders
+        level = trust(c, token, asset, name, on, famed, p, unasked)
+        out[(c, token)] = {"asset": asset, "name": name, "trust": level}
+    return out
+
+
+def mark(db, client):
+    """Judge every token my addresses hold, and keep the verdict with the balance, where the
+    portfolio and the graph read it."""
+    price, _ = prices.rates(db)
+    rows = db.execute(
+        "SELECT b.*, n.hub FROM balance b JOIN node n USING (address) WHERE n.mine"
+    ).fetchall()
+    for address in {r["address"] for r in rows}:
+        own = [r for r in rows if r["address"] == address]
+        held = {(r["chain"], r["token"]): (r["asset"], r["amount"]) for r in own}
+        names = {(r["chain"], r["token"]): r["name"] for r in own if r["name"]}
+        transfers = db.execute(
+            "SELECT chain, txid, src, dst, asset, token, amount, ts FROM transfer "
+            "WHERE ?1 IN (src, dst)",
+            (address,),
+        ).fetchall()
+        sent = [r[0] for r in db.execute("SELECT txid FROM sent WHERE address = ?", (address,))]
+        judged = judge(
+            db, client, price, held, [tuple(t) for t in transfers], address,
+            not own[0]["hub"], names, sent,
+        )  # fmt: skip
+        db.executemany(
+            "UPDATE balance SET asset = ?, name = ?, trust = ?, reason = ? "
+            "WHERE address = ? AND chain = ? AND token = ?",
+            [
+                (j["asset"], j["name"], j["trust"]["level"], j["trust"]["reason"], address, *key)
+                for key, j in judged.items()
+            ],
+        )
+    db.commit()

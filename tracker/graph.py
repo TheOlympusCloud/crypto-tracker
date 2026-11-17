@@ -59,8 +59,13 @@ def _links(db):
     ]
 
 
+# Transfers of a token judged fake in one of my wallets: never drawn, not even with "Unknown
+# tokens", so an address that only sent me such tokens is not in the graph at all.
+FAKE = "token IN (SELECT token FROM balance WHERE trust = 'scam')"
+
+
 def build(db, spam=False):
-    where = "1" if spam else TRUSTED
+    where = f"({'1' if spam else TRUSTED}) AND NOT {FAKE}"
     edges = [
         dict(r)
         for r in db.execute(
@@ -70,7 +75,19 @@ def build(db, spam=False):
         )
     ]
     links = _links(db)
-    nodes = {r["address"]: dict(r) for r in db.execute("SELECT * FROM node")}
+    only_fake = {
+        r[0]
+        for r in db.execute(
+            f"SELECT src FROM transfer WHERE {FAKE} UNION SELECT dst FROM transfer WHERE {FAKE} "
+            f"EXCEPT SELECT src FROM transfer WHERE NOT {FAKE} "
+            f"EXCEPT SELECT dst FROM transfer WHERE NOT {FAKE}"
+        )
+    } - {x for k in links for x in (k["a"], k["b"])}
+    nodes = {
+        r["address"]: dict(r)
+        for r in db.execute("SELECT * FROM node")
+        if r["mine"] or r["address"] not in only_fake
+    }
     for address in {x for e in edges for x in (e["src"], e["dst"])} | {
         x for k in links for x in (k["a"], k["b"])
     }:
@@ -82,26 +99,33 @@ def build(db, spam=False):
     marks = ",".join("?" * len(nodes))
     for r in db.execute(f"SELECT * FROM label WHERE address IN ({marks})", list(nodes)):
         nodes[r["address"]].update(describe(r))
-    for r in db.execute(f"SELECT * FROM balance WHERE {where} ORDER BY amount DESC"):
-        nodes[r["address"]].setdefault("balances", []).append(
-            {"chain": r["chain"], "asset": r["asset"], "amount": r["amount"]}
-        )
+    # Tokens judged come too, also without "Unknown tokens": a listed one is real, and a fake
+    # one is shown marked worth 0.
+    for r in db.execute(
+        f"SELECT * FROM balance WHERE ({where}) OR trust IN ('verified', 'scam') "
+        "ORDER BY amount DESC"
+    ):
+        b = {"chain": r["chain"], "asset": r["asset"], "amount": r["amount"], "token": r["token"]}
+        if r["trust"]:
+            b |= {"name": r["name"], "trust": {"level": r["trust"], "reason": r["reason"]}}
+        if r["address"] in nodes:  # not an address left out, such as one that only sent fakes
+            nodes[r["address"]].setdefault("balances", []).append(b)
     members = defaultdict(list)
     for address, node in sorted(nodes.items()):
         if node.get("mine") and node.get("wallet"):
             members[node["wallet"]].append(node)
     for group in members.values():
-        total = defaultdict(float)
+        # Summed per token, not per symbol: a fake USDC is never added to the real one.
+        total = {}
         for node in group:
             for b in node.get("balances", []):
-                total[(b["chain"], b["asset"])] += b["amount"]
+                key = (b["chain"], b.get("token", ""))
+                total.setdefault(key, {**b, "amount": 0.0})["amount"] += b["amount"]
         # The wallet's first address stands for it on cards; the others keep their own rows.
         group[0]["addresses"] = [
             {"address": n["address"], "balances": n.get("balances", [])} for n in group
         ]
-        group[0]["wallet_balances"] = [
-            {"chain": c, "asset": a, "amount": v} for (c, a), v in total.items()
-        ]
+        group[0]["wallet_balances"] = list(total.values())
     return {"nodes": list(nodes.values()), "edges": edges, "links": links}
 
 

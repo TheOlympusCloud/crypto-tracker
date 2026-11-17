@@ -5,7 +5,7 @@ import time
 
 import httpx
 
-from . import alerts, chains, detect, hd, heuristics, labels, prices, swaps
+from . import alerts, chains, detect, graph, hd, heuristics, labels, prices, swaps, tokens
 from . import db as database
 
 EXPAND_PER_LEVEL = 40  # neighbours synced per depth level, most active first
@@ -42,26 +42,44 @@ def sync_address(db, client, address):
             "INSERT OR REPLACE INTO link VALUES (?,?,?,?,?)",
             [k for k in data["links"] if ok(k[0]) and ok(k[1])],
         )
+        # The transactions it sent, also those that move no value (a claim()): see tokens.judge.
+        db.executemany(
+            "INSERT OR IGNORE INTO sent VALUES (?, ?)", [(address, t) for t in data.get("sent", ())]
+        )
         db.executemany(
             "INSERT OR IGNORE INTO coinjoin VALUES (?, ?)",
             [(database.chain_of(address), txid) for txid in data.get("coinjoins", [])],
         )
         db.execute("UPDATE node SET cut = ? WHERE address = ?", (data.get("cut", 0), address))
+        # A token's verdict is kept until tokens.mark judges it again at the end of the sync,
+        # so a sync that stops early never leaves a fake token unmarked.
+        kept = [
+            (r["name"], r["trust"], r["reason"], address, r["chain"], r["token"])
+            for r in db.execute(
+                "SELECT * FROM balance WHERE address = ? AND trust != ''", (address,)
+            )
+        ]
         db.execute("DELETE FROM balance WHERE address = ?", (address,))
         db.executemany(
-            "INSERT OR REPLACE INTO balance VALUES (?,?,?,?,?)",
-            [(address, *b) for b in data["balances"]],
+            "INSERT OR REPLACE INTO balance(address, chain, asset, token, amount, name) "
+            "VALUES (?,?,?,?,?,?)",
+            [(address, *b, data.get("names", {}).get((b[0], b[2]), "")) for b in data["balances"]],
         )
         if not data["hub"]:
             # The whole history is loaded, so token balances follow from it; this covers
             # indexers without a token-balance call. Rebasing tokens will be off.
             db.execute(
-                """INSERT OR IGNORE INTO balance
+                """INSERT OR IGNORE INTO balance(address, chain, asset, token, amount)
                    SELECT ?1, chain, asset, token, SUM(CASE WHEN dst = ?1 THEN amount ELSE -amount END)
                    FROM transfer WHERE token != '' AND ?1 IN (src, dst)
                    GROUP BY chain, token HAVING SUM(CASE WHEN dst = ?1 THEN amount ELSE -amount END) > 1e-9""",
                 (address,),
             )
+        db.executemany(  # after the balances derived from the history too
+            "UPDATE balance SET name = CASE name WHEN '' THEN ? ELSE name END, trust = ?, "
+            "reason = ? WHERE address = ? AND chain = ? AND token = ?",
+            kept,
+        )
         db.execute(
             "UPDATE node SET synced_at = ?, hub = ? WHERE address = ?",
             (int(time.time()), int(data["hub"]), address),
@@ -78,8 +96,8 @@ def neighbours(db, addresses):
     marks = ",".join("?" * len(addresses))
     rows = db.execute(
         f"""SELECT other, COUNT(*) n FROM (
-              SELECT dst other FROM transfer WHERE src IN ({marks})
-              UNION ALL SELECT src FROM transfer WHERE dst IN ({marks}))
+              SELECT dst other FROM transfer WHERE src IN ({marks}) AND NOT {graph.FAKE}
+              UNION ALL SELECT src FROM transfer WHERE dst IN ({marks}) AND NOT {graph.FAKE})
             WHERE other NOT IN (SELECT address FROM node WHERE synced_at IS NOT NULL)
               AND other NOT IN (SELECT address FROM label)
             GROUP BY other ORDER BY n DESC""",
@@ -192,6 +210,8 @@ def run(addresses=None, depth=0, import_labels=False, wallets=()):
             alerts.check(db)
             status["current"] = "prices"
             prices.snapshot(db, client)
+            status["current"] = "tokens"
+            tokens.mark(db, client)  # with fresh prices: a reliable price spares a token
     except Exception as e:  # noqa: BLE001 - a background thread must report, not die silently
         status["error"] = str(e)[:200]
     finally:
