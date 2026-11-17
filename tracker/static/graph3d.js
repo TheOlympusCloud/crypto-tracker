@@ -392,6 +392,7 @@ export function create3d(el, { onSelect }) {
     const chosen = nodes[selected]?.n.address;
     nodes = graph.nodes.map((n) => {
       const [color, shape, word] = KINDS[kindOf(n)];
+      const more = n.folded ? ` · +${n.folded}` : ""; // counterparties folded into it
       return {
         n,
         color,
@@ -399,9 +400,9 @@ export function create3d(el, { onSelect }) {
         size: n.mine ? COIN : n.category ? 2.6 : 0.9,
         dim: !n.mine && !n.synced_at && !n.category ? 0.55 : 1, // not expanded yet
         label: n.mine
-          ? [[n.public ? "PUBLIC" : "PRIVATE", FONT.tag, n.public ? PUBLIC_INK : color, 3], [title(n).toUpperCase(), FONT.name, PAPER.ink, 0]]
-          : n.category
-            ? [[`${title(n)} · ${word}`, FONT.text, PAPER.quiet]]
+          ? [[n.public ? "PUBLIC" : "PRIVATE", FONT.tag, n.public ? PUBLIC_INK : color, 3], [title(n).toUpperCase() + more, FONT.name, PAPER.ink, 0]]
+          : n.category || n.folded != null
+            ? [[`${title(n)}${n.category ? ` · ${word}` : ""}${more}`, FONT.text, PAPER.quiet]]
             : null,
       };
     });

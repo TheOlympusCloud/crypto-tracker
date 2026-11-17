@@ -13,7 +13,10 @@ list the wallets that are yours and mark as **public** the ones tied to your ide
   source (exchange, bridge, mixer...), one of your wallets, or the edge of what is known.
 - **A 3D graph** of your wallets, their counterparties (labelled by type) and the links
   between them. Any link or origin opens as a highlighted path with each hop spelled
-  out. A flat 2D graph is the default on phones and where WebGL is missing.
+  out. A flat 2D graph is the default on phones and where WebGL is missing. A busy address
+  (an exchange, a DEX, a mixer) can be folded from its panel: the counterparties that deal
+  with nothing else leave the picture, and its name counts them (+12). The checks and
+  verdicts still see everything; the choice is kept in the browser.
 
 - **Fiat values** for the whole portfolio, each wallet and each asset, and a value history
   that grows with every sync.

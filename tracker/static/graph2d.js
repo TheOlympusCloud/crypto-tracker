@@ -160,7 +160,7 @@ export function create2d(el, { onSelect }) {
         group: "nodes",
         data: {
           id: n.address,
-          label: n.category ? `${title(n)} · ${word}` : title(n),
+          label: (n.category ? `${title(n)} · ${word}` : title(n)) + (n.folded ? ` · +${n.folded}` : ""), // +N counterparties folded into it
           image: glyphUrl(shape, color, !n.mine && !n.synced_at && !n.category, chainOf(n)), // dim: not expanded yet
           size: n.mine ? 40 * big : n.category ? 24 * big : 16,
           font: NAME,

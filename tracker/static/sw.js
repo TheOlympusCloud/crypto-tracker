@@ -1,6 +1,6 @@
 // Network first, cached shell when offline. API data is never cached: it is live and private.
 const SHELL = [
-  "./", "style.css", "app.js", "kinds.js", "graph2d.js", "graph3d.js", "icon.svg", "manifest.webmanifest",
+  "./", "style.css", "app.js", "kinds.js", "fold.js", "graph2d.js", "graph3d.js", "icon.svg", "manifest.webmanifest",
   "vendor/cytoscape.min.js", "vendor/three.module.js", "vendor/three.core.js", "vendor/OrbitControls.js",
   "vendor/fonts/bricolage-grotesque-var.woff2", "vendor/fonts/BricolageGrotesque-OFL.txt",
   "vendor/fonts/red-hat-text-400.woff2", "vendor/fonts/red-hat-text-500.woff2", "vendor/fonts/red-hat-text-700.woff2",

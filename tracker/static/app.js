@@ -1,5 +1,6 @@
+import { fold } from "./fold.js";
 import { create2d } from "./graph2d.js";
-import { HATCHED, KINDS, LINKS, PAPER, PATH, TRUST, VERDICTS, chainEl, chainLabel, glyphEl, kindOf, linkDash, pct, short, sourceKind, title } from "./kinds.js";
+import { HATCHED, KINDS, LINKS, PAPER, PATH, TRUST, VERDICTS, chainEl, chainLabel, chainOf, glyphEl, kindOf, linkDash, pct, short, sourceKind, title } from "./kinds.js";
 
 const $ = (id) => document.getElementById(id);
 // All text reaches the DOM as text nodes: labels and token names come from strangers.
@@ -81,6 +82,11 @@ let graph = { nodes: [], edges: [], links: [] };
 let analysis = { verdicts: [], origins: {}, max_hops: 4 };
 let byAddress = new Map();
 let shownPath = [];
+// Addresses whose counterparties are folded into them in the graph, remembered in this browser.
+let collapsed = new Set();
+try {
+  collapsed = new Set(JSON.parse(localStorage.getItem("folded") || "[]"));
+} catch {} // private browsing, or a value that is not a list: nothing folded
 const nameOf = (a) => (byAddress.has(a) ? title(byAddress.get(a)) : short(a));
 
 // ---------- graph view: 3D where it works, flat otherwise ----------
@@ -111,9 +117,24 @@ async function drawGraph() {
   // The view that becomes active fades in (style.css, #canvas); the other one is hidden.
   document.body.dataset.mode = mode;
   $("mode").ariaPressed = String(mode === "3d");
-  if (stale) active.setData(scope ? scope.graph : graph, { minConf: $("minconf").value / 100 });
+  if (stale) active.setData(drawn(), { minConf: $("minconf").value / 100 });
   stale = false;
   active.highlight(shownPath);
+}
+
+// What the graph shows: the data, less what is folded away, but never a hop of the shown path.
+const drawn = () => fold(scope ? scope.graph : graph, collapsed, shownPath);
+
+function toggleFold(n) {
+  if (!collapsed.delete(n.address)) collapsed.add(n.address);
+  try {
+    localStorage.setItem("folded", JSON.stringify([...collapsed]));
+  } catch {}
+  stale = true;
+  drawGraph()
+    .then(async () => (await renderer()).focus(n.address)) // frame what is left around it
+    .catch(fail);
+  selectNode(n);
 }
 
 function show(view) {
@@ -384,6 +405,7 @@ function hopText(a, b) {
 function showPath(path, heading, back) {
   leave();
   shownPath = path;
+  stale = true; // a hop of the path may be folded away
   show("graph").then(async () => {
     if (!path.length) (await renderer()).focus(back);
   });
@@ -427,10 +449,12 @@ function selectNode(n) {
     // The looked-up wallet is not part of the data a refresh brings: rename it here.
     if (scope) for (const x of [scope, ...scope.connections, ...scope.graph.nodes]) if (x.address === n.address) Object.assign(x, { label: label.name, category: label.name ? label.category : undefined });
   };
+  // How many counterparties folding this address hides now; any panel can open on it.
+  const hides = collapsed.has(n.address) ? drawn().nodes.find((x) => x.address === n.address)?.folded : 0;
   const facts = h("dl", {});
   const row = (term, value) => value && facts.append(h("dt", {}, term), h("dd", {}, value));
   row("Type", KINDS[kindOf(n)][2]);
-  row("Chain", chainLabel(n.chain));
+  row("Chain", chainLabel(chainOf(n)));
   row("Label", n.label);
   row("Synced", n.synced_at ? day(n.synced_at) : "not yet, so its own counterparties are unknown");
   row("Note", n.hub && "very active address: only its newest transactions are loaded, and traces do not pass through it");
@@ -438,7 +462,7 @@ function selectNode(n) {
   for (const b of n.balances || []) row(`${b.asset} · ${b.chain}`, num(b.amount));
   panel(
     heading(n.mine ? coin(n, 48) : h("span", { className: "coin" }, icon(kindOf(n), 32)), title(n), n.mine ? badge(n) : null),
-    h("div", { className: "mono addr" }, chainEl(n.chain, 18), n.address),
+    h("div", { className: "mono addr" }, chainEl(chainOf(n), 18), n.address),
     facts,
     h(
       "div",
@@ -446,6 +470,8 @@ function selectNode(n) {
       n.mine ? h("button", { className: "primary", onclick: () => openWallet(n.address) }, "Verdict and origin") : h("button", { onclick: act(() => api("wallets", { address: n.address, name: "", public: false })) }, "This is mine"),
       scope ? h("button", { onclick: renderLookup }, `Back to ${title(scope)}`) : h("button", { onclick: () => startSync([n.address]) }, n.synced_at ? "Re-sync" : "Expand"),
       n.mine || n.address === scope?.address ? null : h("button", { onclick: () => lookUp(n.address).catch(fail) }, "Look up"),
+      // A busy address (an exchange, a mixer) can hide the counterparties that only deal with it.
+      h("button", { onclick: () => toggleFold(n), ariaPressed: String(collapsed.has(n.address)) }, collapsed.has(n.address) ? `Unfold${hides ? ` (${hides} hidden)` : ""}` : "Fold its counterparties"),
       n.explorer_address ? h("a", { className: "button", href: n.explorer_address.replace("{}", encodeURIComponent(n.address.replace("bitcoincash:", ""))), target: "_blank", rel: "noreferrer noopener" }, "Explorer ↗") : null
     ),
     n.mine ? null : form
