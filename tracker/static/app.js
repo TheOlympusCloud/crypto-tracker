@@ -90,6 +90,10 @@ try {
   collapsed = new Set(JSON.parse(localStorage.getItem("folded") || "[]"));
 } catch {} // private browsing, or a value that is not a list: nothing folded
 const nameOf = (a) => (byAddress.has(a) ? title(byAddress.get(a)) : short(a));
+// How far back a wallet's history is read: my wallets are read in full over several syncs.
+const back = (c) => (c.filling ? `, back to ${day(c.filling)} so far` : "");
+const historyEl = (v) =>
+  v.coverage.filling != null ? h("small", {}, `History filling in${back(v.coverage)}`) : v.checked === "full" && !v.coverage.truncated ? h("small", {}, "History complete") : null;
 
 // ---------- graph view: 3D where it works, flat otherwise ----------
 
@@ -256,7 +260,8 @@ function judge(v) {
   const exposing = v.links.filter((k) => k.public !== v.public);
   const best = (v.public ? v.links : exposing)[0] || v.links[0];
   // Only a complete check may say that nothing was found.
-  if (!best) return v.checked === "full" ? { level: "ok", headline: "No link to your other wallets found" } : { level: "unknown", headline: "Partly checked: the last sync had errors" };
+  if (!best && v.checked === "full") return { level: "ok", headline: "No link to your other wallets found" };
+  if (!best) return { level: "unknown", headline: v.coverage.filling != null ? `Partly checked: history still filling in${back(v.coverage)}` : "Partly checked: the last sync had errors" };
   // Below even odds a link is a guess to look at, not a finding (a CoinJoin, a weak match).
   if (best.confidence < 0.5) return { level: "warn", headline: `Weak guess: may be tied to ${best.public ? "public" : "private"} wallet ${nameOf(best.wallet)} (${pct(best.confidence)})` };
   if (v.public) return { level: "warn", headline: `Tied to ${plural(v.links.length, "other wallet")} of yours` };
@@ -269,7 +274,8 @@ function caveats(v) {
   const c = v.coverage;
   const out = [];
   if (c.error) out.push(`The last sync of this wallet had errors (${c.error}), so its history may be incomplete.`);
-  if (c.truncated) out.push("This wallet is very active and only its newest transactions are loaded. Older links are not seen.");
+  if (c.filling != null) out.push("Links in its older transactions are not seen yet: every sync reads further back until its history is complete.");
+  else if (c.truncated) out.push("This wallet is very active and only its newest transactions are loaded. Older links are not seen.");
   if (c.counterparties > c.expanded)
     out.push(`${c.counterparties - c.expanded} of its ${c.counterparties} unlabelled ${c.counterparties === 1 ? "counterparty" : "counterparties"} have not been expanded. A link that runs through two or more strangers can hide there: sync deeper, or expand them in the graph.`);
   for (const s of v.shared_services) out.push(`Both this wallet and ${nameOf(s.wallet)} used ${s.services.join(", ")}. The chain does not link them, but that service can.`);
@@ -388,6 +394,7 @@ function openWallet(address) {
   panel(
     heading(coin(n, 48), title(n), badge(n), partly(v, worth(fiat?.wallets?.[address], fiat))),
     h("div", { className: "mono addr" }, chainEl(n.chain, 18), address),
+    historyEl(v),
     h("ul", { className: "amounts" }, held(n).filter((b) => !fake(b)).map((b) => h("li", {}, amount(b, `${b.asset} · ${b.chain}`), b.trust && b.token ? trustEl(b) : null))),
     fakeList(held(n).filter(fake)),
     h(
@@ -802,6 +809,7 @@ $("alerts").onclick = () => {
 function renderWallets() {
   // One row per wallet: an HD wallet's addresses are listed in its panel, not here.
   const failed = new Map(analysis.verdicts.map((v) => [v.address, v.coverage.error]));
+  const read = new Map(analysis.verdicts.map((v) => [v.address, historyEl(v)]));
   const mine = analysis.verdicts.map((v) => byAddress.get(v.address));
   $("wallets").replaceChildren(
     ...(mine.length ? [] : [h("li", { className: "hint" }, "None yet.")]),
@@ -809,7 +817,7 @@ function renderWallets() {
       h(
         "li",
         {},
-        h("button", { className: "rowbtn", onclick: () => openWallet(n.address) }, coin(n, 28), h("span", {}, title(n), h("small", { className: "mono" }, chainEl(n.chain, 14), n.addresses ? addresses(n.addresses.length) : short(n.address))), badge(n), n.error || failed.get(n.address) ? h("span", { className: "tag error", title: n.error || failed.get(n.address) }, "sync error") : null),
+        h("button", { className: "rowbtn", onclick: () => openWallet(n.address) }, coin(n, 28), h("span", {}, title(n), h("small", { className: "mono" }, chainEl(n.chain, 14), n.addresses ? addresses(n.addresses.length) : short(n.address)), read.get(n.address)), badge(n), n.error || failed.get(n.address) ? h("span", { className: "tag error", title: n.error || failed.get(n.address) }, "sync error") : null),
         h("span", { className: "buttons" }, h("button", { onclick: act(() => api("wallets", { address: n.addresses && !n.addresses.length ? n.wallet : n.address, name: n.name, public: !n.public })) }, n.public ? "Make private" : "Make public"), h("button", { onclick: act(() => api(`wallets/${encodeURIComponent(n.wallet || n.address)}`, null, "DELETE")) }, "Remove"))
       )
     )
@@ -845,13 +853,18 @@ async function refresh() {
   await drawGraph();
 }
 
+let filled = false; // the background fill-in was seen reading: refresh once it is done
 async function poll() {
   const s = await api("sync");
-  $("sync").disabled = s.running;
-  $("status").className = s.error ? "error" : s.running ? "busy" : "";
-  $("status").textContent = s.running ? `Syncing ${s.done}/${s.total} ${["labels", "swaps", "prices"].includes(s.current) ? `(${s.current})` : short(s.current)}` : s.error || (s.notes || []).join(" · ");
+  $("sync").disabled = s.running; // never for the fill-in: a sync goes first
+  $("status").className = s.error ? "error" : s.running || s.filling ? "busy" : "";
+  $("status").textContent = s.running
+    ? `Syncing ${s.done}/${s.total} ${["labels", "swaps", "prices", "tokens", "waiting"].includes(s.current) ? `(${s.current})` : nameOf(s.current)}`
+    : s.filling ? `Reading older history: ${nameOf(s.filling)}` : s.error || (s.notes || []).join(" · ");
   if (s.running) setTimeout(() => poll().catch(fail), 1500);
-  else if (s.total) await refresh();
+  else if (s.filling) setTimeout(() => poll().catch(fail), 10000);
+  else if (s.total || filled) await refresh();
+  filled = Boolean(s.filling);
 }
 
 function startSync(addresses) {

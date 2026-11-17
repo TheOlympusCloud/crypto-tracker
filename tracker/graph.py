@@ -267,6 +267,18 @@ def verdicts(db, max_hops=4):
 
     scans = {r["id"]: r for r in db.execute("SELECT * FROM hdwallet")}
     missed = swaps.unchecked(db)  # swap sources that were down: nobody was fully checked
+    # My addresses whose full history is still being read (history.py): never "no link found"
+    # while older transactions are still to come. One without a bookmark has not started.
+    filling = {
+        r[0]: r[1]
+        for r in db.execute(
+            # how far back all of it is read; NULL while a source has no date yet, or a hole
+            # among recent transactions (an open gap) is still to be read
+            "SELECT address, CASE WHEN COUNT(*) = COUNT(CASE WHEN NOT complete THEN oldest_ts END) "
+            "THEN MAX(oldest_ts) END FROM history WHERE NOT complete OR gap IS NOT NULL "
+            "GROUP BY address"
+        )
+    }
     out = [
         {  # an HD wallet no address of which was found: say so, never show it as clean
             "address": w, "wallet": w, "addresses": [], "name": r["name"], "checked": "none",
@@ -323,12 +335,13 @@ def verdicts(db, max_hops=4):
         }
         strangers = {a for a in others if a not in labels and a not in mine}
         rows = [mine[a] for a in members[w]]
+        dates = [filling[a] for a in members[w] if a in filling]  # None: no date to claim
 
-        def checked(w, rows=rows):
+        def checked(w, rows=rows, dates=dates):
             if not all(a in synced for a in members[w]):
                 return "none"
             failed = (w in scans and scans[w]["error"]) or any(r["error"] for r in rows)
-            return "partial" if failed or missed else "full"
+            return "partial" if failed or missed or dates else "full"
 
         out.append(
             {
@@ -350,6 +363,8 @@ def verdicts(db, max_hops=4):
                 "coverage": {
                     "synced": all(a in synced for a in members[w]),
                     "truncated": any(r["hub"] for r in rows),
+                    # Read back to this time so far (the latest of its unfinished histories).
+                    "filling": (0 if None in dates else max(dates)) if dates else None,
                     "error": "; ".join(
                         e
                         for e in [

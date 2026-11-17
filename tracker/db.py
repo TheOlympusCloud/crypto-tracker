@@ -41,6 +41,14 @@ CREATE TABLE IF NOT EXISTS balance(
   name TEXT NOT NULL DEFAULT '', trust TEXT NOT NULL DEFAULT '', reason TEXT NOT NULL DEFAULT '',
   PRIMARY KEY(address, chain, token));
 CREATE TABLE IF NOT EXISTS sent(address TEXT, txid TEXT, PRIMARY KEY(address, txid));
+CREATE TABLE IF NOT EXISTS wide(address TEXT, txid TEXT, PRIMARY KEY(address, txid));
+CREATE TABLE IF NOT EXISTS swap(
+  protocol TEXT, sender TEXT, recipient TEXT, tx_in TEXT, tx_out TEXT,
+  PRIMARY KEY(protocol, tx_in, recipient));
+CREATE TABLE IF NOT EXISTS history(
+  address TEXT, source TEXT, oldest TEXT, newest INT, oldest_ts INT, total INT,
+  gap TEXT, gap_until INT, seen INT NOT NULL DEFAULT 0, complete INT NOT NULL DEFAULT 0,
+  PRIMARY KEY(address, source));
 CREATE TABLE IF NOT EXISTS watch(address TEXT PRIMARY KEY, ts INT);
 CREATE TABLE IF NOT EXISTS coinjoin(chain TEXT, txid TEXT, PRIMARY KEY(chain, txid));
 CREATE TABLE IF NOT EXISTS failure(source TEXT PRIMARY KEY, error TEXT, ts INT);

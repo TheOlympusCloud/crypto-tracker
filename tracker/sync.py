@@ -5,14 +5,25 @@ import time
 
 import httpx
 
-from . import alerts, chains, detect, graph, hd, heuristics, labels, prices, swaps, tokens
+from . import alerts, chains, detect, graph, hd, heuristics, history, labels, prices, swaps, tokens
 from . import db as database
 
 EXPAND_PER_LEVEL = 40  # neighbours synced per depth level, most active first
 
-# `notes` are things that did not stop the sync, e.g. a swap API that was down.
-status = {"running": False, "done": 0, "total": 0, "current": "", "error": "", "notes": []}
-_lock = threading.Lock()
+# `notes` are things that did not stop the sync, e.g. a swap API that was down. `filling` is
+# the address the background fill-in is reading.
+status = {
+    "running": False, "done": 0, "total": 0, "current": "", "error": "", "notes": [],
+    "filling": "",
+}  # fmt: skip
+_lock = threading.Lock()  # one run at a time: a sync, or a pass of the fill-in
+filling = threading.Event()  # set while the fill-in holds _lock
+waiting = threading.Lock()  # held by a user's sync waiting for the fill-in to pause
+FILL_EVERY = 5  # minutes between passes of the fill-in
+
+
+def _client():
+    return httpx.Client(timeout=30, headers={"User-Agent": "crypto-tracker"})
 
 
 def sync_address(db, client, address):
@@ -27,6 +38,14 @@ def sync_address(db, client, address):
     try:
         mine = {r["address"] for r in db.execute("SELECT address FROM node WHERE mine")}
         data = chains.fetch(client, address, mine)
+        if address in mine:
+            # My own addresses are read in full over time: see history.advance.
+            more = history.advance(client, db, address, mine, data.get("count"))
+            for k in ("transfers", "links", "coinjoins", "wide"):
+                data[k] = data.get(k, []) + more[k]
+            data["sent"] = set(data.get("sent", ())) | set(more["sent"])
+            data["errors"] = data.get("errors", []) + more["errors"]
+            data["hub"] = not history.state(db, address)["complete"]
         error = "; ".join(data.get("errors", []))
     except (httpx.HTTPError, RuntimeError, ValueError, KeyError, TypeError) as e:
         data, error = None, chains.describe(e)
@@ -50,7 +69,15 @@ def sync_address(db, client, address):
             "INSERT OR IGNORE INTO coinjoin VALUES (?, ?)",
             [(database.chain_of(address), txid) for txid in data.get("coinjoins", [])],
         )
-        db.execute("UPDATE node SET cut = ? WHERE address = ?", (data.get("cut", 0), address))
+        # Wide transactions are kept by id: a page read twice (plain read, then history) or
+        # over several syncs counts each of them once.
+        db.executemany(
+            "INSERT OR IGNORE INTO wide VALUES (?, ?)", [(address, t) for t in data.get("wide", ())]
+        )
+        db.execute(
+            "UPDATE node SET cut = (SELECT COUNT(*) FROM wide WHERE address = ?1) WHERE address = ?1",
+            (address,),
+        )
         # A token's verdict is kept until tokens.mark judges it again at the end of the sync,
         # so a sync that stops early never leaves a fake token unmarked.
         kept = [
@@ -168,7 +195,7 @@ def run(addresses=None, depth=0, import_labels=False, wallets=()):
     `addresses` is None), then `depth` levels of counterparties."""
     db = database.connect()
     try:
-        with httpx.Client(timeout=30, headers={"User-Agent": "crypto-tracker"}) as client:
+        with _client() as client:
             if import_labels or labels.due(db):
                 status["current"] = "labels"
                 _, missing = labels.import_open(db, client, everything=import_labels)
@@ -221,21 +248,73 @@ def run(addresses=None, depth=0, import_labels=False, wallets=()):
 
 
 def start(addresses=None, depth=0, import_labels=False, wallets=()):
-    """Run in the background; False when a run is already going."""
+    """Run in the background; False when a run is already going. The background fill-in
+    gives way: the run waits for it to finish the address it is reading, then goes."""
+    queued = False
     if not _lock.acquire(blocking=False):
-        return False
-    status.update(running=True, done=0, total=0, current="", error="", notes=[])
+        if not filling.is_set() or not waiting.acquire(blocking=False):
+            return False
+        queued = True
+    current = "waiting" if queued else ""
+    status.update(running=True, done=0, total=0, current=current, error="", notes=[])
     args = (addresses, depth, import_labels, wallets)
-    threading.Thread(target=run, args=args, daemon=True).start()
+    threading.Thread(target=_after_fill_in if queued else run, args=args, daemon=True).start()
     return True
 
 
-def every(minutes):
-    """Sync all my wallets on an interval, for as long as the server runs."""
+def _after_fill_in(*args):
+    _lock.acquire()  # the fill-in lets go between two addresses
+    waiting.release()
+    run(*args)
+
+
+def fill_in():
+    """One pass of the background fill-in: each address of mine not read in full reads one
+    more budget (history.advance), and so do unfinished swap records. It stops between
+    addresses as soon as a user's sync is waiting; that sync reads everything anyway."""
+    if not _lock.acquire(blocking=False):
+        return
+    filling.set()
+    db = database.connect()
+    try:
+        mine = [r["address"] for r in db.execute("SELECT address FROM node WHERE mine")]
+        todo = [a for a in mine if not history.state(db, a)["complete"]]
+        swapping = db.execute(
+            "SELECT 1 FROM history WHERE source LIKE 'swaps:%' AND NOT complete"
+        ).fetchone()
+        if not todo and not swapping:
+            return
+        with _client() as client:
+            for address in todo:
+                if waiting.locked():
+                    return
+                status["filling"] = address
+                sync_address(db, client, address)
+            if waiting.locked():
+                return
+            if swapping:
+                swaps.sync(db, client)
+            # What follows from the older transfers, as at the end of a sync.
+            detect.behaviour(db)
+            heuristics.match_bridges(db)
+            heuristics.match_exchange_flows(db)
+            alerts.check(db)
+            tokens.mark(db, client)  # "arrived unasked" needs the whole history
+    except Exception as e:  # noqa: BLE001 - a background thread must report, not die silently
+        status["error"] = f"filling in history: {e}"[:200]
+    finally:
+        db.close()
+        status["filling"] = ""
+        filling.clear()
+        _lock.release()
+
+
+def every(minutes, job=start):
+    """Run `job` (a sync of all my wallets) on an interval, for as long as the server runs."""
 
     def loop():
         while True:
             time.sleep(minutes * 60)
-            start()
+            job()
 
     threading.Thread(target=loop, daemon=True).start()

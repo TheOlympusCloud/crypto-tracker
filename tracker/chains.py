@@ -8,7 +8,7 @@ EVM chains share one Etherscan-style adapter; Tron and Solana are read more shal
 import json
 import os
 import time
-from collections import Counter
+from collections import Counter, namedtuple
 from datetime import datetime
 
 import httpx
@@ -35,6 +35,8 @@ UTXO = {
 TRON = os.environ.get("CT_TRON", "https://api.trongrid.io").rstrip("/")
 SOLANA = os.environ.get("CT_SOLANA", "https://api.mainnet-beta.solana.com")
 SOLANA_TXS = int(os.environ.get("CT_SOLANA_TXS", "25"))
+SOLANA_PAGE = 25  # signatures per page of a full read: each one is a request of its own
+TRON_ROWS = 200  # rows per page of a Tron list
 SHALLOW = {
     "tron": "Tron: the 200 newest transfers of an address are read; counterparties are not "
     "expanded automatically.",
@@ -273,32 +275,33 @@ def _blockcypher(client, url, address):
     except RateLimited:
         COOLDOWN[url] = time.time() + 3600
         raise RateLimited(waiting) from None
-    txs = [
-        {
-            "txid": t["hash"],
-            "vin": [
-                {
-                    "prevout": _coin(
-                        (i.get("addresses") or [None])[0],
-                        i.get("output_value"),
-                        i.get("script_type"),
-                    )
-                }
-                for i in t["inputs"]
-            ],
-            "vout": [
-                _coin((o.get("addresses") or [None])[0], o.get("value"), o.get("script_type"))
-                for o in t["outputs"]
-            ],
-            "status": {
-                "block_time": int(datetime.fromisoformat(t["confirmed"]).timestamp())
-                if t.get("confirmed")
-                else 0
-            },
-        }
-        for t in data.get("txs", [])
-    ]
+    txs = [_cypher_tx(t) for t in data.get("txs", [])]
     return txs, data["final_balance"], data["n_tx"]
+
+
+def _cypher_tx(t):
+    """A BlockCypher transaction in Esplora's shape."""
+    return {
+        "txid": t["hash"],
+        "vin": [
+            {
+                "prevout": _coin(
+                    (i.get("addresses") or [None])[0], i.get("output_value"), i.get("script_type")
+                )
+            }
+            for i in t["inputs"]
+        ],
+        "vout": [
+            _coin((o.get("addresses") or [None])[0], o.get("value"), o.get("script_type"))
+            for o in t["outputs"]
+        ],
+        "status": {
+            "block_time": int(datetime.fromisoformat(t["confirmed"]).timestamp())
+            if t.get("confirmed")
+            else 0,
+            "block_height": t.get("block_height") or 0,
+        },
+    }
 
 
 def _haskoin(client, url, address):
@@ -306,21 +309,24 @@ def _haskoin(client, url, address):
     balance = get(client, f"{url}/address/{bare}/balance").json()
     data = get(client, f"{url}/address/{bare}/transactions/full", {"limit": 100}).json()
 
+    return [_haskoin_tx(t) for t in data], balance["confirmed"], balance["txs"]
+
+
+def _haskoin_tx(t):
+    """A Haskoin transaction in Esplora's shape."""
+
     def kind(coin):  # the first script bytes are enough to tell address types apart
         return (coin.get("pkscript") or "")[:4]
 
-    txs = [
-        {
-            "txid": t["txid"],
-            "vin": [
-                {"prevout": _coin(i.get("address"), i.get("value"), kind(i))} for i in t["inputs"]
-            ],
-            "vout": [_coin(o.get("address"), o.get("value"), kind(o)) for o in t["outputs"]],
-            "status": {"block_time": t.get("time") or 0},
-        }
-        for t in data
-    ]
-    return txs, balance["confirmed"], balance["txs"]
+    return {
+        "txid": t["txid"],
+        "vin": [{"prevout": _coin(i.get("address"), i.get("value"), kind(i))} for i in t["inputs"]],
+        "vout": [_coin(o.get("address"), o.get("value"), kind(o)) for o in t["outputs"]],
+        "status": {
+            "block_time": t.get("time") or 0,
+            "block_height": (t.get("block") or {}).get("height") or 0,
+        },
+    }
 
 
 def fetch_utxo(client, address, chain="bitcoin", keep=()):
@@ -333,27 +339,66 @@ def fetch_utxo(client, address, chain="bitcoin", keep=()):
             row for tx in txs for row in utxo_transfers(address, tx, chain, asset, keep=keep)
         ],
         "links": [link for tx in txs for link in btc_links(address, tx)],
-        # Transactions whose transfers say nothing about ownership, and how many were cut.
+        # Transactions whose transfers say nothing about ownership, and those that were cut.
         "coinjoins": [tx["txid"] for tx in txs if looks_like_coinjoin(tx)],
-        "cut": sum(wide(address, tx) for tx in txs),
+        "wide": [tx["txid"] for tx in txs if wide(address, tx)],
         "balances": [(chain, asset, "", balance / 1e8)],
         "hub": count > len(txs),
+        "count": count,  # the address's transactions, as the indexer counts them
     }
+
+
+# One page of an address's history, newest first: the raw items, their positions (block
+# height, timestamp or slot), the cursor of the next older page, and whether it is the last.
+Page = namedtuple("Page", "items positions next last")
+
+
+def page_utxo(client, chain, address, cursor=None):
+    """One page of a UTXO address's history from `cursor` back (None: the newest)."""
+    _, api, url, _ = UTXO[chain]
+    if api == "esplora":
+        tail = f"/{cursor}" if cursor else ""
+        txs = get(client, f"{url}/address/{address}/txs/chain{tail}").json()
+        size, nxt = 25, (txs[-1]["txid"] if txs else cursor)
+    elif api == "haskoin":
+        offset = int(cursor or 0)
+        bare = address.removeprefix("bitcoincash:")
+        params = {"limit": 100, "offset": offset}
+        txs = [
+            _haskoin_tx(t)
+            for t in get(client, f"{url}/address/{bare}/transactions/full", params).json()
+        ]
+        size, nxt = 100, str(offset + len(txs))
+    else:  # blockcypher: by block height, and within the hourly quota
+        if COOLDOWN.get(url, 0) > time.time():
+            raise RateLimited("the indexer's hourly limit is used up; the rest follows later")
+        params = {"limit": 50, **({"before": cursor} if cursor else {})}
+        try:
+            data = get(client, f"{url}/addrs/{address}/full", params, patient=False).json()
+        except RateLimited:
+            COOLDOWN[url] = time.time() + 3600
+            raise
+        txs = [_cypher_tx(t) for t in data.get("txs", [])]
+        # A pending transaction (height -1) has no block to read on from.
+        low = min((h for t in txs if (h := t["status"]["block_height"]) > 0), default=None)
+        # `before` leaves out its own block: start again inside the last one, unless a single
+        # block filled the page, where that would read the same page forever.
+        nxt = cursor if low is None else str(low + 1 if str(low + 1) != cursor else low)
+        size = 50
+    positions = [t["status"].get("block_height") or 0 for t in txs]
+    return Page(txs, positions, nxt, len(txs) < size)
 
 
 def fetch_btc(client, address):
     return fetch_utxo(client, address, "bitcoin")
 
 
-def fetch_tron(client, address):
+def tron_transfers(native, tokens):
+    """Transfer rows of Tron's native and TRC-20 lists, and the tokens seen, by contract."""
+
     def b58(hex_address):  # the native transfer list speaks hex
         return base58.encode_check(bytes.fromhex(hex_address))
 
-    account = (get(client, f"{TRON}/v1/accounts/{address}").json().get("data") or [{}])[0]
-    page = {"limit": 200, "only_confirmed": "true"}
-    native = get(client, f"{TRON}/v1/accounts/{address}/transactions", page).json().get("data", [])
-    tokens = get(client, f"{TRON}/v1/accounts/{address}/transactions/trc20", page).json()
-    tokens = tokens.get("data", [])
     transfers, info = [], {}
     for t in native:
         try:
@@ -375,6 +420,33 @@ def fetch_tron(client, address):
                 transfers.append((*row, token["address"], amount, t["block_timestamp"] // 1000))
         except (KeyError, ValueError, TypeError):
             continue
+    return transfers, info
+
+
+def page_tron(client, address, kind, cursor=None):
+    """One page of a Tron list ("native" or "trc20") from timestamp `cursor` (ms) down."""
+    tail = "/trc20" if kind == "trc20" else ""
+    params = {
+        "limit": TRON_ROWS,
+        "only_confirmed": "true",
+        **({"max_timestamp": cursor} if cursor else {}),
+    }
+    rows = get(client, f"{TRON}/v1/accounts/{address}/transactions{tail}", params).json()
+    rows = rows.get("data", [])
+    positions = [int(r.get("block_timestamp") or 0) for r in rows]
+    low = min(positions, default=None)
+    # Read the lowest timestamp again (stored once), unless one timestamp filled the page.
+    nxt = cursor if low is None else str(low if low != max(positions) else low - 1)
+    return Page(rows, positions, nxt, len(rows) < TRON_ROWS)
+
+
+def fetch_tron(client, address):
+    account = (get(client, f"{TRON}/v1/accounts/{address}").json().get("data") or [{}])[0]
+    page = {"limit": TRON_ROWS, "only_confirmed": "true"}
+    native = get(client, f"{TRON}/v1/accounts/{address}/transactions", page).json().get("data", [])
+    tokens = get(client, f"{TRON}/v1/accounts/{address}/transactions/trc20", page).json()
+    tokens = tokens.get("data", [])
+    transfers, info = tron_transfers(native, tokens)
     balances = [("tron", "TRX", "", account.get("balance", 0) / 1e6)]
     for entry in account.get("trc20", []):
         for contract, raw in entry.items():
@@ -386,7 +458,7 @@ def fetch_tron(client, address):
         "transfers": transfers,
         "links": [],
         "balances": balances,
-        "hub": len(native) >= 200 or len(tokens) >= 200,
+        "hub": len(native) >= TRON_ROWS or len(tokens) >= TRON_ROWS,
     }
 
 
@@ -439,6 +511,25 @@ def solana_transfers(address, sig, tx):
         # The symbol is not on chain; the portfolio fills it in from the price source.
         rows += flows(deltas, mint[:4] + "...", 10**decimals, mint)
     return rows
+
+
+def page_solana(client, address, cursor=None, stop=None):
+    """One page of a Solana address's signatures from signature `cursor` back, with the
+    transaction of each one newer than slot `stop` (an older one is already stored)."""
+    opts = {"limit": SOLANA_PAGE, **({"before": cursor} if cursor else {})}
+    sigs = _rpc(client, "getSignaturesForAddress", address, opts)
+    items = []
+    for s in sigs:
+        tx = None
+        if not s.get("err") and (stop is None or (s.get("slot") or 0) > stop):
+            tx = _rpc(
+                client, "getTransaction", s["signature"],
+                {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 1},
+            )  # fmt: skip
+        items.append((s["signature"], tx if tx and tx.get("meta") else None))
+    positions = [s.get("slot") or 0 for s in sigs]
+    nxt = sigs[-1]["signature"] if sigs else cursor
+    return Page(items, positions, nxt, len(sigs) < SOLANA_PAGE)
 
 
 def fetch_solana(client, address):
@@ -518,6 +609,36 @@ def evm_transfers(chain, native, items, token=False):
     return rows
 
 
+def _evm_call(client, cfg, address, action, **extra):
+    params = {"module": "account", "action": action, "address": address}
+    if cfg.get("apikey"):
+        params["apikey"] = cfg["apikey"]
+    data = get(client, cfg["url"], {**cfg.get("params", {}), **params, **extra}).json()
+    # Etherscan reports an empty list as status 0, "No transactions found".
+    if data.get("status") != "1" and not str(data.get("message", "")).startswith("No "):
+        raise RuntimeError(f"{action}: {data.get('message')} {str(data.get('result'))[:80]}")
+    return data.get("result") or []
+
+
+def page_evm(client, cfg, address, action, cursor=None):
+    """One page of an EVM list (txlist, txlistinternal, tokentx) from block `cursor` down.
+    Always the first page of a query that ends at a lower block, so a source that serves only
+    the newest 10,000 rows of a query never stops it."""
+    extra = {
+        "page": 1,
+        "offset": EVM_ROWS,
+        "sort": "desc",
+        **({"endblock": cursor} if cursor else {}),
+    }
+    items = _evm_call(client, cfg, address, action, **extra)
+    positions = [int(it.get("blockNumber") or 0) for it in items]
+    low = min(positions, default=None)
+    # The next query ends at the lowest block read, which it reads again (stored once), unless
+    # one block filled the whole page: then it ends below it.
+    nxt = cursor if low is None else str(low if low != max(positions) else low - 1)
+    return Page(items, positions, nxt, len(items) < EVM_ROWS)
+
+
 def fetch_evm(client, address, chains=None):
     # "names": (chain, contract) -> the token's full name, where the indexer gives one.
     # "sent": the transactions the address sent, also those that move no value (a claim()).
@@ -528,16 +649,7 @@ def fetch_evm(client, address, chains=None):
             continue  # reported once by coverage(), not as an error on every address
 
         def call(action, cfg=cfg, **extra):
-            params = {"module": "account", "action": action, "address": address}
-            if cfg.get("apikey"):
-                params["apikey"] = cfg["apikey"]
-            data = get(client, cfg["url"], {**cfg.get("params", {}), **params, **extra}).json()
-            # Etherscan reports an empty list as status 0, "No transactions found".
-            if data.get("status") != "1" and not str(data.get("message", "")).startswith("No "):
-                raise RuntimeError(
-                    f"{action}: {data.get('message')} {str(data.get('result'))[:80]}"
-                )
-            return data.get("result") or []
+            return _evm_call(client, cfg, address, action, **extra)
 
         try:
             page = {"page": 1, "offset": EVM_ROWS, "sort": "desc"}

@@ -57,6 +57,15 @@ All taken from a demo instance with invented wallets and addresses.
 | Tron | yes | TRX and TRC-20 transfers, the 200 newest; counterparties not expanded automatically. |
 | Solana | yes | SOL and SPL tokens (Token-2022 too, e.g. xStocks), the 25 newest transactions, read as net balance changes; counterparties not expanded automatically. |
 
+The depths above are for other addresses (counterparties, lookups). Your own wallets are
+read in full on every chain: each sync reads what is new, then continues further back
+from where the last one stopped, about 40 pages per source (Solana: 200 transactions).
+Between syncs the server keeps reading further back on its own every 5 minutes, until
+every wallet is complete. Pressing Sync then waits only for the address being read (for
+an EVM address read on several chains, that can take a few minutes).
+Until a wallet's history is complete, its panel says "History filling in, back to …" and
+its verdict stays "Partly checked".
+
 The same EVM address is read on every EVM chain. Chains that are read less deeply say so
 in each wallet's verdict, and chains waiting for a key are listed as such instead of
 failing.
@@ -356,7 +365,8 @@ or at the hop limit, and says which.
 - The token badge knows only the lists above and its own rules: a scam token can still be
   "unknown", and a lookup with an incomplete history never calls a token unasked.
 - A token that only borrows a known name (a fake USDC) is listed apart, unpriced.
-- Very active addresses load only their newest history and are flagged in the UI.
+- Very active addresses that are not yours load only their newest history and are flagged
+  in the UI. A very large wallet of yours can take several syncs to read in full.
 - A transaction with more than 50 counterparties (a CoinJoin, an exchange batch) keeps
   its 50 largest and every wallet of yours; the wallet's verdict says how many were cut,
   and amounts for those transactions are lower than on a block explorer.

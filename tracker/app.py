@@ -7,6 +7,7 @@ from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query, Request, Response
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, field_validator
 
@@ -122,7 +123,8 @@ def address(raw):
 def get_graph(spam: bool = False):
     db = database.connect()
     try:
-        return graph.build(db, spam)
+        # Sent as it is: FastAPI's encoder takes seconds over tens of thousands of edges.
+        return JSONResponse(graph.build(db, spam))
     finally:
         db.close()
 
@@ -213,7 +215,8 @@ def put_wallet(w: Wallet):
 @app.delete("/api/wallets/{raw}")
 def delete_wallet(raw: str):
     """Stop treating the wallet as mine. Its transfers stay: they are public facts."""
-    forget = "UPDATE node SET mine = 0, public = 0, name = '', wallet = NULL WHERE "
+    # hub too: a wallet still filling in its history must not be taken for a busy service.
+    forget = "UPDATE node SET mine = 0, public = 0, name = '', wallet = NULL, hub = 0 WHERE "
     if raw.startswith("hd:"):
         write("DELETE FROM hdwallet WHERE id = ?", (raw,))
         write(forget + "wallet = ?", (raw,))

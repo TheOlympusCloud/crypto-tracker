@@ -10,7 +10,7 @@ import time
 
 import httpx
 
-from . import chains, labels
+from . import chains, history, labels
 from . import db as database
 from .heuristics import pair
 
@@ -81,7 +81,25 @@ def vaults(db, sender, tx_in, recipient, tx_out):
     ]
 
 
-NOTE = "Swaps: only the 50 newest THORChain and Maya swaps of each address are read."
+NOTE = (
+    "Swaps: THORChain and Maya records of a wallet are read back over several syncs; until "
+    "they are complete, older swaps can be missing."
+)
+PAGE = 50  # swaps per page, the most Midgard serves
+BUDGET = 10  # pages per address and protocol per sync
+
+
+def _pages(client, url, address, offset, budget, protocol):
+    """Swaps from `offset` back, up to `budget` pages: (swaps, next offset, at the end)."""
+    out = []
+    for _ in range(budget):
+        query = {"address": address, "type": "swap", "limit": PAGE, "offset": offset}
+        actions = chains.get(client, f"{url}/v2/actions", query).json().get("actions") or []
+        out += parse(actions, protocol)
+        offset += len(actions)
+        if len(actions) < PAGE:
+            return out, offset, True
+    return out, offset, False
 
 
 def unchecked(db):
@@ -101,18 +119,40 @@ def sync(db, client):
     mine = [r["address"] for r in db.execute("SELECT address FROM node WHERE mine")]
     failed = []
     for protocol, url in SOURCES.items():
-        found = set()
         try:
             for address in mine:
                 bare = address.removeprefix("bitcoincash:")
-                query = {"address": bare, "type": "swap", "limit": 50}
-                data = chains.get(client, f"{url}/v2/actions", query).json()
-                for a, b, evidence, tx_in, tx_out in parse(data.get("actions") or [], protocol):
+                source = f"swaps:{protocol}"
+                mark = history.get(db, address, source)
+                # The newest page, for what is new; then on back from where the last sync
+                # stopped. New swaps shift the offsets: a few are read twice, none skipped.
+                got, offset, end = _pages(client, url, bare, 0, 1, protocol)
+                if mark is None:
+                    more, offset, end = (
+                        _pages(client, url, bare, offset, BUDGET - 1, protocol)
+                        if not end
+                        else ([], offset, end)
+                    )
+                    got += more
+                    history.put(db, address, source, oldest=str(offset), complete=int(end))
+                elif not mark["complete"]:
+                    start = int(mark["oldest"] or 0)
+                    more, offset, end = _pages(client, url, bare, start, BUDGET - 1, protocol)
+                    got += more
+                    history.put(db, address, source, oldest=str(offset), complete=int(end))
+                for a, b, evidence, tx_in, tx_out in got:
                     db.execute(
                         "INSERT OR REPLACE INTO link VALUES (?, ?, 'swap', ?, ?)",
                         (*pair(a, b), CONFIDENCE, evidence),
                     )
-                    found.update(vaults(db, a, tx_in, b, tx_out))
+                    db.execute(
+                        "INSERT OR IGNORE INTO swap VALUES (?, ?, ?, ?, ?)",
+                        (protocol, a, b, tx_in, tx_out),
+                    )
+            # From every swap stored, not only this sync's: an old vault keeps its label.
+            found = set()
+            for r in db.execute("SELECT * FROM swap WHERE protocol = ?", (protocol,)).fetchall():
+                found.update(vaults(db, r["sender"], r["tx_in"], r["recipient"], r["tx_out"]))
             # Vault labels are derived data, rebuilt so that a wrong one cannot linger. But
             # only once this protocol has answered for every address: if it is down, its
             # vaults keep their labels, or they would turn into strangers that link wallets.
