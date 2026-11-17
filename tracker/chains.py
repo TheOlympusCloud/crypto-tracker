@@ -379,7 +379,8 @@ def page_utxo(client, chain, address, cursor=None):
             COOLDOWN[url] = time.time() + 3600
             raise
         txs = [_cypher_tx(t) for t in data.get("txs", [])]
-        low = min((t["status"]["block_height"] for t in txs), default=None)
+        # A pending transaction (height -1) has no block to read on from.
+        low = min((h for t in txs if (h := t["status"]["block_height"]) > 0), default=None)
         # `before` leaves out its own block: start again inside the last one, unless a single
         # block filled the page, where that would read the same page forever.
         nxt = cursor if low is None else str(low + 1 if str(low + 1) != cursor else low)

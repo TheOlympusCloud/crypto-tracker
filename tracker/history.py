@@ -45,12 +45,15 @@ def state(db, address):
     """{"complete", "oldest_ts"} of an address over all its sources. While filling in,
     `oldest_ts` is how far back everything is read: the latest of the unfinished sources."""
     marks = [get(db, address, s) or {"complete": 0, "oldest_ts": None} for s in sources(address)]
-    if all(m["complete"] for m in marks):
+    if all(m["complete"] and not m.get("gap") for m in marks):
         return {
             "complete": True,
             "oldest_ts": min((m["oldest_ts"] for m in marks if m["oldest_ts"]), default=None),
         }
-    open_ = [m["oldest_ts"] for m in marks if not m["complete"]]
+    # An open gap is a hole among recent transactions: no date says how far back that is read.
+    open_ = [
+        None if m["complete"] else m["oldest_ts"] for m in marks if not m["complete"] or m["gap"]
+    ]
     return {"complete": False, "oldest_ts": None if None in open_ else max(open_)}
 
 
@@ -106,7 +109,10 @@ def walk(read, cursor, stop, budget):
     """Read pages from `cursor` back until one reaches position `stop` (None: never), the
     last page, or `budget` pages. A page that fails ends the walk: what came before stays.
     Returns (items newer than `stop`, their positions, next cursor, reached `stop`, at the
-    end, pages, error)."""
+    end, pages, error).
+
+    A position of 0 or less is a pending transaction (Haskoin says 0, BlockCypher -1), listed
+    first: it has no place in the history yet, so it is skipped; the plain read stores it."""
     items, where, used, error = [], [], 0, None
     while used < budget:
         try:
@@ -116,11 +122,11 @@ def walk(read, cursor, stop, budget):
             break
         used += 1
         for item, p in zip(page.items, page.positions):
-            if stop is None or p > stop:
+            if p > 0 and (stop is None or p > stop):
                 items.append(item)
                 where.append(p)
         cursor = page.next
-        if stop is not None and any(p <= stop for p in page.positions):
+        if stop is not None and any(0 < p <= stop for p in page.positions):
             return items, where, cursor, True, False, used, None
         if page.last:
             return items, where, cursor, False, True, used, None
@@ -132,33 +138,41 @@ def advance(client, db, address, keep=(), total=None):
     unfinished read of new transactions, then further back, within each source's budget.
     Returns what a sync stores, as chains.fetch does, and the errors met."""
     out = {"transfers": [], "links": [], "coinjoins": [], "wide": [], "sent": [], "errors": []}
+    marks = []  # written at the end: a failure half-way moves no bookmark past unstored rows
     for source in sources(address):
         mark = get(db, address, source)
         budget = BUDGET.get(source.split(":")[0], BUDGET["default"])
         read = _reader(client, source, address)
-        got, fields = [], {}
-        # 1. New since the newest read; on a first read, this is also the start of the way back.
-        new, at, nxt, reached, end, used, error = walk(read, None, mark and mark["newest"], budget)
-        budget -= used
-        got += new
-        top = max(at, default=None)
-        if mark is None:
-            fields |= {"oldest": nxt, "newest": top, "complete": int(end), "seen": len(new)}
+        got, fields, error = [], {}, None
+        if mark is None:  # a first read: from the newest, which also starts the way back
+            new, at, nxt, _, end, used, error = walk(read, None, None, budget)
+            budget -= used
+            got += new
+            fields |= {"oldest": nxt, "newest": max(at, default=None), "complete": int(end)}
+            fields["seen"] = len(new)
         else:
-            fields["seen"] = mark["seen"] + len(new)
-            if reached or end:
-                fields["newest"] = max(top or 0, mark["newest"] or 0)
-            elif not mark["gap"] and not error:  # more new than one budget: a gap to close
-                fields |= {"gap": nxt, "gap_until": mark["newest"], "newest": top}
-            # 2. An unfinished read of new transactions, from where it stopped.
-            if mark["gap"] and (reached or end) and budget > 0 and not error:
-                more, _, nxt2, reached2, end2, used, error = walk(
-                    read, mark["gap"], mark["gap_until"], budget
-                )
+            fields["seen"] = mark["seen"]
+            gap = mark["gap"]
+            # 1. An unfinished read of new transactions first, so that a later burst of new
+            # ones can never starve it.
+            if gap:
+                more, _, nxt, reached, end, used, error = walk(read, gap, mark["gap_until"], budget)
                 budget -= used
                 got += more
                 fields["seen"] += len(more)
-                fields |= {"gap": None, "gap_until": None} if reached2 or end2 else {"gap": nxt2}
+                gap = None if reached or end else nxt
+                fields |= {"gap": gap} if gap else {"gap": None, "gap_until": None}
+            # 2. New since the newest read, with what the budget has left.
+            if not gap and budget > 0 and not error:
+                new, at, nxt, reached, end, used, error = walk(read, None, mark["newest"], budget)
+                budget -= used
+                got += new
+                fields["seen"] += len(new)
+                top = max(at, default=None)
+                if reached or end:
+                    fields["newest"] = max(top or 0, mark["newest"] or 0)
+                elif not error and top is not None:  # more new than the budget: a gap to close
+                    fields |= {"gap": nxt, "gap_until": mark["newest"], "newest": top}
             # 3. Further back, from the oldest point read.
             if not mark["complete"] and budget > 0 and not error:
                 old, _, nxt3, _, end3, used, error = walk(read, mark["oldest"], None, budget)
@@ -173,9 +187,11 @@ def advance(client, db, address, keep=(), total=None):
             fields["oldest_ts"] = min(
                 times + ([mark["oldest_ts"]] if mark and mark["oldest_ts"] else [])
             )
-        put(db, address, source, **fields)
+        marks.append((source, fields))
         for k in ("transfers", "links", "coinjoins", "wide", "sent"):
             out[k] += part[k]
         if error:
             out["errors"].append(f"{source}: {error}")
+    for source, fields in marks:
+        put(db, address, source, **fields)
     return out

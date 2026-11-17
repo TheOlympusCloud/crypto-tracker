@@ -290,6 +290,8 @@ def fill_in():
                     return
                 status["filling"] = address
                 sync_address(db, client, address)
+            if waiting.locked():
+                return
             if swapping:
                 swaps.sync(db, client)
             # What follows from the older transfers, as at the end of a sync.

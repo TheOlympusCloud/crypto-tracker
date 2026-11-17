@@ -508,3 +508,105 @@ def test_a_user_sync_goes_first(db, background):
     }
     by_user = {p.split("/address/")[1].split("/")[0] for t, p in background.asked if t != "fill-in"}
     assert len(by_fill_in) == 1 and by_user == {SATOSHI, SECOND}
+
+
+# Review of the gap bookkeeping: bursts of new transactions while the history fills in.
+
+
+def test_two_bursts_in_a_row(db, esplora):
+    esplora.sync()
+    esplora.txs[:0] = [Esplora.tx(1000 + i, height=200_000 - i) for i in range(100)]
+    esplora.sync()  # more new than one budget: a gap opens
+    esplora.txs[:0] = [Esplora.tx(2000 + i, height=300_000 - i) for i in range(100)]
+    for _ in range(12):  # another burst before it closed: it must not stop everything
+        esplora.sync()
+    assert stored(db) == 350 and history.state(db, SATOSHI)["complete"]
+
+
+def test_failure_inside_gap_and_backfill(db, esplora):
+    esplora.sync()
+    esplora.txs[:0] = [Esplora.tx(1000 + i, height=200_000 - i) for i in range(100)]
+    esplora.sync()
+    esplora.fail |= {"t01074", "t00099"}
+    for _ in range(10):
+        esplora.sync()
+    assert stored(db) == 250 and history.state(db, SATOSHI)["complete"]
+
+
+def test_a_wallet_with_an_open_gap_is_not_complete(db, esplora):
+    from tracker import graph
+
+    for _ in range(3):
+        esplora.sync()
+    esplora.txs[:0] = [Esplora.tx(1000 + i, height=200_000 - i) for i in range(100)]
+    esplora.sync()  # 25 new transactions are still unread here
+    assert stored(db) == 225
+    assert not history.state(db, SATOSHI)["complete"]
+    assert db.execute("SELECT hub FROM node WHERE address = ?", (SATOSHI,)).fetchone()[0] == 1
+    (v,) = graph.verdicts(db)
+    # The hole is recent, not old: no "back to" date to claim.
+    assert v["checked"] == "partial" and v["coverage"]["filling"] == 0
+    esplora.sync()
+    assert stored(db) == 250 and history.state(db, SATOSHI)["complete"]
+
+
+def test_walk_with_a_pending_tx_on_top():
+    # Haskoin answers a mempool tx with height 0, BlockCypher with -1; both come first.
+    pages = {
+        None: chains.Page(["pending", "a", "b"], [0, 210, 209], "p2", False),
+        "p2": chains.Page(["c", "d"], [208, 207], "p3", False),
+        "p3": chains.Page(["e", "old"], [206, 200], "p4", False),
+    }
+    items, _, _, reached, _, _, _ = history.walk(lambda c, s: pages[c], None, 200, 10)
+    assert items == ["a", "b", "c", "d", "e"] and reached
+    items = history.walk(lambda c, s: pages[c], None, None, 3)[0]  # a first read: no stop
+    assert items == ["a", "b", "c", "d", "e", "old"]
+
+
+def test_a_pending_tx_does_not_end_a_blockcypher_page(monkeypatch):
+    import httpx
+
+    monkeypatch.setattr(chains, "COOLDOWN", {})
+    monkeypatch.setitem(chains.UTXO, "dogecoin", ("DOGE", "blockcypher", "http://cypher", ""))
+
+    def tx(name, height):
+        return {"hash": name, "block_height": height, "inputs": [], "outputs": []}
+
+    page = {"txs": [tx("pending", -1)] + [tx(f"c{i}", 500 - i) for i in range(49)]}
+    with httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, json=page))) as c:
+        p = chains.page_utxo(c, "dogecoin", DOGE)
+    # Read on from inside the lowest confirmed block, never "before 0", which reads nothing.
+    assert p.next == str(500 - 48 + 1) and not p.last
+
+
+def test_a_wallet_of_several_addresses_claims_no_date_while_one_has_none(db):
+    from test_core import mine
+
+    from tracker import graph
+
+    for a in (A, SATOSHI):
+        mine(db, a)
+    db.execute("UPDATE node SET synced_at = 1, wallet = 'hd:x' WHERE mine")
+    db.execute("INSERT INTO hdwallet(id, descriptor) VALUES ('hd:x', 'x')")
+    history.put(db, A, "ethereum:txlist", complete=0, oldest_ts=1_600_000_000)
+    history.put(db, SATOSHI, "bitcoin", complete=0)  # nothing dated read there yet
+    db.commit()
+    (v,) = graph.verdicts(db)
+    assert v["checked"] == "partial" and v["coverage"]["filling"] == 0
+
+
+def test_a_failure_half_way_moves_no_bookmark(db, monkeypatch):
+    # The sync stores nothing of an address whose read raised: no bookmark may pass those rows.
+    page = chains.Page(["x"], [10], "next", True)
+    monkeypatch.setattr(history, "sources", lambda address: ["one", "two"])
+    monkeypatch.setattr(history, "_reader", lambda client, source, address: lambda c, s: page)
+
+    def convert(source, address, items, keep):
+        if source == "two":
+            raise ValueError("an indexer row of an unexpected shape")
+        return {k: [] for k in ("transfers", "links", "coinjoins", "wide", "sent")}
+
+    monkeypatch.setattr(history, "_convert", convert)
+    with pytest.raises(ValueError):
+        history.advance(None, db, A)
+    assert history.get(db, A, "one") is None

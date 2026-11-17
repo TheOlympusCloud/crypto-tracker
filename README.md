@@ -61,7 +61,8 @@ The depths above are for other addresses (counterparties, lookups). Your own wal
 read in full on every chain: each sync reads what is new, then continues further back
 from where the last one stopped, about 40 pages per source (Solana: 200 transactions).
 Between syncs the server keeps reading further back on its own every 5 minutes, until
-every wallet is complete; pressing Sync waits at most for the address it is reading.
+every wallet is complete. Pressing Sync then waits only for the address being read (for
+an EVM address read on several chains, that can take a few minutes).
 Until a wallet's history is complete, its panel says "History filling in, back to …" and
 its verdict stays "Partly checked".
 
