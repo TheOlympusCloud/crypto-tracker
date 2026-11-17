@@ -5,7 +5,7 @@ import time
 
 import httpx
 
-from . import alerts, chains, hd, heuristics, labels, prices, swaps
+from . import alerts, chains, detect, hd, heuristics, labels, prices, swaps
 from . import db as database
 
 EXPAND_PER_LEVEL = 40  # neighbours synced per depth level, most active first
@@ -151,9 +151,10 @@ def run(addresses=None, depth=0, import_labels=False, wallets=()):
     db = database.connect()
     try:
         with httpx.Client(timeout=30, headers={"User-Agent": "crypto-tracker"}) as client:
-            if import_labels:
+            if import_labels or labels.due(db):
                 status["current"] = "labels"
-                labels.import_open(db, client)
+                _, missing = labels.import_open(db, client)
+                status["notes"] += [f"label set not downloaded: {name}" for name in missing]
             if addresses is None:
                 done = [
                     a
@@ -181,8 +182,11 @@ def run(addresses=None, depth=0, import_labels=False, wallets=()):
                     frontier = neighbours(db, [*frontier, *done] if level == 0 else frontier)
                     if not frontier:
                         break
+            status["current"] = "labels"
+            detect.contracts(db, client)
             status["current"] = "swaps"
             status["notes"] += swaps.sync(db, client)
+            detect.behaviour(db)  # after the swaps, whose vault labels outrank a guess
             heuristics.match_bridges(db)
             heuristics.match_exchange_flows(db)
             alerts.check(db)

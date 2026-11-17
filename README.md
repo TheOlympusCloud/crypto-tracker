@@ -127,6 +127,7 @@ docker run -p 8000:8000 -v tracker-data:/data -e CT_PASSWORD=change-me crypto-tr
 | `CT_SWAPS` | `on` | `off` never asks THORChain or Maya about your addresses. `CT_THORCHAIN` and `CT_MAYA` set their Midgard URLs. |
 | `CT_CURRENCY` | `USD` | Currency of the values, e.g. `EUR` (ECB reference rate). |
 | `CT_PRICES` | `on` | `off` never asks for prices. |
+| `CT_LABELS` | `on` | `off` never downloads label sets or asks an explorer for contract names. |
 | `CT_BTC_PAGES`, `CT_EVM_ROWS` | `8`, `1000` | History loaded per address (pages of 25 / rows per list). |
 
 ## Android
@@ -235,10 +236,31 @@ addresses or amounts.
   `CT_CHAINS`. Public Blockscout instances allow only a handful of calls without a key.
 - Prices: [DefiLlama](https://defillama.com/docs/api) coin prices, no key, cached for
   10 minutes; exchange rate from the ECB via frankfurter.app.
-- Labels: [etherscan-labels](https://github.com/brianleect/etherscan-labels) (EVM, MIT, a
-  2023 snapshot) and [GraphSense TagPacks](https://github.com/graphsense/graphsense-tagpacks)
-  (Bitcoin and Ethereum, MIT). They are downloaded on request, not shipped. Labels you set
-  by hand in the UI always win.
+- Labels: see [Who is on the other side](#who-is-on-the-other-side).
+
+## Who is on the other side
+
+Every counterparty the app can name gets a service name and a type (exchange, DEX, DEX
+aggregator, bridge, mixer, lending, NFT marketplace, payment processor, contract...),
+shown wherever the address appears, together with where the name comes from:
+
+| Source | What it is | Trust |
+|---|---|---|
+| you | A label set by hand in the app. | Always wins. |
+| the protocol | THORChain and Maya vaults, from the protocols' own swap records. | Fact. |
+| an open label set | [etherscan-labels](https://github.com/brianleect/etherscan-labels) for Ethereum, BNB Chain, Polygon, Arbitrum, Optimism, Avalanche and Fantom (a 2023 snapshot), [GraphSense TagPacks](https://github.com/graphsense/graphsense-tagpacks) for Bitcoin, Ethereum, Litecoin and Tron, and the program names of the [Solana explorer](https://github.com/solana-labs/explorer). All MIT. | Fact. |
+| the explorer | The verified contract name of an EVM address ("UniswapV2Router02"). The name is a fact; the type read from it is a guess. | Guess, 80%. |
+| behaviour | An address that forwards everything to an exchange (a deposit address); one that takes one asset from you and returns another in the same transaction (a pool or router); one with too much history to read (some service). | Guess, 60%. |
+
+The label sets are downloaded whole (about 540,000 labels) on the first sync and again
+every 30 days, and looked up locally, so naming an address tells nobody which addresses
+you care about. Contract names are asked from the explorer that already served your
+wallets' histories, 15 addresses per sync, each only once. `CT_LABELS=off` turns both off.
+
+A known service ends a trace: two people using Binance are not linked. A guessed one
+does not end it, it weakens it by how sure the guess is, because a wrong guess must not
+hide a link. A guess is always shown as "(guess)", and disappears again when the
+behaviour it was read from is no longer in the data.
 
 ## What is a fact and what is a guess
 

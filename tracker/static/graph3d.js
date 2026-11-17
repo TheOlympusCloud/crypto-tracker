@@ -3,7 +3,7 @@
 // matte solid whose silhouette is its glyph in kinds.js.
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { KINDS, PAPER, PATH, drawGlyph, kindOf, linkColor, linkDash, pct, title } from "./kinds.js";
+import { KINDS, PAPER, PATH, drawGlyph, kindOf, linkColor, linkDash, pct, title, typeOf } from "./kinds.js";
 
 const K = 14; // ideal distance between linked nodes, world units
 const FLATTEN = 0.12; // extra pull towards the plinth's plane, so the graph reads as a table of coins
@@ -384,7 +384,7 @@ export function create3d(el, { onSelect }) {
     const old = index;
     const chosen = nodes[selected]?.n.address;
     nodes = graph.nodes.map((n) => {
-      const [color, shape, word] = KINDS[kindOf(n)];
+      const [color, shape] = KINDS[kindOf(n)];
       return {
         n,
         color,
@@ -394,7 +394,7 @@ export function create3d(el, { onSelect }) {
         label: n.mine
           ? [[n.public ? "PUBLIC" : "PRIVATE", FONT.tag, n.public ? PUBLIC_INK : color, 3], [title(n).toUpperCase(), FONT.name, PAPER.ink, 0]]
           : n.category
-            ? [[`${title(n)} · ${word}`, FONT.text, PAPER.quiet]]
+            ? [[`${title(n)} · ${typeOf(n)}`, FONT.text, PAPER.quiet]]
             : null,
       };
     });
@@ -586,7 +586,7 @@ export function create3d(el, { onSelect }) {
     renderer.domElement.style.cursor = node ? "pointer" : "grab";
     tip.hidden = !node;
     if (node) {
-      tip.textContent = `${title(node.n)} · ${KINDS[kindOf(node.n)][2]}`;
+      tip.textContent = `${title(node.n)} · ${typeOf(node.n)}`;
       tip.style.left = `${e.clientX + 14}px`;
       tip.style.top = `${e.clientY + 14}px`;
     }

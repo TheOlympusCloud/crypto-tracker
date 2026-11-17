@@ -182,7 +182,8 @@ def match_exchange_flows(db):
     exchange = {
         r["address"]: r["name"].rstrip("0123456789 #:")
         for r in db.execute(
-            "SELECT address, name FROM label WHERE category IN ('cex', 'service') AND address IN "
+            "SELECT address, name FROM label WHERE category IN ('cex', 'service') "
+            "AND source != 'heuristic' AND address IN "
             "(SELECT src FROM transfer UNION SELECT dst FROM transfer)"
         )
     }

@@ -210,7 +210,10 @@ def stored(db):
 def test_lookup_bitcoin_shows_assets_connections_and_links_to_my_wallets(db, client):
     mine(db, SEGWIT, public=1)
     db.execute("UPDATE node SET name = 'Savings' WHERE address = ?", (SEGWIT,))
-    db.execute("INSERT INTO label VALUES (?, 'Kraken 4', 'cex', 'user')", (D_BTC,))
+    db.execute(
+        "INSERT INTO label(address, name, category, source) VALUES (?, 'Kraken 4', 'cex', 'user')",
+        (D_BTC,),
+    )
     db.commit()
     before, verdicts = stored(db), graph.verdicts(db)
 

@@ -1,109 +1,127 @@
-"""Address labels from open datasets (both MIT-licensed), mapped to a few categories."""
+"""Who an address belongs to: a service name and a type for every counterparty we can name.
+
+Labels come from four places, and the stronger one wins:
+
+    user          set by hand in the app; nothing overwrites it
+    protocol      THORChain/Maya vaults, from the protocols' own records (swaps.py)
+    dataset       open label sets, downloaded whole and looked up locally
+    explorer      the verified contract name at the explorer already used for syncing
+    heuristic     behaviour seen in the synced data (detect.py); a guess, never a fact
+
+The datasets are downloaded in full, so looking an address up in them tells nobody which
+addresses are of interest. All are MIT-licensed: brianleect/etherscan-labels,
+graphsense/graphsense-tagpacks and the program names of solana-labs/explorer.
+"""
 
 import io
 import json
+import os
 import re
 import tarfile
+import time
 
+import httpx
 import yaml
 
-ETHERSCAN_LABELS = (
-    "https://raw.githubusercontent.com/brianleect/etherscan-labels/main/"
-    "data/etherscan/combined/combinedAllLabels.json"
+EXPLORER_DUMPS = (
+    "https://raw.githubusercontent.com/brianleect/etherscan-labels/main/data/{}/combined/"
+    "combinedAllLabels.json"
 )
+EXPLORERS = ["etherscan", "bscscan", "polygonscan", "arbiscan", "optimism", "avalanche", "ftmscan"]
 TAGPACKS = "https://codeload.github.com/graphsense/graphsense-tagpacks/tar.gz/refs/heads/master"
+SOLANA_PROGRAMS = (
+    "https://raw.githubusercontent.com/solana-labs/explorer/master/app/utils/programs.ts"
+)
+REFRESH = 30 * 86400  # the sets are downloaded again when the copy is older than this
 
 LOADER = getattr(yaml, "CBaseLoader", yaml.BaseLoader)  # libyaml is ~10x faster
 
+# The source column holds 'user', 'swap-protocol', 'explorer', 'heuristic' or a dataset's name.
+_RANK = (
+    "(CASE {} WHEN 'user' THEN 5 WHEN 'swap-protocol' THEN 4 WHEN 'explorer' THEN 2 "
+    "WHEN 'heuristic' THEN 1 ELSE 3 END)"
+)
+# How sure a label is, by where it came from. Below 1 it is shown as a guess, and a path
+# through such an address is weakened instead of cut (graph.trace).
+CONFIDENCE = {"heuristic": 0.6, "explorer": 0.8}
+
 CEX = [
-    "binance",
-    "bitfinex",
-    "bitstamp",
-    "bittrex",
-    "bybit",
-    "coinbase",
-    "crypto-com",
-    "ftx",
-    "gate-io",
-    "gemini",
-    "huobi",
-    "kraken",
-    "kucoin",
-    "okex",
-    "okx",
-    "poloniex",
-    "upbit",
-    "bithumb",
-    "mexc",
-    "bitget",
-    "exchange",
-]
-CATEGORIES = [  # first match wins
-    ("mixer", ["tornado-cash", "mixing_service", "mixer", "coinjoin"]),
-    ("bridge", ["bridge", "cross-chain", "multichain", "hop-protocol"]),
-    ("cex", CEX),
-    (
-        "dex",
-        [
-            "dex",
-            "defi_dex",
-            "sushiswap",
-            "uniswap",
-            "balancer",
-            "bancor",
-            "curve-fi",
-            "kyberswap",
-            "1inch",
-            "0x-protocol",
-            "paraswap",
-        ],
-    ),
-    (
-        "defi",
-        [
-            "defi",
-            "defi_lending",
-            "aave",
-            "compound",
-            "maker",
-            "yearn-finance",
-            "lido",
-            "staking",
-            "yield-farming",
-            "loans",
-        ],
-    ),
-    (
-        "service",
-        [
-            "service",
-            "gambling",
-            "market",
-            "wallet_service",
-            "payments",
-            "fiat-gateway",
-            "miner",
-            "mining",
-        ],
-    ),
+    "binance", "bitfinex", "bitstamp", "bittrex", "bybit", "coinbase", "crypto-com", "ftx",
+    "gate-io", "gemini", "huobi", "kraken", "kucoin", "okex", "okx", "poloniex", "upbit",
+    "bithumb", "mexc", "bitget", "exchange",
+]  # fmt: skip
+# (type shown to the user, category that drives colour and tracing, dataset slugs). First
+# match wins, so the specific comes before the general.
+TYPES = [
+    ("mixer", "mixer", ["tornado-cash", "mixing_service", "mixer", "coinjoin"]),
+    ("bridge", "bridge", ["bridge", "cross-chain", "multichain", "hop-protocol"]),
+    ("exchange", "cex", CEX),
+    ("DEX aggregator", "dex", ["1inch", "paraswap", "0x-protocol", "aggregator"]),
+    ("DEX", "dex", ["dex", "defi_dex", "sushiswap", "uniswap", "balancer", "bancor", "curve-fi",
+                    "kyberswap"]),
+    ("lending", "defi", ["defi_lending", "aave", "compound", "maker", "loans"]),
+    ("staking", "defi", ["lido", "staking", "rocket-pool"]),
+    ("DeFi", "defi", ["defi", "yearn-finance", "yield-farming"]),
+    ("NFT marketplace", "service", ["marketplace", "opensea", "looksrare", "rarible", "blur"]),
+    ("payment processor", "service", ["payments", "fiat-gateway"]),
+    ("gambling", "service", ["gambling"]),
+    ("mining", "service", ["miner", "mining"]),
+    ("service", "service", ["service", "market", "wallet_service"]),
+]  # fmt: skip
+# Verified contract names say what a contract is, not who runs it.
+CONTRACTS = [
+    (r"tornado|mixer", "mixer", "mixer"),
+    (r"aggregat", "DEX aggregator", "dex"),
+    (r"router|swap|pair|pool|amm", "DEX contract", "dex"),
+    (r"bridge|portal|gateway|spoke|messenger|inbox", "bridge", "bridge"),
+    (r"lend|comet|atoken|vault|staking|stake", "DeFi contract", "defi"),
+    (r"safe|multisig|wallet", "multisig or smart wallet", "other"),
 ]
 
 
 def categorize(slugs, name=""):
+    """(category, type) for a dataset entry, from its slugs or the first word of its name."""
     slugs = {s.lower() for s in slugs}
     first = re.split(r"[\s:.]", name.lower(), maxsplit=1)[0]
-    for category, keys in CATEGORIES:
+    for kind, category, keys in TYPES:
         if slugs & set(keys) or (category == "cex" and first in CEX[:-1]):
-            return category
-    return "other"
+            return category, kind
+    return "other", ""
 
 
-def parse_etherscan(data):
+def contract(name):
+    """(category, type) for a verified contract name."""
+    for pattern, kind, category in CONTRACTS:
+        if re.search(pattern, name, re.IGNORECASE):
+            return category, kind
+    return "other", "contract"
+
+
+def provenance(source):
+    if source in ("user", "explorer", "heuristic"):
+        return source
+    return "protocol" if source == "swap-protocol" else "dataset"
+
+
+def describe(row):
+    """What the API says about a label: name, type, where it is from and how sure it is."""
+    confidence = CONFIDENCE.get(row["source"], 1.0)
+    return {
+        "label": row["name"],
+        "category": row["category"],
+        "label_type": row["type"],
+        "label_source": provenance(row["source"]),
+        "label_confidence": confidence,
+        "label_guess": confidence < 1,
+    }
+
+
+def parse_etherscan(data, source="etherscan-labels"):
     for address, v in data.items():
         slugs = v.get("labels") or []
         name = v.get("name") or (slugs[0] if slugs else "")
         if name:
-            yield address.lower(), name[:80], categorize(slugs, name), "etherscan-labels"
+            yield (address.lower(), name[:80], *categorize(slugs, name), source)
 
 
 def parse_tagpack(text):
@@ -119,31 +137,81 @@ def parse_tagpack(text):
             continue
         address = str(address).lower() if tag["currency"] == "ETH" else str(address)
         slugs = [str(tag.get("category") or ""), *map(str, tag.get("concepts") or [])]
-        yield address, str(label)[:80], categorize(slugs, str(label)), "graphsense-tagpacks"
+        yield (address, str(label)[:80], *categorize(slugs, str(label)), "graphsense-tagpacks")
+
+
+def parse_solana_programs(text):
+    """Program names from the Solana explorer's source file. An entry reads
+    `<id>: { ..., name: PROGRAM_NAMES.X }` with `X = '<name>'` in an enum above it, or
+    carries the name as a literal."""
+    names = dict(re.findall(r"^\s*(\w+) = '([^']+)',?$", text, re.MULTILINE))
+    entry = re.compile(
+        r"""['"]?([1-9A-HJ-NP-Za-km-z]{32,44})['"]?:\s*\{\s*(?:[a-zA-Z]+:[^\n]*\n\s*)*?"""
+        r"""name:\s*(?:PROGRAM_NAMES\.(\w+)|'([^']+)')"""
+    )
+    for program, key, literal in entry.findall(text):
+        name = literal or names.get(key)
+        if not name:
+            continue
+        category, kind = contract(name)
+        if re.search(r"serum|raydium|orca|mango|market|swap", name, re.IGNORECASE):
+            category, kind = "dex", "DEX program"
+        elif re.search(r"wormhole", name, re.IGNORECASE):
+            category, kind = "bridge", "bridge"
+        kind = "program" if kind == "contract" else kind
+        yield program, name[:80], category, kind, "solana-programs"
 
 
 def store(db, rows):
-    # A label the user set by hand is never overwritten by a dataset.
+    """Insert (address, name, category, type, source) rows. A label only replaces one from
+    an equal or weaker source: a dataset never overwrites the user, a guess never a dataset."""
     db.executemany(
-        "INSERT INTO label VALUES (?, ?, ?, ?) ON CONFLICT(address) DO UPDATE SET "
-        "name = excluded.name, category = excluded.category, source = excluded.source "
-        "WHERE label.source != 'user'",
+        "INSERT INTO label(address, name, category, type, source) VALUES (?, ?, ?, ?, ?) "
+        "ON CONFLICT(address) DO UPDATE SET name = excluded.name, category = excluded.category, "
+        "type = excluded.type, source = excluded.source "
+        f"WHERE {_RANK.format('excluded.source')} >= {_RANK.format('label.source')}",
         rows,
     )
     db.commit()
 
 
+def due(db):
+    """True when the open label sets should be downloaded (again). CT_LABELS=off: never."""
+    if os.environ.get("CT_LABELS", "on") == "off":
+        return False
+    row = db.execute("SELECT value FROM meta WHERE key = 'labels_at'").fetchone()
+    return not row or time.time() - float(row["value"]) > REFRESH
+
+
 def import_open(db, client):
-    """Download both datasets and load them. Returns the number of labels read."""
-    rows = list(parse_etherscan(json.loads(client.get(ETHERSCAN_LABELS).raise_for_status().text)))
-    archive = client.get(TAGPACKS, follow_redirects=True).raise_for_status().content
-    # Members are read in memory, never extracted to disk.
-    with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
-        for member in tar:
-            if member.isfile() and "/packs/" in member.name and member.name.endswith(".yaml"):
-                try:
-                    rows += parse_tagpack(tar.extractfile(member).read().decode("utf-8", "replace"))
-                except yaml.YAMLError:
-                    continue
+    """Download the open sets and load them. One set failing does not stop the others.
+    Returns (labels read, names of the sets that could not be read)."""
+    rows, failed = [], []
+    for explorer in EXPLORERS:
+        try:
+            reply = client.get(EXPLORER_DUMPS.format(explorer)).raise_for_status()
+            rows += parse_etherscan(json.loads(reply.text), f"{explorer}-labels")
+        except (httpx.HTTPError, ValueError, AttributeError, TypeError):
+            failed.append(f"{explorer}-labels")
+    try:
+        archive = client.get(TAGPACKS, follow_redirects=True).raise_for_status().content
+        # Members are read in memory, never extracted to disk.
+        with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
+            for member in tar:
+                if member.isfile() and "/packs/" in member.name and member.name.endswith(".yaml"):
+                    try:
+                        text = tar.extractfile(member).read().decode("utf-8", "replace")
+                        rows += parse_tagpack(text)
+                    except yaml.YAMLError:
+                        continue
+    except (httpx.HTTPError, tarfile.TarError, OSError):
+        failed.append("graphsense-tagpacks")
+    try:
+        rows += parse_solana_programs(client.get(SOLANA_PROGRAMS).raise_for_status().text)
+    except httpx.HTTPError:
+        failed.append("solana-programs")
     store(db, rows)
-    return len(rows)
+    if rows:
+        db.execute("INSERT OR REPLACE INTO meta VALUES ('labels_at', ?)", (str(time.time()),))
+        db.commit()
+    return len(rows), failed

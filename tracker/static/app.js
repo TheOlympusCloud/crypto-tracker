@@ -1,5 +1,5 @@
 import { create2d } from "./graph2d.js";
-import { HATCHED, KINDS, LINKS, PAPER, PATH, VERDICTS, glyphEl, kindOf, linkDash, pct, short, sourceKind, title } from "./kinds.js";
+import { HATCHED, KINDS, LINKS, PAPER, PATH, VERDICTS, glyphEl, kindOf, linkDash, pct, short, sourceKind, title, typeOf } from "./kinds.js";
 
 const $ = (id) => document.getElementById(id);
 // All text reaches the DOM as text nodes: labels and token names come from strangers.
@@ -260,7 +260,7 @@ function caveats(v) {
 function originBar(asset) {
   return h(
     "span",
-    { className: "bar", role: "img", ariaLabel: asset.sources.map((s) => `${pct(s.share)} ${KINDS[sourceKind(s)][2]}`).join(", ") },
+    { className: "bar", role: "img", ariaLabel: asset.sources.map((s) => `${pct(s.share)} ${typeOf(s)}`).join(", ") },
     asset.sources.map((s) => seg(sourceKind(s), s.share, `${pct(s.share)} ${s.name || short(s.address)}`))
   );
 }
@@ -286,7 +286,7 @@ function originRows(address) {
               { className: "rowbtn", onclick: () => showPath(s.path, `Origin of ${a.asset} in ${nameOf(address)}`, address) },
               icon(sourceKind(s), 14),
               h("b", { className: "mono" }, pct(s.share)),
-              h("span", {}, `${s.name || short(s.address)} · ${KINDS[sourceKind(s)][2]}`, h("small", {}, `${num(s.amount)} ${a.asset} · ${plural(s.path.length - 1, "hop")}${s.reason ? ` · followed no further: ${s.reason}` : ""}`))
+              h("span", {}, `${s.name || short(s.address)} · ${typeOf(s)}`, h("small", {}, `${num(s.amount)} ${a.asset} · ${plural(s.path.length - 1, "hop")}${s.reason ? ` · followed no further: ${s.reason}` : ""}`))
             )
           )
         ),
@@ -419,7 +419,7 @@ function showPath(path, heading, back) {
         h(
           "li",
           {},
-          h("button", { className: "rowbtn", onclick: () => selectNode(byAddress.get(a)) }, mark(a), h("span", {}, nameOf(a), h("small", {}, KINDS[kindOf(byAddress.get(a) || {})][2]))),
+          h("button", { className: "rowbtn", onclick: () => selectNode(byAddress.get(a)) }, mark(a), h("span", {}, nameOf(a), h("small", {}, typeOf(byAddress.get(a) || {})))),
           i < path.length - 1 ? h("div", { className: "hop" }, h("span", { className: "conf bad" }, String(i + 1)), h("ul", { className: "hint" }, hopText(a, path[i + 1]).map((t) => h("li", {}, t)))) : null
         )
       )
@@ -446,7 +446,9 @@ function selectNode(n) {
   };
   const facts = h("dl", {});
   const row = (term, value) => value && facts.append(h("dt", {}, term), h("dd", {}, value));
-  row("Type", KINDS[kindOf(n)][2]);
+  row("Type", typeOf(n));
+  // Where the name comes from, so a guess is never taken for a fact.
+  row("Named by", n.label && { user: "you", dataset: "an open label set", protocol: "the swap protocol's own records", explorer: "its verified contract name at the explorer", heuristic: `its behaviour: a guess, ${pct(n.label_confidence)} sure` }[n.label_source]);
   row("Label", n.label);
   row("Synced", n.synced_at ? day(n.synced_at) : "not yet, so its own counterparties are unknown");
   row("Note", n.hub && "very active address: only its newest transactions are loaded, and traces do not pass through it");
@@ -541,7 +543,7 @@ function renderLookup() {
   const track = set({ mine: 1, public: 0, watched: false }, () => api("wallets", { address: v.address, name: "", public: false }).then(() => startSync([v.address])));
   const watch = v.watched ? set({ watched: false }, () => api(`watch/${encodeURIComponent(v.address)}`, null, "DELETE")) : set({ watched: true }, () => api("watch", { address: v.address }));
   const party = (c) => {
-    const kind = KINDS[kindOf(c)][2];
+    const kind = typeOf(c);
     const moved = [c.received.length ? `in ${sums(c.received)}` : "", c.sent.length ? `out ${sums(c.sent)}` : "", c.count ? plural(c.count, "transfer") : "", c.count ? (c.first === c.last ? day(c.first) : `${day(c.first)} to ${day(c.last)}`) : ""];
     return h(
       "li",

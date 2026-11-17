@@ -10,6 +10,7 @@ from itertools import combinations
 from . import chains, swaps
 from . import db as database
 from .heuristics import COMMON_INPUT_COINJOIN, EXCHANGE_CAP, SERVICE, TRUSTED
+from .labels import CONFIDENCE, describe
 
 HOP_DECAY = 0.7  # each stranger a trace passes through weakens it by this factor
 
@@ -80,7 +81,7 @@ def build(db, spam=False):
         node.update(chains.explorer(node["chain"]))
     marks = ",".join("?" * len(nodes))
     for r in db.execute(f"SELECT * FROM label WHERE address IN ({marks})", list(nodes)):
-        nodes[r["address"]].update(label=r["name"], category=r["category"])
+        nodes[r["address"]].update(describe(r))
     for r in db.execute(f"SELECT * FROM balance WHERE {where} ORDER BY amount DESC"):
         nodes[r["address"]].setdefault("balances", []).append(
             {"chain": r["chain"], "asset": r["asset"], "amount": r["amount"]}
@@ -160,7 +161,13 @@ def trace(db, max_hops=4):
 
     mine = _wallets(db)  # address -> wallet it belongs to
     labels = _labels(db)
-    blocked = {a for a, r in labels.items() if r["category"] in SERVICE}
+    # A service everybody uses links nobody: a path never runs through one that is known
+    # for sure. One that is only guessed to be a service (a label from a contract name or
+    # from behaviour) weakens the path by how sure the guess is, and does not cut it:
+    # being wrong there must not hide a link.
+    services_ = {a: r for a, r in labels.items() if r["category"] in SERVICE}
+    blocked = {a for a, r in services_.items() if r["source"] not in CONFIDENCE}
+    damp = {a: 1 - CONFIDENCE[r["source"]] for a, r in services_.items() if a not in blocked}
     blocked |= {r["address"] for r in db.execute("SELECT address FROM node WHERE hub AND NOT mine")}
 
     def best_paths(start):
@@ -176,7 +183,8 @@ def trace(db, max_hops=4):
                 continue
             for other, (conf, kind) in adj[node].items():
                 if other not in path:
-                    step = -math.log(conf) - (0 if node == start else math.log(HOP_DECAY))
+                    through = 1.0 if node == start else HOP_DECAY * damp.get(node, 1.0)
+                    step = -math.log(conf) - math.log(through)
                     heapq.heappush(
                         heap, (cost + step, hops + 1, other, (*path, other), (*kinds, kind))
                     )
@@ -285,7 +293,7 @@ def verdicts(db, max_hops=4):
             )
         }
         services = {
-            (_entity(labels[a]["name"]), labels[a]["category"])
+            (_entity(labels[a]["name"]), labels[a]["category"], labels[a]["source"] in CONFIDENCE)
             for a in others
             if a in labels and labels[a]["category"] in SERVICE
         }
@@ -308,7 +316,9 @@ def verdicts(db, max_hops=4):
                 "name": rows[0]["name"],
                 "public": bool(rows[0]["public"]),
                 "links": sorted(links, key=lambda k: -k["confidence"]),
-                "services": [{"name": n, "category": c} for n, c in sorted(services)],
+                "services": [
+                    {"name": n, "category": c, "guess": g} for n, c, g in sorted(services)
+                ],
                 "shared_services": [
                     {"wallet": first[v], "services": sorted(names)}
                     for v, names in sorted(shared[w].items())
@@ -432,6 +442,9 @@ def origins(db, max_hops=4):
                     "name": (nodes[terminal]["name"] if terminal in nodes else "")
                     or (labels[terminal]["name"] if terminal in labels else ""),
                     "kind": why.partition(":")[0],
+                    # True when the label is a guess (contract name or behaviour).
+                    "guess": terminal in labels and labels[terminal]["source"] in CONFIDENCE,
+                    "type": labels[terminal]["type"] if terminal in labels else "",
                     "public": bool(terminal in nodes and nodes[terminal]["public"]),
                     "reason": why.partition(":")[2],
                     "share": round(amount / received, 4),

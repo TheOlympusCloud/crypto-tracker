@@ -257,7 +257,7 @@ def put_label(label: Label):
         raise HTTPException(422, f"category must be one of {sorted(CATEGORIES)}")
     if label.name:
         write(
-            "INSERT OR REPLACE INTO label VALUES (?, ?, ?, 'user')",
+            "INSERT OR REPLACE INTO label(address, name, category, source) VALUES (?, ?, ?, 'user')",
             (address(label.address), label.name[:80], label.category),
         )
     else:
