@@ -341,3 +341,54 @@ def test_solana_fills_in_with_signatures(db, monkeypatch):
         with httpx.Client(transport=httpx.MockTransport(fake)) as client:
             sync.sync_address(db, client, SOL)
     assert stored(db) == 30 and history.state(db, SOL)["complete"]
+
+
+class Midgard:
+    """Swaps from A to BTC, newest first, honouring offset and limit. The oldest one paid
+    into an old vault, which a later sync's newest page never shows again."""
+
+    def __init__(self, n, recipient):
+        self.actions = [
+            {"type": "swap", "status": "success",
+             "in": [{"address": A, "txID": f"IN{i:04d}", "coins": [{"amount": "100000000", "asset": "ETH.ETH"}]}],
+             "out": [{"address": recipient, "txID": f"OUT{i:04d}", "coins": [{"amount": "1000", "asset": "BTC.BTC"}]}]}
+            for i in range(n)
+        ]  # fmt: skip
+
+    def __call__(self, request):
+        import httpx
+
+        q = request.url.params
+        start = int(q.get("offset", 0))
+        return httpx.Response(200, json={"actions": self.actions[start : start + int(q["limit"])]})
+
+
+def test_old_swaps_are_read_in_full_and_an_old_vault_keeps_its_label(db, monkeypatch):
+    import httpx
+    from test_core import BIP84, mine, transfer
+
+    from tracker import swaps
+
+    monkeypatch.setattr(chains, "DELAY", 0)
+    monkeypatch.setattr(swaps, "SOURCES", {"Maya Protocol": "http://maya"})
+    monkeypatch.setattr(swaps, "BUDGET", 2)  # pages per address and protocol per sync
+    mine(db, A)
+    mine(db, BIP84[0])
+    old_vault = "0x" + "5" * 40
+    transfer(db, "ethereum", "0xin0119", A, old_vault, 1.0)  # the oldest swap's inbound leg
+    db.commit()
+    fake = Midgard(120, BIP84[0])
+
+    def labelled():
+        row = db.execute("SELECT name FROM label WHERE address = ?", (old_vault,)).fetchone()
+        return row and row[0]
+
+    for _ in range(3):
+        with httpx.Client(transport=httpx.MockTransport(fake)) as client:
+            swaps.sync(db, client)
+    swaps_read = db.execute("SELECT COUNT(*) FROM link WHERE kind = 'swap'").fetchone()[0]
+    assert swaps_read == 120 and history.get(db, A, "swaps:Maya Protocol")["complete"]
+    assert labelled() == "Maya Protocol"
+    with httpx.Client(transport=httpx.MockTransport(fake)) as client:
+        swaps.sync(db, client)  # reads only what is new: the oldest swap is not in it
+    assert labelled() == "Maya Protocol"  # rebuilt from every stored swap, not the newest page

@@ -1,7 +1,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from tracker import chains, graph, heuristics, labels
+from tracker import chains, graph, heuristics, labels, swaps
 from tracker import db as database
 
 A, B, C, D = ("0x" + c * 40 for c in "abcd")
@@ -161,7 +161,7 @@ def test_trace_finds_exposure_and_refuses_paths_through_services(db):
         "expanded": 0,
         "notes": [
             "Not read on base, arbitrum, optimism, polygon, bsc: that needs a free Etherscan API key.",
-            "Swaps: only the 50 newest THORChain and Maya swaps of each address are read.",
+            swaps.NOTE,
         ],
     }
 

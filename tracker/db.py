@@ -42,6 +42,9 @@ CREATE TABLE IF NOT EXISTS balance(
   PRIMARY KEY(address, chain, token));
 CREATE TABLE IF NOT EXISTS sent(address TEXT, txid TEXT, PRIMARY KEY(address, txid));
 CREATE TABLE IF NOT EXISTS wide(address TEXT, txid TEXT, PRIMARY KEY(address, txid));
+CREATE TABLE IF NOT EXISTS swap(
+  protocol TEXT, sender TEXT, recipient TEXT, tx_in TEXT, tx_out TEXT,
+  PRIMARY KEY(protocol, tx_in, recipient));
 CREATE TABLE IF NOT EXISTS history(
   address TEXT, source TEXT, oldest TEXT, newest INT, oldest_ts INT, total INT,
   gap TEXT, gap_until INT, seen INT NOT NULL DEFAULT 0, complete INT NOT NULL DEFAULT 0,
