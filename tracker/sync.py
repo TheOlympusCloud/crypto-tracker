@@ -51,6 +51,14 @@ def sync_address(db, client, address):
             [(database.chain_of(address), txid) for txid in data.get("coinjoins", [])],
         )
         db.execute("UPDATE node SET cut = ? WHERE address = ?", (data.get("cut", 0), address))
+        # A token's verdict is kept until tokens.mark judges it again at the end of the sync,
+        # so a sync that stops early never leaves a fake token unmarked.
+        kept = [
+            (r["name"], r["trust"], r["reason"], address, r["chain"], r["token"])
+            for r in db.execute(
+                "SELECT * FROM balance WHERE address = ? AND trust != ''", (address,)
+            )
+        ]
         db.execute("DELETE FROM balance WHERE address = ?", (address,))
         db.executemany(
             "INSERT OR REPLACE INTO balance(address, chain, asset, token, amount, name) "
@@ -67,6 +75,11 @@ def sync_address(db, client, address):
                    GROUP BY chain, token HAVING SUM(CASE WHEN dst = ?1 THEN amount ELSE -amount END) > 1e-9""",
                 (address,),
             )
+        db.executemany(  # after the balances derived from the history too
+            "UPDATE balance SET name = CASE name WHEN '' THEN ? ELSE name END, trust = ?, "
+            "reason = ? WHERE address = ? AND chain = ? AND token = ?",
+            kept,
+        )
         db.execute(
             "UPDATE node SET synced_at = ?, hub = ? WHERE address = ?",
             (int(time.time()), int(data["hub"]), address),

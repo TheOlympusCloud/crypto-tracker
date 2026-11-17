@@ -568,3 +568,16 @@ def test_a_database_from_before_trust_opens(tmp_path):
         r["name"] for r in db.execute("PRAGMA table_info(balance)")
     }
     assert tuple(db.execute("SELECT amount, trust FROM balance").fetchone()) == (1.0, "")
+
+
+def test_a_new_sync_keeps_the_marks_until_they_are_judged_again(db, client):
+    from tracker import sync
+
+    mine(db, A)
+    db.commit()
+    sync_and_mark(db)
+    with httpx.Client() as web:
+        sync.sync_address(db, web, A)  # a sync that stops before marking (swaps or prices down)
+    assert judged(db, A)[("ethereum", "FREE")] == "scam"
+    assert judged(db, A)[("ethereum", "USDC")] == "verified"
+    assert judged(db, A)[("polygon", "USDC")] == "scam"  # a balance derived from the history
