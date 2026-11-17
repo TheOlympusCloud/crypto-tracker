@@ -631,15 +631,17 @@ def evm_transfers(chain, native, items, token=False):
     return rows
 
 
-def _evm_call(client, cfg, address, action, **extra):
+def _evm_call(client, cfg, address, action, partial=False, **extra):
     params = {"module": "account", "action": action, "address": address}
     if cfg.get("apikey"):
         params["apikey"] = cfg["apikey"]
     data = get(client, cfg["url"], {**cfg.get("params", {}), **params, **extra}).json()
     # Etherscan reports an empty list as status 0, "No transactions found". Blockscout answers
     # status 2 when some blocks of the range are not traced yet (Optimism's internal
-    # transactions): it gives what it has.
-    if data.get("status") not in ("1", "2") and not str(data.get("message", "")).startswith("No "):
+    # transactions): what it has is enough for a snapshot (`partial`), never for the history,
+    # which would close over the missing blocks for good.
+    ok = ("1", "2") if partial else ("1",)
+    if data.get("status") not in ok and not str(data.get("message", "")).startswith("No "):
         raise RuntimeError(f"{action}: {data.get('message')} {str(data.get('result'))[:80]}")
     return data.get("result") or []
 
@@ -673,7 +675,7 @@ def fetch_evm(client, address, chains=None):
             continue  # reported once by coverage(), not as an error on every address
 
         def call(action, cfg=cfg, **extra):
-            return _evm_call(client, cfg, address, action, **extra)
+            return _evm_call(client, cfg, address, action, partial=True, **extra)
 
         try:
             page = {"page": 1, "offset": EVM_ROWS, "sort": "desc"}

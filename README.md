@@ -368,7 +368,8 @@ or at the hop limit, and says which.
   "unknown", and a lookup with an incomplete history never calls a token unasked.
 - A token that only borrows a known name (a fake USDC) is listed apart, unpriced.
 - Blockscout has not traced every internal transaction (contract-to-wallet payments) of
-  some chains yet, seen on Optimism; it answers with those it has, and the rest are missing.
+  some chains yet, seen on Optimism. A sync shows those it has; the full history of your own
+  wallets stays "filling in" (with a sync error naming it) until Blockscout has traced them.
 - Very active addresses that are not yours load only their newest history and are flagged
   in the UI. A very large wallet of yours can take several syncs to read in full.
 - A transaction with more than 50 counterparties (a CoinJoin, an exchange batch) keeps
