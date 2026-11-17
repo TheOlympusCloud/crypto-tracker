@@ -5,7 +5,7 @@ import time
 
 import httpx
 
-from . import alerts, chains, detect, graph, hd, heuristics, labels, prices, swaps, tokens
+from . import alerts, chains, detect, graph, hd, heuristics, history, labels, prices, swaps, tokens
 from . import db as database
 
 EXPAND_PER_LEVEL = 40  # neighbours synced per depth level, most active first
@@ -27,6 +27,13 @@ def sync_address(db, client, address):
     try:
         mine = {r["address"] for r in db.execute("SELECT address FROM node WHERE mine")}
         data = chains.fetch(client, address, mine)
+        if address in mine and database.chain_of(address) in chains.UTXO:
+            # My own addresses are read in full over time: see history.advance.
+            more = history.advance(client, db, address, mine, data.get("count"))
+            for k in ("transfers", "links", "coinjoins", "wide"):
+                data[k] = data.get(k, []) + more[k]
+            data["errors"] = data.get("errors", []) + more["errors"]
+            data["hub"] = not history.state(db, address)["complete"]
         error = "; ".join(data.get("errors", []))
     except (httpx.HTTPError, RuntimeError, ValueError, KeyError, TypeError) as e:
         data, error = None, chains.describe(e)
@@ -50,7 +57,15 @@ def sync_address(db, client, address):
             "INSERT OR IGNORE INTO coinjoin VALUES (?, ?)",
             [(database.chain_of(address), txid) for txid in data.get("coinjoins", [])],
         )
-        db.execute("UPDATE node SET cut = ? WHERE address = ?", (data.get("cut", 0), address))
+        # Wide transactions are kept by id: a page read twice (plain read, then history) or
+        # over several syncs counts each of them once.
+        db.executemany(
+            "INSERT OR IGNORE INTO wide VALUES (?, ?)", [(address, t) for t in data.get("wide", ())]
+        )
+        db.execute(
+            "UPDATE node SET cut = (SELECT COUNT(*) FROM wide WHERE address = ?1) WHERE address = ?1",
+            (address,),
+        )
         # A token's verdict is kept until tokens.mark judges it again at the end of the sync,
         # so a sync that stops early never leaves a fake token unmarked.
         kept = [

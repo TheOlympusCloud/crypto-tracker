@@ -52,3 +52,107 @@ def state(db, address):
         }
     open_ = [m["oldest_ts"] for m in marks if not m["complete"]]
     return {"complete": False, "oldest_ts": None if None in open_ else max(open_)}
+
+
+BUDGET = {"default": 40, "solana": 8}  # pages per source per sync (Solana: 25 transactions each)
+
+
+def _reader(client, source, address):
+    """A function cursor -> chains.Page for one source of an address."""
+    chain = source.split(":")[0]
+    if chain in chains.UTXO:
+        return lambda cursor: chains.page_utxo(client, chain, address, cursor)
+    raise KeyError(source)
+
+
+def _convert(source, address, items, keep):
+    """What a sync stores from raw items: transfers, links, CoinJoins and wide transactions."""
+    chain = source.split(":")[0]
+    asset = chains.UTXO[chain][0]
+    return {
+        "transfers": [
+            r for tx in items for r in chains.utxo_transfers(address, tx, chain, asset, keep=keep)
+        ],
+        "links": [k for tx in items for k in chains.btc_links(address, tx)],
+        "coinjoins": [tx["txid"] for tx in items if chains.looks_like_coinjoin(tx)],
+        "wide": [tx["txid"] for tx in items if chains.wide(address, tx)],
+    }
+
+
+def walk(read, cursor, stop, budget):
+    """Read pages from `cursor` back until one reaches position `stop` (None: never), the
+    last page, or `budget` pages. A page that fails ends the walk: what came before stays.
+    Returns (items newer than `stop`, next cursor, reached `stop`, at the end, pages, error)."""
+    items, used, error = [], 0, None
+    while used < budget:
+        try:
+            page = read(cursor)
+        except (chains.httpx.HTTPError, RuntimeError, ValueError, KeyError, TypeError) as e:
+            error = chains.describe(e)
+            break
+        used += 1
+        items += [i for i, p in zip(page.items, page.positions) if stop is None or p > stop]
+        cursor = page.next
+        if stop is not None and any(p <= stop for p in page.positions):
+            return items, cursor, True, False, used, None
+        if page.last:
+            return items, cursor, False, True, used, None
+    return items, cursor, False, False, used, error
+
+
+def advance(client, db, address, keep=(), total=None):
+    """Read more of one of my address's histories: what is new since the last sync, an
+    unfinished read of new transactions, then further back, within each source's budget.
+    Returns what a sync stores, as chains.fetch does, and the errors met."""
+    out = {"transfers": [], "links": [], "coinjoins": [], "wide": [], "errors": []}
+    for source in sources(address):
+        mark = get(db, address, source)
+        budget = BUDGET.get(source.split(":")[0], BUDGET["default"])
+        read = _reader(client, source, address)
+        got, fields = [], {}
+        # 1. New since the newest read; on a first read, this is also the start of the way back.
+        new, nxt, reached, end, used, error = walk(read, None, mark and mark["newest"], budget)
+        budget -= used
+        got += new
+        top = max((_position(source, i) for i in new), default=None)
+        if mark is None:
+            fields |= {"oldest": nxt, "newest": top, "complete": int(end), "seen": len(new)}
+        else:
+            fields["seen"] = mark["seen"] + len(new)
+            if reached or end:
+                fields["newest"] = max(top or 0, mark["newest"] or 0)
+            elif not mark["gap"] and not error:  # more new than one budget: a gap to close
+                fields |= {"gap": nxt, "gap_until": mark["newest"], "newest": top}
+            # 2. An unfinished read of new transactions, from where it stopped.
+            if mark["gap"] and (reached or end) and budget > 0 and not error:
+                more, nxt2, reached2, end2, used, error = walk(
+                    read, mark["gap"], mark["gap_until"], budget
+                )
+                budget -= used
+                got += more
+                fields["seen"] += len(more)
+                fields |= {"gap": None, "gap_until": None} if reached2 or end2 else {"gap": nxt2}
+            # 3. Further back, from the oldest point read.
+            if not mark["complete"] and budget > 0 and not error:
+                old, nxt3, _, end3, used, error = walk(read, mark["oldest"], None, budget)
+                got += old
+                fields["seen"] += len(old)
+                fields |= {"oldest": nxt3, "complete": int(end3)}
+        if fields.get("complete") and total is not None and fields["seen"] < total:
+            fields["complete"] = 0  # a short page, but fewer than the indexer counts: not the end
+        part = _convert(source, address, got, keep)
+        times = [t[7] for t in part["transfers"] if t[7]]
+        if times:
+            fields["oldest_ts"] = min(
+                times + ([mark["oldest_ts"]] if mark and mark["oldest_ts"] else [])
+            )
+        put(db, address, source, **fields)
+        for k in ("transfers", "links", "coinjoins", "wide"):
+            out[k] += part[k]
+        if error:
+            out["errors"].append(f"{source}: {error}")
+    return out
+
+
+def _position(source, item):
+    return item["status"].get("block_height") or 0

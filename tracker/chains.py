@@ -8,7 +8,7 @@ EVM chains share one Etherscan-style adapter; Tron and Solana are read more shal
 import json
 import os
 import time
-from collections import Counter
+from collections import Counter, namedtuple
 from datetime import datetime
 
 import httpx
@@ -273,32 +273,33 @@ def _blockcypher(client, url, address):
     except RateLimited:
         COOLDOWN[url] = time.time() + 3600
         raise RateLimited(waiting) from None
-    txs = [
-        {
-            "txid": t["hash"],
-            "vin": [
-                {
-                    "prevout": _coin(
-                        (i.get("addresses") or [None])[0],
-                        i.get("output_value"),
-                        i.get("script_type"),
-                    )
-                }
-                for i in t["inputs"]
-            ],
-            "vout": [
-                _coin((o.get("addresses") or [None])[0], o.get("value"), o.get("script_type"))
-                for o in t["outputs"]
-            ],
-            "status": {
-                "block_time": int(datetime.fromisoformat(t["confirmed"]).timestamp())
-                if t.get("confirmed")
-                else 0
-            },
-        }
-        for t in data.get("txs", [])
-    ]
+    txs = [_cypher_tx(t) for t in data.get("txs", [])]
     return txs, data["final_balance"], data["n_tx"]
+
+
+def _cypher_tx(t):
+    """A BlockCypher transaction in Esplora's shape."""
+    return {
+        "txid": t["hash"],
+        "vin": [
+            {
+                "prevout": _coin(
+                    (i.get("addresses") or [None])[0], i.get("output_value"), i.get("script_type")
+                )
+            }
+            for i in t["inputs"]
+        ],
+        "vout": [
+            _coin((o.get("addresses") or [None])[0], o.get("value"), o.get("script_type"))
+            for o in t["outputs"]
+        ],
+        "status": {
+            "block_time": int(datetime.fromisoformat(t["confirmed"]).timestamp())
+            if t.get("confirmed")
+            else 0,
+            "block_height": t.get("block_height") or 0,
+        },
+    }
 
 
 def _haskoin(client, url, address):
@@ -306,21 +307,24 @@ def _haskoin(client, url, address):
     balance = get(client, f"{url}/address/{bare}/balance").json()
     data = get(client, f"{url}/address/{bare}/transactions/full", {"limit": 100}).json()
 
+    return [_haskoin_tx(t) for t in data], balance["confirmed"], balance["txs"]
+
+
+def _haskoin_tx(t):
+    """A Haskoin transaction in Esplora's shape."""
+
     def kind(coin):  # the first script bytes are enough to tell address types apart
         return (coin.get("pkscript") or "")[:4]
 
-    txs = [
-        {
-            "txid": t["txid"],
-            "vin": [
-                {"prevout": _coin(i.get("address"), i.get("value"), kind(i))} for i in t["inputs"]
-            ],
-            "vout": [_coin(o.get("address"), o.get("value"), kind(o)) for o in t["outputs"]],
-            "status": {"block_time": t.get("time") or 0},
-        }
-        for t in data
-    ]
-    return txs, balance["confirmed"], balance["txs"]
+    return {
+        "txid": t["txid"],
+        "vin": [{"prevout": _coin(i.get("address"), i.get("value"), kind(i))} for i in t["inputs"]],
+        "vout": [_coin(o.get("address"), o.get("value"), kind(o)) for o in t["outputs"]],
+        "status": {
+            "block_time": t.get("time") or 0,
+            "block_height": (t.get("block") or {}).get("height") or 0,
+        },
+    }
 
 
 def fetch_utxo(client, address, chain="bitcoin", keep=()):
@@ -333,12 +337,53 @@ def fetch_utxo(client, address, chain="bitcoin", keep=()):
             row for tx in txs for row in utxo_transfers(address, tx, chain, asset, keep=keep)
         ],
         "links": [link for tx in txs for link in btc_links(address, tx)],
-        # Transactions whose transfers say nothing about ownership, and how many were cut.
+        # Transactions whose transfers say nothing about ownership, and those that were cut.
         "coinjoins": [tx["txid"] for tx in txs if looks_like_coinjoin(tx)],
-        "cut": sum(wide(address, tx) for tx in txs),
+        "wide": [tx["txid"] for tx in txs if wide(address, tx)],
         "balances": [(chain, asset, "", balance / 1e8)],
         "hub": count > len(txs),
+        "count": count,  # the address's transactions, as the indexer counts them
     }
+
+
+# One page of an address's history, newest first: the raw items, their positions (block
+# height, timestamp or slot), the cursor of the next older page, and whether it is the last.
+Page = namedtuple("Page", "items positions next last")
+
+
+def page_utxo(client, chain, address, cursor=None):
+    """One page of a UTXO address's history from `cursor` back (None: the newest)."""
+    _, api, url, _ = UTXO[chain]
+    if api == "esplora":
+        tail = f"/{cursor}" if cursor else ""
+        txs = get(client, f"{url}/address/{address}/txs/chain{tail}").json()
+        size, nxt = 25, (txs[-1]["txid"] if txs else cursor)
+    elif api == "haskoin":
+        offset = int(cursor or 0)
+        bare = address.removeprefix("bitcoincash:")
+        params = {"limit": 100, "offset": offset}
+        txs = [
+            _haskoin_tx(t)
+            for t in get(client, f"{url}/address/{bare}/transactions/full", params).json()
+        ]
+        size, nxt = 100, str(offset + len(txs))
+    else:  # blockcypher: by block height, and within the hourly quota
+        if COOLDOWN.get(url, 0) > time.time():
+            raise RateLimited("the indexer's hourly limit is used up; the rest follows later")
+        params = {"limit": 50, **({"before": cursor} if cursor else {})}
+        try:
+            data = get(client, f"{url}/addrs/{address}/full", params, patient=False).json()
+        except RateLimited:
+            COOLDOWN[url] = time.time() + 3600
+            raise
+        txs = [_cypher_tx(t) for t in data.get("txs", [])]
+        low = min((t["status"]["block_height"] for t in txs), default=None)
+        # `before` leaves out its own block: start again inside the last one, unless a single
+        # block filled the page, where that would read the same page forever.
+        nxt = cursor if low is None else str(low + 1 if str(low + 1) != cursor else low)
+        size = 50
+    positions = [t["status"].get("block_height") or 0 for t in txs]
+    return Page(txs, positions, nxt, len(txs) < size)
 
 
 def fetch_btc(client, address):
