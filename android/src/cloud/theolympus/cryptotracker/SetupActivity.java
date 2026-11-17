@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.os.Bundle;
+import android.os.Process;
 import android.text.InputType;
 import android.webkit.WebViewDatabase;
 import android.widget.Button;
@@ -81,11 +82,14 @@ public class SetupActivity extends Activity {
         form.addView(save);
 
         Button forget = new Button(this);
-        forget.setText("Forget the saved password and certificate");
+        forget.setText("Forget the saved password and certificate, and close the app");
         forget.setOnClickListener(v -> {
             WebViewDatabase.getInstance(this).clearHttpAuthUsernamePassword();
-            prefs.edit().remove(CERT).apply();
-            error.setText("Forgotten. The app will ask again.");
+            prefs.edit().remove(CERT).commit(); // written before the process ends
+            // The WebView also keeps both in memory until its process ends: end it, so that
+            // "forget" is true from this moment and not from the next restart.
+            finishAffinity();
+            Process.killProcess(Process.myPid());
         });
         form.addView(forget);
 

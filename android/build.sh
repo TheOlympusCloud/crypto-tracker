@@ -4,6 +4,8 @@
 #   ANDROID_KEYSTORE    keystore to sign with; ANDROID_KEYSTORE_PASS its password
 # Without a keystore the APK is left unsigned in build/, and cannot be installed.
 set -euo pipefail
+# A relative keystore path is relative to where the script was called from, not to android/.
+keystore=${ANDROID_KEYSTORE:+$(realpath "$ANDROID_KEYSTORE")}
 cd "$(dirname "$0")"
 
 VERSION_NAME=0.1.0
@@ -38,8 +40,8 @@ find build/classes -name '*.class' >build/classes.txt
 jar --update --file build/unaligned.apk -C build classes.dex # the JDK's zip tool
 "$tools/zipalign" -f 4 build/unaligned.apk build/aligned.apk
 
-if [ -n "${ANDROID_KEYSTORE:-}" ]; then
-    "$tools/apksigner" sign --ks "$ANDROID_KEYSTORE" \
+if [ -n "$keystore" ]; then
+    "$tools/apksigner" sign --ks "$keystore" \
         --ks-pass "env:ANDROID_KEYSTORE_PASS" --out build/crypto-tracker.apk build/aligned.apk
     "$tools/apksigner" verify --print-certs build/crypto-tracker.apk | head -n 2
     echo "built android/build/crypto-tracker.apk"

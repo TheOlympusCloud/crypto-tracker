@@ -15,6 +15,7 @@
          refuses http unless the user ticked the box for it (Server.normalise). -->
     <application
         android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:icon="@drawable/icon"
         android:label="@string/app"
         android:theme="@android:style/Theme.DeviceDefault.DayNight"
@@ -34,5 +35,11 @@
             android:name=".SetupActivity"
             android:exported="false"
             android:label="@string/settings" />
+        <!-- One private file for the camera app to write a QR photo into, per capture. -->
+        <provider
+            android:name=".PhotoProvider"
+            android:authorities="cloud.theolympus.cryptotracker.photo"
+            android:exported="false"
+            android:grantUriPermissions="true" />
     </application>
 </manifest>

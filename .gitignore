@@ -6,3 +6,5 @@ __pycache__/
 .ruff_cache/
 chains.json
 android/build/
+*.jks
+*.keystore

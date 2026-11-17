@@ -152,6 +152,9 @@ Install:
 To change the server later, or to forget the password and certificate, long-press the app
 icon and choose "Server settings".
 
+A photo taken for the scanner is kept in the app's private storage, never in the gallery,
+and nothing the app stores is included in backups or copied to a new phone.
+
 The QR scanner uses the camera live over https (also self-signed, once accepted). Over
 plain http a page is not allowed a live camera, so the scanner's "Take a photo" is used.
 
@@ -162,8 +165,9 @@ keytool -genkeypair -keystore release.jks -alias crypto-tracker -keyalg RSA -key
 ANDROID_HOME=~/Android/Sdk ANDROID_KEYSTORE=release.jks ANDROID_KEYSTORE_PASS=... android/build.sh
 ```
 
-An update only installs over the old app when it is signed with the same key, so keep the
-keystore. The app has not been run on a real phone yet.
+Both commands run from the top of the repository. Keystores (`*.jks`, `*.keystore`) are
+git-ignored, but the better place for one is outside the checkout. An update only installs
+over the old app when it is signed with the same key, so keep it safe. The app has not been run on a real phone yet.
 
 ## Look up an address
 

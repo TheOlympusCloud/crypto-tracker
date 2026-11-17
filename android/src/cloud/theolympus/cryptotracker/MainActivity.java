@@ -4,7 +4,7 @@ import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.ActivityNotFoundException;
-import android.content.ContentValues;
+import android.content.ClipData;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
@@ -45,7 +45,6 @@ public class MainActivity extends Activity {
     private PermissionRequest scan; // a page waiting for the camera permission
     private ValueCallback<Uri[]> photoFor; // a page waiting for a photo
     private Intent picker;
-    private Uri photo; // where the camera app writes the photo
     private boolean asking; // one certificate or error dialog at a time
 
     @Override
@@ -68,6 +67,10 @@ public class MainActivity extends Activity {
         web.setWebViewClient(new Pages());
         web.setWebChromeClient(new Device());
         setContentView(web);
+        // WebView remembers an accepted certificate for as long as the process lives: when
+        // none is accepted (any more), make it ask again.
+        if (prefs.getString(SetupActivity.CERT, null) == null) web.clearSslPreferences();
+        PhotoProvider.file(this).delete(); // a QR photo from an earlier run
         if (state == null || web.restoreState(state) == null) web.loadUrl(base);
     }
 
@@ -112,6 +115,11 @@ public class MainActivity extends Activity {
         @Override
         public void onReceivedHttpAuthRequest(
                 WebView view, final HttpAuthHandler handler, final String host, final String realm) {
+            // Only the configured server is ever given, or asked for, the password.
+            if (!host.equalsIgnoreCase(Uri.parse(base).getHost())) {
+                handler.cancel();
+                return;
+            }
             final WebViewDatabase store = WebViewDatabase.getInstance(MainActivity.this);
             // useHttpAuthUsernamePassword() is false after a stored password was refused.
             String[] saved = handler.useHttpAuthUsernamePassword()
@@ -230,9 +238,15 @@ public class MainActivity extends Activity {
             } else if (hasCamera()) {
                 request.grant(new String[] {PermissionRequest.RESOURCE_VIDEO_CAPTURE});
             } else {
+                if (scan != null) scan.deny(); // an earlier request this one replaces
                 scan = request;
                 requestPermissions(new String[] {Manifest.permission.CAMERA}, ASK_CAMERA_FOR_SCAN);
             }
+        }
+
+        @Override
+        public void onPermissionRequestCanceled(PermissionRequest request) {
+            if (request == scan) scan = null;
         }
 
         /** "Take a photo": the scanner's fallback where the page is not allowed a live camera. */
@@ -261,17 +275,15 @@ public class MainActivity extends Activity {
 
     private void choosePhoto() {
         Intent chooser = Intent.createChooser(picker, "Photo of the QR code");
-        photo = null;
+        PhotoProvider.file(this).delete();
         if (hasCamera()) {
-            ContentValues entry = new ContentValues();
-            entry.put(MediaStore.Images.Media.DISPLAY_NAME, "crypto-tracker-qr.jpg");
-            entry.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
-            photo = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, entry);
-            if (photo != null) {
-                Intent camera = new Intent(MediaStore.ACTION_IMAGE_CAPTURE)
-                        .putExtra(MediaStore.EXTRA_OUTPUT, photo);
-                chooser.putExtra(Intent.EXTRA_INITIAL_INTENTS, new Parcelable[] {camera});
-            }
+            // The camera app writes into the app's private file, never into the gallery.
+            Intent camera = new Intent(MediaStore.ACTION_IMAGE_CAPTURE)
+                    .putExtra(MediaStore.EXTRA_OUTPUT, PhotoProvider.PHOTO)
+                    .addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                            | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            camera.setClipData(ClipData.newRawUri(null, PhotoProvider.PHOTO));
+            chooser.putExtra(Intent.EXTRA_INITIAL_INTENTS, new Parcelable[] {camera});
         }
         try {
             startActivityForResult(chooser, PICK_PHOTO);
@@ -284,12 +296,13 @@ public class MainActivity extends Activity {
     protected void onActivityResult(int code, int result, Intent data) {
         if (code != PICK_PHOTO || photoFor == null) return;
         Uri picked = result == RESULT_OK && data != null ? data.getData() : null;
-        boolean taken = result == RESULT_OK && picked == null && photo != null;
-        // The gallery entry made for the camera is removed again when it was not used.
-        if (!taken && photo != null) getContentResolver().delete(photo, null, null);
-        Uri chosen = taken ? photo : picked;
+        // A camera app answers with no address, or with the one it was given.
+        boolean taken = result == RESULT_OK
+                && (picked == null || PhotoProvider.PHOTO.equals(picked))
+                && PhotoProvider.file(this).length() > 0;
+        if (!taken) PhotoProvider.file(this).delete();
+        Uri chosen = taken ? PhotoProvider.PHOTO : PhotoProvider.PHOTO.equals(picked) ? null : picked;
         photoFor.onReceiveValue(chosen == null ? null : new Uri[] {chosen});
         photoFor = null;
-        photo = null;
     }
 }
