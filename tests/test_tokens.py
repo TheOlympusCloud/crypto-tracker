@@ -175,3 +175,22 @@ def test_open_label_sets_flag_scams_hacks_and_sanctions():
 )
 def test_a_lookalike_starts_and_ends_like_an_address_in_use(a, b, alike):
     assert lookup.lookalike(a, b) is alike
+
+
+def test_a_token_list_that_does_not_answer_is_not_asked_again_at_once(monkeypatch):
+    import httpx
+
+    monkeypatch.setattr(tokens, "CACHE", {})
+    calls = []
+
+    def down(request):
+        calls.append(request.url.host)
+        return httpx.Response(503)
+
+    with httpx.Client(transport=httpx.MockTransport(down)) as client:
+        assert tokens.uniswap(client) == {} and tokens.uniswap(client) == {}
+    assert calls == ["tokens.uniswap.org"]  # one sync with many wallets waits once, not per wallet
+
+
+def test_the_reason_names_what_is_imitated_as_written():
+    assert "like Tether USD," in trust(symbol="FOO", name="Tether USD")["reason"]

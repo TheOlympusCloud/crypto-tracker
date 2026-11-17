@@ -63,12 +63,17 @@ def parse_list(data):
     return out
 
 
+RETRY = 600  # seconds before a list that did not answer is asked again
+
+
 def uniswap(client):
     """Uniswap's default list, or {} while it cannot be fetched: then nothing is verified,
     which errs on the side of caution."""
     try:
         return _cached(UNISWAP, lambda: parse_list(client.get(UNISWAP).raise_for_status().json()))
     except (httpx.HTTPError, ValueError, AttributeError):
+        # Remembered for a while: one sync asks it once, not once per wallet.
+        CACHE[UNISWAP] = (time.time() - TTL + RETRY, {})
         return {}
 
 
@@ -94,7 +99,7 @@ def dressed(symbol, name, famous):
     """What a token pretends to be, from its symbol or name, or None."""
     for text in (symbol, name):
         if text and skeleton(text) in famous:
-            return skeleton(text)
+            return text
     bare = skeleton(symbol)
     return next((what for k, what in DRESS.items() if bare.startswith(k) or bare.endswith(k)), None)
 
@@ -142,7 +147,7 @@ def trust(chain, token, symbol, name="", listed="", famous=frozenset(), price=No
         return {"level": "scam", "reason": reason + " Never visit it or sign anything there."}
     twin = dressed(symbol, name, famous)
     if twin and not sure:
-        like = "," if twin == skeleton(symbol) else f", like {twin},"
+        like = "," if skeleton(twin) == skeleton(symbol) else f", like {twin},"
         reason = f"It calls itself {symbol}{like} but it is not the real one: no token "
         return {"level": "scam", "reason": reason + "list names it, and it has no reliable price."}
     if unasked and not sure:
