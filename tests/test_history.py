@@ -410,6 +410,11 @@ def test_a_wallet_filling_in_is_partly_checked(db):
     (v,) = graph.verdicts(db)
     # Never "no link found" while older transactions are still to be read.
     assert v["checked"] == "partial" and v["coverage"]["filling"] == 1_600_000_000
+    history.put(db, A, "ethereum:tokentx", complete=0)  # nothing dated read there yet
+    db.commit()
+    (v,) = graph.verdicts(db)
+    assert v["checked"] == "partial" and v["coverage"]["filling"] == 0  # no date to claim
+    history.put(db, A, "ethereum:tokentx", complete=1)
     history.put(db, A, "ethereum:txlist", complete=1)
     db.commit()
     (v,) = graph.verdicts(db)

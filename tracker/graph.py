@@ -272,7 +272,9 @@ def verdicts(db, max_hops=4):
     filling = {
         r[0]: r[1]
         for r in db.execute(
-            "SELECT address, MAX(oldest_ts) FROM history WHERE NOT complete GROUP BY address"
+            # how far back all of it is read; NULL while a source has no date yet
+            "SELECT address, CASE WHEN COUNT(*) = COUNT(oldest_ts) THEN MAX(oldest_ts) END "
+            "FROM history WHERE NOT complete GROUP BY address"
         )
     }
     out = [
