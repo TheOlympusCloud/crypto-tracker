@@ -108,7 +108,8 @@ def build(db, spam=False):
         b = {"chain": r["chain"], "asset": r["asset"], "amount": r["amount"], "token": r["token"]}
         if r["trust"]:
             b |= {"name": r["name"], "trust": {"level": r["trust"], "reason": r["reason"]}}
-        nodes[r["address"]].setdefault("balances", []).append(b)
+        if r["address"] in nodes:  # not an address left out, such as one that only sent fakes
+            nodes[r["address"]].setdefault("balances", []).append(b)
     members = defaultdict(list)
     for address, node in sorted(nodes.items()):
         if node.get("mine") and node.get("wallet"):

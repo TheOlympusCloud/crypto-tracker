@@ -1934,6 +1934,10 @@ def test_wallets_that_only_sent_fake_tokens_are_not_in_the_graph(db):
     airdropper, payer, both = ("0x" + c * 40 for c in "456")
     mine(db, A)
     db.execute("INSERT INTO node(address, synced_at) VALUES (?, 1)", (airdropper,))  # expanded once
+    db.execute(  # its gas money: a balance of a node that is not shown must not break the graph
+        "INSERT INTO balance(address, chain, asset, token, amount) VALUES (?, 'ethereum', 'ETH', '', 0.5)",
+        (airdropper,),
+    )
     db.execute(
         "INSERT INTO balance(address, chain, asset, token, amount, trust) "
         "VALUES (?, 'ethereum', 'USDC', ?, 1000, 'scam')",
