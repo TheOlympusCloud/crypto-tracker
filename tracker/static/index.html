@@ -31,6 +31,7 @@
   <div class="side">
     <!-- Always at hand: paste, type or scan any address, mine or not (see lookUp in app.js). -->
     <form id="lookup" role="search">
+      <span id="boxchain" aria-live="polite"></span>
       <input name="q" aria-label="Look up any address" placeholder="Look up any address" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="search">
       <button type="button" id="scan" aria-label="Scan a QR code" title="Scan a QR code"></button>
       <button class="find" aria-label="Look up" title="Look up"></button>
@@ -84,7 +85,7 @@
       <ul id="legend-lines"></ul>
       <h3 class="eyebrow">Counterparties</h3>
       <ul id="legend"></ul>
-      <p class="hint">A plain line is transfers: the arrowhead and the darker end are at the receiver. A dashed coloured line is a guess that two addresses share an owner, with its confidence. The fat orange line with numbered hops is the selected path.</p>
+      <p class="hint">A plain line is transfers: the arrowhead and the darker end are at the receiver. A dashed coloured line is a guess that two addresses share an owner, with its confidence. The fat orange line with numbered hops is the selected path. A name ending in +12 has 12 counterparties folded into it: open it to unfold them.</p>
     </details>
     <div id="graphbar" class="hud">
       <button id="mode" class="seg" aria-pressed="true" title="Switch between the 3D and the flat graph"><span>3D</span><span>2D</span></button>

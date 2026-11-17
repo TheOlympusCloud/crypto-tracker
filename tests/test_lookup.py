@@ -3,7 +3,7 @@ import pytest
 from fastapi.testclient import TestClient
 from test_core import BCH, DOGE, LTC, SATOSHI, SOL, TRX, A, B, C, D, mine, tx, vin, vout
 
-from tracker import chains, graph, uri
+from tracker import chains, graph, lookup, tokens, uri
 from tracker import db as database
 
 SEGWIT = "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq"
@@ -11,6 +11,10 @@ OTHER = "12c6DSiU4Rq3P4ZxziKxzrL5LmMBrzjrJX"
 CHECKSUMMED = "0xD8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
 USDC_SOL = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 PAYER = "775HG7Z2skCZugQ6LERhgbf82TPb2eGh4ucwVkjJm4GB"
+MSTRX = "XsP7xzNPvEHS1m6qfanPUGjNmdnmsLKEoNAnHjdxxyZ"  # a Token-2022 mint
+WSOL = "So11111111111111111111111111111111111111112"
+FAKE_USDC = "0x" + "7" * 40
+SPL, TOKEN_2022 = chains.TOKEN_PROGRAMS
 
 
 @pytest.mark.parametrize(
@@ -89,6 +93,11 @@ PRICES = {
     "coingecko:solana": {"price": 100, "symbol": "SOL", "confidence": 0.99},
     f"ethereum:{C}": {"price": 1, "symbol": "USDC", "confidence": 0.99},
     f"solana:{USDC_SOL}": {"price": 1, "symbol": "USDC", "confidence": 0.99},
+    f"solana:{MSTRX}": {"price": 300, "symbol": "MSTRX", "confidence": 0.95},
+}
+JUPITER = {
+    USDC_SOL: {"id": USDC_SOL, "symbol": "USDC", "name": "USD Coin", "isVerified": True},
+    MSTRX: {"id": MSTRX, "symbol": "MSTRx", "name": "MicroStrategy xStock", "isVerified": True},
 }
 
 
@@ -98,6 +107,14 @@ def indexers(request):
     if host == "coins.llama.fi":
         asked = path.rsplit("/", 1)[1].split(",")
         return httpx.Response(200, json={"coins": {k: PRICES[k] for k in asked if k in PRICES}})
+    if host == "tokens.uniswap.org":
+        listed = [(1, C, "USDC"), (tokens.SOLANA_ID, USDC_SOL, "USDC")]
+        return httpx.Response(
+            200, json={"tokens": [{"chainId": i, "address": a, "symbol": s} for i, a, s in listed]}
+        )
+    if host == "lite-api.jup.ag":
+        asked = request.url.params["query"].split(",")
+        return httpx.Response(200, json=[JUPITER[m] for m in asked if m in JUPITER])
     if host == "blockstream.info":
         if path.endswith("/txs/chain"):
             return httpx.Response(
@@ -127,27 +144,47 @@ def indexers(request):
                 {**token, "value": "7000000", "tokenSymbol": "USDC", "contractAddress": C},
                 # an airdrop nobody vouches for, from a stranger
                 {**token, "from": SPAMMER, "value": "9000000", "tokenSymbol": "FREE"}
-                | {"contractAddress": SPAM},
+                | {"contractAddress": SPAM, "hash": "h9"},
             ],
             "balance": str(2 * 10**18),
+            # Routescan's list of every token held, with names
+            "addresstokenbalance": [
+                {"TokenAddress": a, "TokenName": n, "TokenSymbol": s, "TokenDivisor": "6"}
+                | {"TokenQuantity": q}
+                for a, n, s, q in (
+                    (C, "USD Coin", "USDC", "7000000"),
+                    (SPAM, "Free Money", "FREE", "9000000"),
+                    (FAKE_USDC, "USD Coin", "USDС", "500000000"),  # with a Cyrillic Es
+                )
+            ],
         }
-        return httpx.Response(
-            200, json={"status": "1", "result": answers[request.url.params["action"]]}
-        )
+        action = request.url.params["action"]
+        result = answers[action] + EXTRA[action] if action in EXTRA else answers[action]
+        return httpx.Response(200, json={"status": "1", "result": result})
     if host == "api.mainnet-beta.solana.com":
         import json
 
         method = json.loads(request.content)["method"]
         amount = lambda n: {"amount": str(n), "decimals": 6}
+        params = json.loads(request.content)["params"]
+        if method == "getTransaction" and params[1]["maxSupportedTransactionVersion"] < 1:
+            # as the public RPC answers since version 1 transactions exist
+            message = "Transaction version (1) is not supported by the requesting client."
+            return httpx.Response(200, json={"error": {"code": -32015, "message": message}})
+        accounts = {
+            SPL: [
+                {"mint": USDC_SOL, "tokenAmount": {"uiAmount": 112.5}},
+                {"mint": WSOL, "tokenAmount": {"uiAmount": 3}},  # unknown to the price source
+            ],
+            TOKEN_2022: [{"mint": MSTRX, "tokenAmount": {"uiAmount": 0.5}}],
+        }
         result = {
             "getBalance": {"value": 1_000_000_000},
             "getTokenAccountsByOwner": {
                 "value": [
                     {"account": {"data": {"parsed": {"info": info}}}}
-                    for info in (
-                        {"mint": USDC_SOL, "tokenAmount": {"uiAmount": 112.5}},
-                        {"mint": "So11111111111111111111111111111111111111112"}
-                        | {"tokenAmount": {"uiAmount": 3}},  # unknown to the price source
+                    for info in accounts.get(
+                        method == "getTokenAccountsByOwner" and params[1]["programId"], []
                     )
                 ]
             },
@@ -177,6 +214,7 @@ def indexers(request):
 
 
 D_BTC = "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2"
+EXTRA = {}  # action -> rows a test adds to the Etherscan-style answers
 SPAM, SPAMMER = "0x" + "5" * 40, "0x" + "6" * 40
 
 
@@ -189,11 +227,13 @@ def client(db, monkeypatch):
         httpx, "Client", lambda **kw: real(transport=httpx.MockTransport(indexers), **kw)
     )
     monkeypatch.setattr(chains, "DELAY", 0)
+    monkeypatch.setattr(tokens, "CACHE", {})
     monkeypatch.setattr(
         chains,
         "DEFAULT_EVM",
         {
-            "ethereum": {"url": "http://eth/api", "symbol": "ETH", "llama": "ethereum"},
+            "ethereum": {"url": "http://eth/api", "symbol": "ETH", "llama": "ethereum"}
+            | {"tokenbalance": True},
             "polygon": {"url": "http://poly/api", "symbol": "POL", "llama": "polygon"},
             "base": {"symbol": "ETH", "llama": "base", "needs_key": True},
         },
@@ -211,7 +251,8 @@ def test_lookup_bitcoin_shows_assets_connections_and_links_to_my_wallets(db, cli
     mine(db, SEGWIT, public=1)
     db.execute("UPDATE node SET name = 'Savings' WHERE address = ?", (SEGWIT,))
     db.execute(
-        "INSERT INTO label(address, name, category, source) VALUES (?, 'Kraken 4', 'cex', 'user')",
+        "INSERT INTO label(address, name, category, source) "
+        "VALUES (?, 'Kraken 4', 'cex', 'graphsense-tagpacks')",
         (D_BTC,),
     )
     db.commit()
@@ -219,14 +260,19 @@ def test_lookup_bitcoin_shows_assets_connections_and_links_to_my_wallets(db, cli
 
     found = client.post("/api/resolve", json={"q": f"bitcoin:{SATOSHI}?amount=0.1"}).json()
     assert found == {
-        "address": SATOSHI, "chain": "bitcoin", "chains": [], "hint": None, "needs_key": None
+        "address": SATOSHI, "chain": "bitcoin", "chains": [], "hint": None, "needs_key": None,
+        "icon": "bitcoin",
     }  # fmt: skip
     v = client.get(f"/api/lookup/{SATOSHI}").json()
 
     assert (v["address"], v["chain"], v["mine"], v["watched"]) == (SATOSHI, "bitcoin", 0, False)
-    assert v["assets"] == [
-        {"chain": "bitcoin", "asset": "BTC", "token": "", "amount": 1.9, "value": 95000.0}
-    ]
+    assert v["icon"] == "bitcoin"
+    ((btc, trust),) = [(a, a.pop("trust")) for a in v["assets"]]
+    assert btc == {
+        "chain": "bitcoin", "asset": "BTC", "token": "", "name": "", "amount": 1.9,
+        "value": 95000.0,
+    }  # fmt: skip
+    assert trust["level"] == "verified"
     assert (v["value"], v["currency"]) == (95000.0, "USD")
     by = {c["address"]: c for c in v["connections"]}
     assert v["connections"][0]["address"] == SEGWIT  # my wallets come first
@@ -239,52 +285,176 @@ def test_lookup_bitcoin_shows_assets_connections_and_links_to_my_wallets(db, cli
     assert nodes == {SATOSHI, SEGWIT, D_BTC, OTHER}
     assert all(SATOSHI in (e["src"], e["dst"]) for e in v["graph"]["edges"])
     assert {k["kind"] for k in v["graph"]["links"]} == {"common-input"}
+    assert {c["chain"] for c in v["connections"]} == {"bitcoin"}  # each one gets its chain mark
+    # Before a transfer: what the address is, how it is used, and who it deals with.
+    risk = v["risk"]
+    assert (risk["level"], risk["headline"]) == ("ok", "No red flags found")
+    said = " ".join(r["text"] for r in risk["reasons"])
+    assert "Bitcoin address" in said and "2 transactions" in said
+    assert "Kraken 4" in said and "Savings" in said
 
     # Looking is not touching: nothing a verdict is made of has changed.
     assert stored(db) == before and graph.verdicts(db) == verdicts
     assert client.get("/api/graph").json()["edges"] == []
 
 
-def test_lookup_evm_reads_the_chosen_chains_and_hides_airdrops(db, client):
+def test_lookup_evm_reads_the_chosen_chains_and_lists_every_token(db, client):
     found = client.post("/api/resolve", json={"q": A}).json()
     assert found["chain"] == "evm" and found["chains"] == ["ethereum", "polygon"]
-    assert client.post("/api/resolve", json={"q": f"ethereum:{A}@137"}).json()["hint"] == "polygon"
+    assert found["icon"] == "evm"  # on every EVM chain: the generic mark until one is chosen
+    hinted = client.post("/api/resolve", json={"q": f"ethereum:{A}@137"}).json()
+    assert (hinted["hint"], hinted["icon"]) == ("polygon", "polygon")
     # A code for a chain that needs a key is no dead end: the readable chains are offered.
     keyless = client.post("/api/resolve", json={"q": f"ethereum:{A}@8453"}).json()
-    assert (keyless["hint"], keyless["needs_key"]) == (None, "base")
+    assert (keyless["hint"], keyless["needs_key"], keyless["icon"]) == (None, "base", "evm")
     assert keyless["chains"] == ["ethereum", "polygon"]
     before = stored(db)
     assert client.get(f"/api/lookup/{A}?chains=base").status_code == 422  # needs a key
     assert client.get(f"/api/lookup/{A}?chains=nope").status_code == 422
 
     v = client.get(f"/api/lookup/{A}?chains=ethereum").json()
-    assert v["chains"] == ["ethereum"]
-    assert [(a["chain"], a["asset"], a["amount"], a["value"]) for a in v["assets"]] == [
-        ("ethereum", "ETH", 2.0, 4000.0),
-        ("ethereum", "USDC", 7.0, 7.0),
+    assert v["chains"] == ["ethereum"] and v["icon"] == "ethereum"
+    held = [
+        (a["asset"], a["name"], a["amount"], a["value"], a["trust"]["level"]) for a in v["assets"]
     ]
-    assert v["value"] == 4007.0 and v["hidden"] == 1  # the airdropped token is not an asset
-    assert {c["address"] for c in v["connections"]} == {D, B}  # nor is its sender a counterparty
+    assert held == [
+        ("ETH", "", 2.0, 4000.0, "verified"),
+        ("USDC", "USD Coin", 7.0, 7.0, "verified"),  # on the token list
+        # Listed too, but last, unvalued and marked: anyone can airdrop a token.
+        ("USDС", "USD Coin", 500.0, None, "scam"),  # borrows the name of a listed token
+        ("FREE", "Free Money", 9.0, None, "scam"),  # arrived unasked, no market
+    ]
+    reasons = {a["asset"]: a["trust"]["reason"] for a in v["assets"]}
+    assert "Uniswap" in reasons["USDC"] and "not the" in reasons["USDС"]
+    assert "unasked" in reasons["FREE"]
+    assert v["value"] == 4007.0 and v["unvouched"] == 2
+    (me,) = [n for n in v["graph"]["nodes"] if n["address"] == A]
+    assert [b["asset"] for b in me["balances"]] == ["ETH", "USDC"]  # no scam bait in the graph
+    assert {c["address"] for c in v["connections"]} == {D, B}  # nor is the airdropper a party
     assert v["explorer_address"].startswith("https://etherscan.io/")
 
     both = client.get(f"/api/lookup/{A}").json()
-    assert both["chains"] == ["ethereum", "polygon"]
+    assert both["chains"] == ["ethereum", "polygon"] and both["icon"] == "evm"
     assert {(a["chain"], a["asset"]) for a in both["assets"]} >= {("polygon", "POL")}
     assert stored(db) == before
 
 
-def test_lookup_solana_names_tokens_from_the_price_source(db, client):
+def test_lookup_solana_lists_spl_and_token_2022_tokens_with_their_names(db, client):
     before = stored(db)
     v = client.get(f"/api/lookup/{SOL}").json()
-    assert [(a["asset"], a["amount"], a["value"]) for a in v["assets"]] == [
-        ("USDC", 112.5, 112.5),
-        ("SOL", 1.0, 100.0),
+    assert v["icon"] == "solana"
+    held = [
+        (a["asset"], a["name"], a["amount"], a["value"], a["trust"]["level"]) for a in v["assets"]
     ]
-    assert v["hidden"] == 1
+    assert held == [
+        ("MSTRx", "MicroStrategy xStock", 0.5, 150.0, "verified"),  # Token-2022, Jupiter
+        ("USDC", "USD Coin", 112.5, 112.5, "verified"),
+        ("SOL", "", 1.0, 100.0, "verified"),
+        ("So11...", "", 3.0, None, "unknown"),  # known to no list and no price source
+    ]
+    assert "Jupiter" in v["assets"][0]["trust"]["reason"]
+    assert v["unvouched"] == 1
     (payer,) = v["connections"]
-    assert payer["address"] == PAYER and len(payer["received"]) == 2
+    assert payer["address"] == PAYER
+    # what it dealt in goes by the names of what it holds, not by the start of a mint
+    assert {r["asset"] for r in payer["received"]} == {"SOL", "USDC"}
+    assert {e["asset"] for e in v["graph"]["edges"]} == {"SOL", "USDC"}
     assert v["notes"] and "Solana" in v["notes"][0]
     assert stored(db) == before
+
+
+def test_tokens_from_my_wallets_a_service_or_a_claim_were_wanted(db, client, monkeypatch):
+    NEWT, CLAIMED, DISTRIBUTOR = ("0x" + c * 40 for c in "894")
+    arrives = {"to": A, "timeStamp": "5", "tokenDecimal": "6", "value": "1000000"}
+    monkeypatch.setitem(EXTRA, "tokentx", [
+        arrives | {"from": D, "hash": "h5", "tokenSymbol": "NEWT", "contractAddress": NEWT},
+        arrives | {"from": DISTRIBUTOR, "hash": "h7", "tokenSymbol": "GOV"}
+        | {"contractAddress": CLAIMED},
+    ])  # fmt: skip
+    # The wallet's own claim() call: no value moves, so it is no transfer, but it took part.
+    claim = {"from": A, "to": DISTRIBUTOR, "hash": "h7", "timeStamp": "5", "value": "0"}
+    monkeypatch.setitem(EXTRA, "txlist", [claim])
+
+    def trust():
+        v = client.get(f"/api/lookup/{A}?chains=ethereum").json()
+        return {a["asset"]: a["trust"]["level"] for a in v["assets"]}
+
+    assert trust()["GOV"] == "unknown"  # claimed: the wallet took part
+    assert (trust()["NEWT"], trust()["FREE"]) == ("scam", "scam")  # both from strangers
+    db.execute(
+        "INSERT INTO label(address, name, category, source) VALUES (?, 'Binance 14', 'cex', 'etherscan-labels')",
+        (D,),
+    )
+    db.commit()
+    assert (trust()["NEWT"], trust()["FREE"]) == ("unknown", "scam")  # withdrawn from an exchange
+    db.execute("DELETE FROM label")
+    mine(db, D)
+    db.commit()
+    assert (trust()["NEWT"], trust()["FREE"]) == ("unknown", "scam")  # sent by my own wallet
+
+
+def test_lookup_warns_before_sending_to_a_flagged_address(db, client):
+    db.execute(
+        "INSERT INTO label(address, name, category, source) VALUES (?, 'Ransomware wallet', 'flagged', 'graphsense-tagpacks')",
+        (SATOSHI,),
+    )
+    db.execute(
+        "INSERT INTO label(address, name, category, source) VALUES (?, 'Tornado.Cash', 'mixer', 'etherscan-labels')",
+        (D_BTC,),
+    )
+    db.commit()
+    risk = client.get(f"/api/lookup/{SATOSHI}").json()["risk"]
+    assert (risk["level"], risk["headline"]) == ("bad", "Risky to send to")
+    assert "Ransomware wallet" in risk["reason"]
+    assert any("Tornado.Cash" in r["text"] for r in risk["reasons"])  # it dealt with a mixer
+
+
+def test_lookup_spots_an_address_made_to_look_like_one_i_use(db, client):
+    mine(db, A)
+    db.execute("INSERT INTO transfer VALUES ('ethereum', 'x', ?, ?, 'ETH', '', 1, 1)", (A, B))
+    db.commit()
+    for real, who in ((A, "your wallet"), (B, "an address you sent to")):
+        poisoned = real[:6] + "e" * 32 + real[-4:]
+        risk = client.get(f"/api/lookup/{poisoned}?chains=ethereum").json()["risk"]
+        assert risk["level"] == "bad" and real in risk["reason"] and who in risk["reason"]
+    # The real one is not its own lookalike.
+    assert client.get(f"/api/lookup/{B}?chains=ethereum").json()["risk"]["level"] != "bad"
+
+
+NOW = 1_800_000_000
+DAY = 86400
+
+
+def risk(real=(), **kw):
+    return lookup.risk("Ethereum address", {"category": None}, list(real), [], [], now=NOW, **kw)
+
+
+def row(txid, ts, src=A, dst=B):
+    return ("ethereum", txid, src, dst, "ETH", "", 1.0, ts)
+
+
+def test_risk_of_an_address_that_was_never_used_or_is_brand_new():
+    never = risk(held=False)
+    assert never["level"] == "warn" and "never been used" in never["reason"]
+    new = risk([row("t1", NOW - 3 * DAY)])
+    assert new["level"] == "warn" and "3 days ago" in new["reason"]
+    old = risk([row("t1", NOW - 900 * DAY), row("t2", NOW - 2 * DAY)])
+    assert (old["level"], old["headline"]) == ("ok", "No red flags found")
+    assert "not a guarantee" in old["reason"]
+    # Only part of a very active history is read: its first transaction is not its age.
+    assert risk([row("t1", NOW - 3 * DAY)], hub=True)["level"] == "ok"
+
+
+def test_risk_without_label_sets_says_it_cannot_recognise_flagged_addresses():
+    blind = risk([row("t1", NOW - 900 * DAY)], labels=False)
+    assert blind["level"] == "unknown" and "label set" in blind["reason"]
+
+
+def test_risk_of_an_address_that_could_not_be_read_fully_says_so():
+    partly = risk([row("t1", NOW - 900 * DAY)], errors=["polygon: HTTP 500"])
+    assert partly["level"] == "unknown" and "polygon: HTTP 500" in partly["reason"]
+    # An empty read is no proof that the address is unused.
+    assert risk(held=False, errors=["ethereum: HTTP 500"])["level"] == "unknown"
 
 
 def test_watching_keeps_an_address_out_of_my_wallets_until_it_is_tracked(db, client):
@@ -315,3 +485,13 @@ def test_lookup_reports_an_indexer_that_does_not_answer(db, client, monkeypatch)
     r = client.get(f"/api/lookup/{SATOSHI}")
     assert r.status_code == 502 and "HTTP 404" in r.json()["detail"]
     assert database.connect().execute("SELECT COUNT(*) FROM node").fetchone()[0] == 0
+
+
+def test_risk_names_each_label_it_dealt_with_once():
+    sanctioned = {"category": "flagged", "label": "OFAC SDN list", "mine": 0}
+    kraken = {"category": "cex", "label": "Kraken", "mine": 0}
+    parties = [{**sanctioned, "address": a} for a in (A, B)] + [{**kraken, "address": C}] * 2
+    said = [
+        r["text"] for r in lookup.risk("Ethereum address", {}, [], parties, [], now=NOW)["reasons"]
+    ]
+    assert sum("OFAC SDN list" in t for t in said) == 1 and sum("Kraken" in t for t in said) == 1

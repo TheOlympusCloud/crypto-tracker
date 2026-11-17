@@ -54,6 +54,21 @@ EVM = {
     "avalanche": (43114, "AVAX", "avax"),
 }
 KEYLESS = {"ethereum", "avalanche"}  # served by Routescan without a key
+NAMES = {"bitcoincash": "Bitcoin Cash", "bsc": "BNB Chain", "evm": "EVM"}
+TOKEN_PROGRAMS = (  # Solana's two token programs: SPL Token, and Token-2022 (e.g. xStocks)
+    "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+    "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+)
+
+
+def name(chain):
+    return NAMES.get(chain, chain.capitalize())
+
+
+def icon(chain, read=()):
+    """The chain mark of an address: an EVM address shows its chain once exactly one is known
+    (named by a payment URI, or the only one read), the generic EVM mark until then."""
+    return read[0] if chain == "evm" and len(read) == 1 else chain
 
 
 def builtin_evm(key):
@@ -64,6 +79,7 @@ def builtin_evm(key):
         cfg = {"symbol": symbol, "llama": llama}
         if chain in KEYLESS:
             cfg["url"] = f"https://api.routescan.io/v2/network/mainnet/evm/{chain_id}/etherscan/api"
+            cfg["tokenbalance"] = True  # Routescan lists every token held, without a key
         elif key:
             cfg |= {
                 "url": "https://api.etherscan.io/v2/api",
@@ -144,11 +160,7 @@ def coverage():
         )
     out.append({"chain": "tron", "asset": "TRX", "status": "ok", "note": SHALLOW["tron"]})
     out.append({"chain": "solana", "asset": "SOL", "status": "ok", "note": SHALLOW["solana"]})
-    names = {"bitcoincash": "Bitcoin Cash", "bsc": "BNB Chain"}
-    return [
-        {**c, "name": names.get(c["chain"], c["chain"].capitalize()), **explorer(c["chain"])}
-        for c in out
-    ]
+    return [{**c, "name": name(c["chain"]), **explorer(c["chain"])} for c in out]
 
 
 def notes(chain):
@@ -431,13 +443,17 @@ def solana_transfers(address, sig, tx):
 
 def fetch_solana(client, address):
     lamports = _rpc(client, "getBalance", address)["value"]
-    held = _rpc(
-        client,
-        "getTokenAccountsByOwner",
-        address,
-        {"programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"},
-        {"encoding": "jsonParsed"},
-    )["value"]
+    held = [
+        account
+        for program in TOKEN_PROGRAMS
+        for account in _rpc(
+            client,
+            "getTokenAccountsByOwner",
+            address,
+            {"programId": program},
+            {"encoding": "jsonParsed"},
+        )["value"]
+    ]
     balances = Counter()
     for account in held:
         token = account["account"]["data"]["parsed"]["info"]
@@ -451,7 +467,7 @@ def fetch_solana(client, address):
             client,
             "getTransaction",
             s["signature"],
-            {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0},
+            {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 1},  # v1 parses like v0
         )
         if tx and tx.get("meta"):
             transfers += solana_transfers(address, s["signature"], tx)
@@ -503,7 +519,10 @@ def evm_transfers(chain, native, items, token=False):
 
 
 def fetch_evm(client, address, chains=None):
-    out = {"transfers": [], "links": [], "balances": [], "hub": False, "errors": []}
+    # "names": (chain, contract) -> the token's full name, where the indexer gives one.
+    # "sent": the transactions the address sent, also those that move no value (a claim()).
+    out = {"transfers": [], "links": [], "balances": [], "hub": False, "errors": [], "names": {}}
+    out["sent"] = set()
     for chain, cfg in (chains or evm_chains()).items():
         if cfg.get("needs_key"):
             continue  # reported once by coverage(), not as an error on every address
@@ -525,6 +544,9 @@ def fetch_evm(client, address, chains=None):
             for action in ("txlist", "txlistinternal", "tokentx"):
                 items = call(action, **page)
                 out["hub"] |= len(items) >= EVM_ROWS
+                if action == "txlist":
+                    mine = [it for it in items if str(it.get("from")).lower() == address]
+                    out["sent"] |= {it.get("hash") for it in mine}
                 out["transfers"] += evm_transfers(chain, cfg["symbol"], items, action == "tokentx")
             native = int(call("balance") or 0) / 1e18
             if native:
@@ -537,6 +559,15 @@ def fetch_evm(client, address, chains=None):
                         out["balances"].append(
                             (chain, symbol, t["contractAddress"].lower(), amount)
                         )
+            if cfg.get("tokenbalance"):  # a Routescan extension; last, so its errors spare the rest
+                # shortcut: one page of EVM_ROWS tokens; page on if spam-heavy wallets need all
+                for t in call("addresstokenbalance", page=1, offset=EVM_ROWS):
+                    amount = int(t["TokenQuantity"]) / 10 ** int(t.get("TokenDivisor") or 18)
+                    if amount:
+                        token = t["TokenAddress"].lower()
+                        symbol = (t.get("TokenSymbol") or "?")[:20]
+                        out["balances"].append((chain, symbol, token, amount))
+                        out["names"][(chain, token)] = (t.get("TokenName") or "")[:40]
         # One unreachable chain must not hide the others.
         except (httpx.HTTPError, RuntimeError, ValueError, KeyError, TypeError) as e:
             out["errors"].append(f"{chain}: {describe(e)}")
