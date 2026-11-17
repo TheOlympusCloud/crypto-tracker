@@ -853,13 +853,18 @@ async function refresh() {
   await drawGraph();
 }
 
+let filled = false; // the background fill-in was seen reading: refresh once it is done
 async function poll() {
   const s = await api("sync");
-  $("sync").disabled = s.running;
-  $("status").className = s.error ? "error" : s.running ? "busy" : "";
-  $("status").textContent = s.running ? `Syncing ${s.done}/${s.total} ${["labels", "swaps", "prices", "tokens"].includes(s.current) ? `(${s.current})` : nameOf(s.current)}` : s.error || (s.notes || []).join(" · ");
+  $("sync").disabled = s.running; // never for the fill-in: a sync goes first
+  $("status").className = s.error ? "error" : s.running || s.filling ? "busy" : "";
+  $("status").textContent = s.running
+    ? `Syncing ${s.done}/${s.total} ${["labels", "swaps", "prices", "tokens", "waiting"].includes(s.current) ? `(${s.current})` : nameOf(s.current)}`
+    : s.filling ? `Reading older history: ${nameOf(s.filling)}` : s.error || (s.notes || []).join(" · ");
   if (s.running) setTimeout(() => poll().catch(fail), 1500);
-  else if (s.total) await refresh();
+  else if (s.filling) setTimeout(() => poll().catch(fail), 10000);
+  else if (s.total || filled) await refresh();
+  filled = Boolean(s.filling);
 }
 
 function startSync(addresses) {

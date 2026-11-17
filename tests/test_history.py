@@ -432,3 +432,79 @@ def test_a_removed_wallet_is_not_taken_for_a_service(db):
     db.commit()
     assert TestClient(app, base_url="http://localhost").delete(f"/api/wallets/{A}").is_success
     assert db.execute("SELECT hub FROM node WHERE address = ?", (A,)).fetchone()[0] == 0
+
+
+SECOND = "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2"
+
+
+@pytest.fixture
+def background(esplora, monkeypatch):
+    """The background fill-in and the user's sync, both on the fake Esplora; `gate` holds
+    every request while it is closed."""
+    import threading
+
+    import httpx
+
+    from tracker import labels, sync
+
+    monkeypatch.setenv("CT_SWAPS", "off")
+    monkeypatch.setenv("CT_PRICES", "off")
+    monkeypatch.setattr(labels, "due", lambda db: False)
+    esplora.asked, esplora.entered, esplora.gate = [], threading.Event(), threading.Event()
+    esplora.gate.set()
+
+    def answer(request):
+        esplora.asked.append((threading.current_thread().name, request.url.path))
+        esplora.entered.set()
+        esplora.gate.wait(5)
+        return esplora(request) if SATOSHI in request.url.path else httpx.Response(400)
+
+    client = lambda: httpx.Client(transport=httpx.MockTransport(answer))
+    monkeypatch.setattr(sync, "_client", client)
+    return esplora
+
+
+def test_fill_in_continues_on_its_own(db, background):
+    from tracker import sync
+
+    background.sync()  # the user's sync reads the newest part
+    assert stored(db) == 75
+    sync.fill_in()
+    sync.fill_in()
+    assert stored(db) == 150 and history.state(db, SATOSHI)["complete"]
+    asked = len(background.asked)
+    sync.fill_in()
+    assert len(background.asked) == asked  # nothing left to read: it asks nothing
+    assert sync.status["filling"] == ""
+
+
+def test_a_user_sync_goes_first(db, background):
+    import threading
+    import time
+
+    from fastapi.testclient import TestClient
+    from test_core import mine
+
+    from tracker import sync
+    from tracker.app import app
+
+    mine(db, SECOND)  # also not read in full: the fill-in would read it next
+    db.commit()
+    background.gate.clear()
+    filler = threading.Thread(target=sync.fill_in, name="fill-in")
+    filler.start()
+    assert background.entered.wait(5)  # the fill-in is reading its first address
+    r = TestClient(app, base_url="http://localhost").post("/api/sync", json={"addresses": []})
+    assert r.status_code == 200 and r.json()["running"]  # not a 409: it waits its turn
+    background.gate.set()
+    filler.join(5)
+    deadline = time.time() + 10
+    while sync.status["running"] and time.time() < deadline:
+        time.sleep(0.01)
+    assert not sync.status["running"] and sync.status["error"] == ""
+    # The fill-in let the user go first after one address; the user's sync read both.
+    by_fill_in = {
+        p.split("/address/")[1].split("/")[0] for t, p in background.asked if t == "fill-in"
+    }
+    by_user = {p.split("/address/")[1].split("/")[0] for t, p in background.asked if t != "fill-in"}
+    assert len(by_fill_in) == 1 and by_user == {SATOSHI, SECOND}
