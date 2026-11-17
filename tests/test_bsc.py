@@ -194,3 +194,16 @@ def test_an_address_never_used_on_bnb_chain_is_complete_once_read(db, quiet):
     asked = len(fake.windows())
     quiet(fake)  # from then on, a sync reads the newest window and stops
     assert len(fake.windows()) - asked == 2 * 2  # the snapshot's window, and history's
+
+
+def test_a_transfer_indexed_late_just_below_the_head_is_still_read(db, quiet):
+    # NodeReal's index may trail the chain's head (or a short reorg replace its last blocks):
+    # the newest blocks read are read again next time.
+    fake = NodeReal(450_000, [])
+    for _ in range(4):
+        quiet(fake)
+    assert history.state(db, A)["complete"]
+    fake.transfers.append(nr("external", 449_990, PAYER, A, 10**18))  # there all along
+    fake.latest = 600_000  # past the newest window the snapshot reads: only history sees it
+    quiet(fake)
+    assert stored(db) == 1

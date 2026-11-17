@@ -72,6 +72,9 @@ NODEREAL = "https://bsc-mainnet.nodereal.io/v1/{}"
 NR_WINDOW = 100_000  # blocks one nr_getAssetTransfers query may span
 NR_PAUSE = 1.7  # seconds between calls: the free plan allows 150 units a second, a query is 250
 NR_LISTS = {"external": "txlist", "internal": "txlistinternal", "20": "tokentx"}
+# Blocks below the head read again next time: NodeReal's index may trail the head, or a short
+# reorg replace its last blocks. About 2.5 minutes; the rows read twice are stored once.
+NR_SETTLE = 200
 NAMES = {"bitcoincash": "Bitcoin Cash", "bsc": "BNB Chain", "evm": "EVM"}
 TOKEN_PROGRAMS = (  # Solana's two token programs: SPL Token, and Token-2022 (e.g. xStocks)
     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
@@ -731,7 +734,7 @@ def page_nodereal(client, cfg, address, cursor=None):
             query["pageKey"] = more
     rows.sort(key=lambda r: -int(r[1]["blockNumber"]))
     positions = [int(row["blockNumber"]) for _, row in rows]
-    return Page(rows, positions, str(max(low - 1, 0)), low == 0, (low, high))
+    return Page(rows, positions, str(max(low - 1, 0)), low == 0, (low, max(low, high - NR_SETTLE)))
 
 
 def nodereal_lists(chain, cfg, address, rows):
