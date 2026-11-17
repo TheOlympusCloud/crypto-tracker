@@ -1,3 +1,4 @@
+import hmac
 import os
 import secrets
 import time
@@ -16,17 +17,38 @@ app = FastAPI(title="Crypto tracker", docs_url=None, redoc_url=None)
 CATEGORIES = {"cex", "dex", "bridge", "mixer", "flagged", "defi", "service", "other"}
 
 
+SESSION = "ct_session"
+SESSION_DAYS = 400  # the longest a browser keeps a cookie
+
+
+def session(password):
+    """The session cookie's value: it proves the password without carrying it, and a new
+    password ends every session."""
+    return hmac.new(password.encode(), b"crypto-tracker session", "sha256").hexdigest()
+
+
 @app.middleware("http")
 async def basic_auth(request: Request, call_next):
     password = os.environ.get("CT_PASSWORD")
     if password:
+        token = session(password)
+        if secrets.compare_digest(request.cookies.get(SESSION, "").encode(), token.encode()):
+            return await call_next(request)
         try:
-            scheme, _, token = request.headers.get("authorization", "").partition(" ")
-            given = b64decode(token).decode().partition(":")[2] if scheme == "Basic" else ""
+            scheme, _, given = request.headers.get("authorization", "").partition(" ")
+            given = b64decode(given).decode().partition(":")[2] if scheme == "Basic" else ""
         except ValueError:
             given = ""
         if not secrets.compare_digest(given.encode(), password.encode()):
             return Response(status_code=401, headers={"WWW-Authenticate": "Basic"})
+        # Home-screen apps and WebViews forget HTTP Basic when they close: a cookie they keep.
+        response = await call_next(request)
+        tls = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
+        response.set_cookie(
+            SESSION, token, max_age=SESSION_DAYS * 86400, path="/", secure=tls,
+            httponly=True, samesite="lax",
+        )  # fmt: skip
+        return response
     elif request.url.hostname not in ("127.0.0.1", "localhost", "::1"):
         # Without a password only loopback names are served, so a hostile web page cannot
         # rebind its own domain to this port and read the wallet list.

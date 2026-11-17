@@ -6,6 +6,7 @@ import android.content.SharedPreferences;
 import android.os.Bundle;
 import android.os.Process;
 import android.text.InputType;
+import android.webkit.CookieManager;
 import android.webkit.WebViewDatabase;
 import android.widget.Button;
 import android.widget.CheckBox;
@@ -86,10 +87,15 @@ public class SetupActivity extends Activity {
         forget.setOnClickListener(v -> {
             WebViewDatabase.getInstance(this).clearHttpAuthUsernamePassword();
             prefs.edit().remove(CERT).commit(); // written before the process ends
-            // The WebView also keeps both in memory until its process ends: end it, so that
-            // "forget" is true from this moment and not from the next restart.
-            finishAffinity();
-            Process.killProcess(Process.myPid());
+            // The session cookie the server gave for the password goes too, from the disk.
+            CookieManager cookies = CookieManager.getInstance();
+            cookies.removeAllCookies(removed -> {
+                cookies.flush();
+                // The WebView also keeps all this in memory until its process ends: end it,
+                // so that "forget" is true from this moment and not from the next restart.
+                finishAffinity();
+                Process.killProcess(Process.myPid());
+            });
         });
         form.addView(forget);
 

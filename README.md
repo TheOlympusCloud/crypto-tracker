@@ -119,7 +119,7 @@ docker run -p 8000:8000 -v tracker-data:/data -e CT_PASSWORD=change-me crypto-tr
 | Variable | Default | Meaning |
 |---|---|---|
 | `CT_HOST`, `CT_PORT` | `127.0.0.1`, `8000` | Listen address. Anything but loopback requires `CT_PASSWORD`; without a password the app only answers to `localhost`/`127.0.0.1`. |
-| `CT_PASSWORD` | unset | HTTP Basic password (any user name). Put TLS in front of it. |
+| `CT_PASSWORD` | unset | HTTP Basic password (any user name). Put TLS in front of it. After one good password the browser or app gets a cookie and is not asked again for 400 days; a new password signs every device out. |
 | `CT_DB` | `tracker.db` | SQLite file. |
 | `CT_ESPLORA` | `https://blockstream.info/api` | Bitcoin indexer (Esplora API: Blockstream, mempool.space, your own). |
 | `CT_ETHERSCAN_KEY` | unset | Free Etherscan API key; turns on Base, Arbitrum, Optimism, Polygon and BNB Chain. Set it in the environment, never in a file you commit. |
