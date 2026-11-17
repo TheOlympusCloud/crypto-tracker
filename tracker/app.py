@@ -44,6 +44,16 @@ def session(password):
 
 
 @app.middleware("http")
+async def revalidate(request: Request, call_next):
+    """The page's files are rechecked on every load: without this a browser guesses how long
+    to keep them, and an installed app runs the old code for days after an update."""
+    response = await call_next(request)
+    if "/api/" not in request.url.path:
+        response.headers.setdefault("cache-control", "no-cache")
+    return response
+
+
+@app.middleware("http")
 async def basic_auth(request: Request, call_next):
     password = os.environ.get("CT_PASSWORD")
     if password:

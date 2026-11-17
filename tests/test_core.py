@@ -357,6 +357,18 @@ def test_one_good_password_keeps_a_phone_signed_in(db, monkeypatch, tmp_path):
     assert phone.get("/api/graph").status_code == 401
 
 
+def test_an_update_reaches_the_browser_at_once(db):
+    """The page's files are rechecked on every load (a 304 when unchanged), so a browser or an
+    installed app never keeps running the code from before an update."""
+    from tracker.app import app
+
+    client = TestClient(app, base_url="http://localhost")
+    for path in ("/", "/app.js", "/kinds.js", "/sw.js", "/vendor/three.module.js"):
+        assert client.get(path).headers["cache-control"] == "no-cache", path
+    tag = client.get("/app.js").headers["etag"]
+    assert client.get("/app.js", headers={"if-none-match": tag}).status_code == 304
+
+
 def test_the_session_secret_does_not_break_the_label_refresh(db, monkeypatch):
     """meta is shared: the cookie's secret (hex) sits next to the label sets' dates, and a
     sync used to fail on it with "could not convert string to float"."""
