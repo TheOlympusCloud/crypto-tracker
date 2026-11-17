@@ -7,6 +7,7 @@ from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query, Request, Response
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, field_validator
 
@@ -122,7 +123,8 @@ def address(raw):
 def get_graph(spam: bool = False):
     db = database.connect()
     try:
-        return graph.build(db, spam)
+        # Sent as it is: FastAPI's encoder takes seconds over tens of thousands of edges.
+        return JSONResponse(graph.build(db, spam))
     finally:
         db.close()
 
