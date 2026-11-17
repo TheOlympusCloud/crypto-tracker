@@ -142,7 +142,8 @@ def trust(chain, token, symbol, name="", listed="", famous=frozenset(), price=No
         return {"level": "scam", "reason": reason + " Never visit it or sign anything there."}
     twin = dressed(symbol, name, famous)
     if twin and not sure:
-        reason = f"It calls itself {symbol}, like {twin}, but it is not the real one: no token "
+        like = "," if twin == skeleton(symbol) else f", like {twin},"
+        reason = f"It calls itself {symbol}{like} but it is not the real one: no token "
         return {"level": "scam", "reason": reason + "list names it, and it has no reliable price."}
     if unasked and not sure:
         reason = "It arrived unasked, in transactions this wallet took no part in, was never "

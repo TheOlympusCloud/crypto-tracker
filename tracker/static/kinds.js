@@ -52,7 +52,7 @@ export const VERDICTS = {
 export const TRUST = {
   verified: [HUES.teal, "seal", "verified"],
   unknown: [HUES.grey, "unchecked", "unknown"],
-  scam: [SIGNAL.linked, "linked", "likely scam"],
+  scam: [SIGNAL.linked, "linked", "fake · worth 0"],
 };
 
 // Glyphs on a 24 × 24 grid. Each part is painted with the kind's colour ("c"), with paper
