@@ -63,7 +63,8 @@ read in full on every chain: each sync reads what is new, then continues further
 from where the last one stopped, about 40 pages per source (Solana: 200 transactions; BNB
 Chain: 20 windows of 100,000 blocks, about a day each). On BNB Chain the whole history of one
 EVM address of yours, used there or not, takes several hours and about 700,000 of NodeReal's
-10 million free monthly units, once; after that a sync costs a few calls.
+10 million free monthly units, once; after that each sync of it costs about 1,000 units
+(with `CT_SYNC_EVERY=60`, about 720,000 a month per address).
 Between syncs the server keeps reading further back on its own every 5 minutes, until
 every wallet is complete. Pressing Sync then waits only for the address being read (for
 an EVM address read on several chains, that can take a few minutes).

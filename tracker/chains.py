@@ -384,7 +384,9 @@ def fetch_utxo(client, address, chain="bitcoin", keep=()):
 
 # One page of an address's history, newest first: the raw items, their positions (block
 # height, timestamp or slot), the cursor of the next older page, and whether it is the last.
-Page = namedtuple("Page", "items positions next last")
+# `span` (lowest, highest): the positions a page covered, for a reader whose pages can be
+# empty (NodeReal's block windows); a reached bookmark shows there, rows or not.
+Page = namedtuple("Page", "items positions next last span", defaults=[None])
 
 
 def page_utxo(client, chain, address, cursor=None):
@@ -679,7 +681,7 @@ def page_evm(client, cfg, address, action, cursor=None):
 
 
 def _nr(client, cfg, method, *params):
-    time.sleep(NR_PAUSE)
+    time.sleep(max(NR_PAUSE - DELAY, 0))  # _rpc pauses DELAY too
     return _rpc(client, method, *params, url=cfg["url"])
 
 
@@ -694,7 +696,7 @@ def _nr_row(t):
         "hash": t["hash"],
         "from": t["from"],
         "to": t.get("to") or "",
-        "value": str(int(t.get("value") or "0", 16)),
+        "value": str(_number(t.get("value") or 0)),
         "blockNumber": str(_number(t["blockNum"])),
         "timeStamp": str(t.get("blockTimeStamp") or t.get("blockTimestamp") or 0),
         "isError": "0" if t.get("receiptsStatus", 1) else "1",
@@ -729,7 +731,7 @@ def page_nodereal(client, cfg, address, cursor=None):
             query["pageKey"] = more
     rows.sort(key=lambda r: -int(r[1]["blockNumber"]))
     positions = [int(row["blockNumber"]) for _, row in rows]
-    return Page(rows, positions, str(max(low - 1, 0)), low == 0)
+    return Page(rows, positions, str(max(low - 1, 0)), low == 0, (low, high))
 
 
 def nodereal_lists(chain, cfg, address, rows):

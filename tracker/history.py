@@ -138,8 +138,13 @@ def walk(read, cursor, stop, budget):
             if p > 0 and (stop is None or p > stop):
                 items.append(item)
                 where.append(p)
+        low, high = page.span or (None, None)
+        if high is not None and (stop is None or high > stop):
+            where.append(high)  # read up to there, rows or not: the next read stops there
         cursor = page.next
-        if stop is not None and any(0 < p <= stop for p in page.positions):
+        if stop is not None and (
+            any(0 < p <= stop for p in page.positions) or (low is not None and low <= stop)
+        ):
             return items, where, cursor, True, False, used, None
         if page.last:
             return items, where, cursor, False, True, used, None

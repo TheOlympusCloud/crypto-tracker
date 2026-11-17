@@ -154,3 +154,43 @@ def test_a_bnb_chain_wallet_fills_in_window_by_window(db, bsc, monkeypatch):
     assert stored(db) == 6 and not history.state(db, A)["complete"]
     run()
     assert stored(db) == 6 and history.state(db, A)["complete"]
+
+
+@pytest.fixture
+def quiet(db, bsc, monkeypatch):
+    """A wallet of mine, two windows a sync: run(fake) syncs it once."""
+    from test_core import mine
+
+    from tracker import sync
+
+    monkeypatch.setattr(history, "BUDGET", {"default": 40, "bsc": 2})
+    mine(db, A)
+    db.commit()
+
+    def run(fake):
+        with httpx.Client(transport=httpx.MockTransport(fake)) as client:
+            sync.sync_address(db, client, A)
+
+    return run
+
+
+def test_a_wallet_quiet_for_longer_than_a_sync_reads_still_fills_in(db, quiet):
+    # Empty windows between the chain's head and the newest transfer must not stop the read:
+    # the bookmark is the newest block read, not the newest transfer.
+    fake = NodeReal(450_000, [nr("external", 440_000, PAYER, A, 10**18)])
+    fake.transfers.append(nr("external", 120_000, PAYER, A, 10**18))
+    quiet(fake)
+    fake.latest = 800_000  # 350,000 blocks later, nothing new
+    for _ in range(6):
+        quiet(fake)
+    assert stored(db) == 2 and history.state(db, A)["complete"]
+
+
+def test_an_address_never_used_on_bnb_chain_is_complete_once_read(db, quiet):
+    fake = NodeReal(450_000, [])
+    for _ in range(6):
+        quiet(fake)
+    assert history.state(db, A)["complete"]
+    asked = len(fake.windows())
+    quiet(fake)  # from then on, a sync reads the newest window and stops
+    assert len(fake.windows()) - asked == 2 * 2  # the snapshot's window, and history's
