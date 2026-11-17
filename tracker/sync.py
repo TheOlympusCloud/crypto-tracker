@@ -27,11 +27,12 @@ def sync_address(db, client, address):
     try:
         mine = {r["address"] for r in db.execute("SELECT address FROM node WHERE mine")}
         data = chains.fetch(client, address, mine)
-        if address in mine and database.chain_of(address) in chains.UTXO:
+        if address in mine and database.chain_of(address) in (*chains.UTXO, "evm"):
             # My own addresses are read in full over time: see history.advance.
             more = history.advance(client, db, address, mine, data.get("count"))
             for k in ("transfers", "links", "coinjoins", "wide"):
                 data[k] = data.get(k, []) + more[k]
+            data["sent"] = set(data.get("sent", ())) | set(more["sent"])
             data["errors"] = data.get("errors", []) + more["errors"]
             data["hub"] = not history.state(db, address)["complete"]
         error = "; ".join(data.get("errors", []))

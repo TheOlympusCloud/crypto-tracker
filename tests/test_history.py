@@ -154,3 +154,70 @@ def test_complete_needs_the_total(db, esplora):
     for _ in range(6):
         esplora.sync()
     assert stored(db) == 150 and not history.state(db, SATOSHI)["complete"]
+
+
+# A fake Etherscan-style API: `rows[action]` newest first, honouring endblock and offset, and
+# refusing any page but the first, as a source with a 10,000-row window would beyond it.
+class Etherscan:
+    def __init__(self, n):
+        payer = "0x" + "d" * 40
+        self.rows = {
+            "txlist": [
+                {
+                    "from": payer,
+                    "to": A,
+                    "hash": f"h{i:04d}",
+                    "value": "1000",
+                    "timeStamp": str(1_600_000_000 + 10_000 - i),
+                    "blockNumber": str(10_000 - i),
+                }
+                for i in range(n)
+            ],
+            "txlistinternal": [],
+            "tokentx": [],
+        }
+        self.asked = []
+
+    def __call__(self, request):
+        import httpx
+
+        q = request.url.params
+        action = q["action"]
+        if action == "balance":
+            return httpx.Response(200, json={"status": "1", "result": "0"})
+        self.asked.append((action, q.get("page"), q.get("endblock")))
+        assert q.get("page", "1") == "1"  # never past the first page: no 10,000-row window
+        rows = [
+            r
+            for r in self.rows[action]
+            if not q.get("endblock") or int(r["blockNumber"]) <= int(q["endblock"])
+        ]
+        rows = rows[: int(q["offset"])]
+        return httpx.Response(
+            200,
+            json={
+                "status": "1" if rows else "0",
+                "message": "OK" if rows else "No transactions found",
+                "result": rows,
+            },
+        )
+
+
+def test_evm_history_fills_in_by_moving_endblock(db, monkeypatch, evm):
+    import httpx
+    from test_core import mine
+
+    from tracker import sync
+
+    monkeypatch.setattr(chains, "DELAY", 0)
+    monkeypatch.setattr(chains, "EVM_ROWS", 10)  # the plain read sees the newest 10 rows
+    monkeypatch.setattr(history, "BUDGET", {"default": 2})
+    mine(db, A)
+    db.commit()
+    fake = Etherscan(35)
+    for _ in range(4):
+        with httpx.Client(transport=httpx.MockTransport(fake)) as client:
+            sync.sync_address(db, client, A)
+    assert stored(db) == 35 and history.state(db, A)["complete"]
+    backwards = [end for action, _, end in fake.asked if action == "txlist" and end]
+    assert backwards and all(int(e) < 10_000 for e in backwards)  # it moved endblock down

@@ -563,6 +563,36 @@ def evm_transfers(chain, native, items, token=False):
     return rows
 
 
+def _evm_call(client, cfg, address, action, **extra):
+    params = {"module": "account", "action": action, "address": address}
+    if cfg.get("apikey"):
+        params["apikey"] = cfg["apikey"]
+    data = get(client, cfg["url"], {**cfg.get("params", {}), **params, **extra}).json()
+    # Etherscan reports an empty list as status 0, "No transactions found".
+    if data.get("status") != "1" and not str(data.get("message", "")).startswith("No "):
+        raise RuntimeError(f"{action}: {data.get('message')} {str(data.get('result'))[:80]}")
+    return data.get("result") or []
+
+
+def page_evm(client, cfg, address, action, cursor=None):
+    """One page of an EVM list (txlist, txlistinternal, tokentx) from block `cursor` down.
+    Always the first page of a query that ends at a lower block, so a source that serves only
+    the newest 10,000 rows of a query never stops it."""
+    extra = {
+        "page": 1,
+        "offset": EVM_ROWS,
+        "sort": "desc",
+        **({"endblock": cursor} if cursor else {}),
+    }
+    items = _evm_call(client, cfg, address, action, **extra)
+    positions = [int(it.get("blockNumber") or 0) for it in items]
+    low = min(positions, default=None)
+    # The next query ends at the lowest block read, which it reads again (stored once), unless
+    # one block filled the whole page: then it ends below it.
+    nxt = cursor if low is None else str(low if low != max(positions) else low - 1)
+    return Page(items, positions, nxt, len(items) < EVM_ROWS)
+
+
 def fetch_evm(client, address, chains=None):
     # "names": (chain, contract) -> the token's full name, where the indexer gives one.
     # "sent": the transactions the address sent, also those that move no value (a claim()).
@@ -573,16 +603,7 @@ def fetch_evm(client, address, chains=None):
             continue  # reported once by coverage(), not as an error on every address
 
         def call(action, cfg=cfg, **extra):
-            params = {"module": "account", "action": action, "address": address}
-            if cfg.get("apikey"):
-                params["apikey"] = cfg["apikey"]
-            data = get(client, cfg["url"], {**cfg.get("params", {}), **params, **extra}).json()
-            # Etherscan reports an empty list as status 0, "No transactions found".
-            if data.get("status") != "1" and not str(data.get("message", "")).startswith("No "):
-                raise RuntimeError(
-                    f"{action}: {data.get('message')} {str(data.get('result'))[:80]}"
-                )
-            return data.get("result") or []
+            return _evm_call(client, cfg, address, action, **extra)
 
         try:
             page = {"page": 1, "offset": EVM_ROWS, "sort": "desc"}

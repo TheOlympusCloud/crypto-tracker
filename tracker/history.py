@@ -59,17 +59,29 @@ BUDGET = {"default": 40, "solana": 8}  # pages per source per sync (Solana: 25 t
 
 def _reader(client, source, address):
     """A function cursor -> chains.Page for one source of an address."""
-    chain = source.split(":")[0]
+    chain, _, action = source.partition(":")
     if chain in chains.UTXO:
         return lambda cursor: chains.page_utxo(client, chain, address, cursor)
+    if action in LISTS:
+        cfg = chains.evm_chains()[chain]
+        return lambda cursor: chains.page_evm(client, cfg, address, action, cursor)
     raise KeyError(source)
 
 
 def _convert(source, address, items, keep):
     """What a sync stores from raw items: transfers, links, CoinJoins and wide transactions."""
-    chain = source.split(":")[0]
+    chain, _, action = source.partition(":")
+    if action in LISTS:
+        symbol = chains.evm_chains()[chain]["symbol"]
+        mine = [it for it in items if action == "txlist" and str(it.get("from")).lower() == address]
+        return {
+            "transfers": chains.evm_transfers(chain, symbol, items, action == "tokentx"),
+            "links": [], "coinjoins": [], "wide": [],
+            "sent": [it.get("hash") for it in mine],  # claims too: see tokens.judge
+        }  # fmt: skip
     asset = chains.UTXO[chain][0]
     return {
+        "sent": [],
         "transfers": [
             r for tx in items for r in chains.utxo_transfers(address, tx, chain, asset, keep=keep)
         ],
@@ -82,8 +94,9 @@ def _convert(source, address, items, keep):
 def walk(read, cursor, stop, budget):
     """Read pages from `cursor` back until one reaches position `stop` (None: never), the
     last page, or `budget` pages. A page that fails ends the walk: what came before stays.
-    Returns (items newer than `stop`, next cursor, reached `stop`, at the end, pages, error)."""
-    items, used, error = [], 0, None
+    Returns (items newer than `stop`, their positions, next cursor, reached `stop`, at the
+    end, pages, error)."""
+    items, where, used, error = [], [], 0, None
     while used < budget:
         try:
             page = read(cursor)
@@ -91,30 +104,33 @@ def walk(read, cursor, stop, budget):
             error = chains.describe(e)
             break
         used += 1
-        items += [i for i, p in zip(page.items, page.positions) if stop is None or p > stop]
+        for item, p in zip(page.items, page.positions):
+            if stop is None or p > stop:
+                items.append(item)
+                where.append(p)
         cursor = page.next
         if stop is not None and any(p <= stop for p in page.positions):
-            return items, cursor, True, False, used, None
+            return items, where, cursor, True, False, used, None
         if page.last:
-            return items, cursor, False, True, used, None
-    return items, cursor, False, False, used, error
+            return items, where, cursor, False, True, used, None
+    return items, where, cursor, False, False, used, error
 
 
 def advance(client, db, address, keep=(), total=None):
     """Read more of one of my address's histories: what is new since the last sync, an
     unfinished read of new transactions, then further back, within each source's budget.
     Returns what a sync stores, as chains.fetch does, and the errors met."""
-    out = {"transfers": [], "links": [], "coinjoins": [], "wide": [], "errors": []}
+    out = {"transfers": [], "links": [], "coinjoins": [], "wide": [], "sent": [], "errors": []}
     for source in sources(address):
         mark = get(db, address, source)
         budget = BUDGET.get(source.split(":")[0], BUDGET["default"])
         read = _reader(client, source, address)
         got, fields = [], {}
         # 1. New since the newest read; on a first read, this is also the start of the way back.
-        new, nxt, reached, end, used, error = walk(read, None, mark and mark["newest"], budget)
+        new, at, nxt, reached, end, used, error = walk(read, None, mark and mark["newest"], budget)
         budget -= used
         got += new
-        top = max((_position(source, i) for i in new), default=None)
+        top = max(at, default=None)
         if mark is None:
             fields |= {"oldest": nxt, "newest": top, "complete": int(end), "seen": len(new)}
         else:
@@ -125,7 +141,7 @@ def advance(client, db, address, keep=(), total=None):
                 fields |= {"gap": nxt, "gap_until": mark["newest"], "newest": top}
             # 2. An unfinished read of new transactions, from where it stopped.
             if mark["gap"] and (reached or end) and budget > 0 and not error:
-                more, nxt2, reached2, end2, used, error = walk(
+                more, _, nxt2, reached2, end2, used, error = walk(
                     read, mark["gap"], mark["gap_until"], budget
                 )
                 budget -= used
@@ -134,7 +150,7 @@ def advance(client, db, address, keep=(), total=None):
                 fields |= {"gap": None, "gap_until": None} if reached2 or end2 else {"gap": nxt2}
             # 3. Further back, from the oldest point read.
             if not mark["complete"] and budget > 0 and not error:
-                old, nxt3, _, end3, used, error = walk(read, mark["oldest"], None, budget)
+                old, _, nxt3, _, end3, used, error = walk(read, mark["oldest"], None, budget)
                 got += old
                 fields["seen"] += len(old)
                 fields |= {"oldest": nxt3, "complete": int(end3)}
@@ -147,12 +163,8 @@ def advance(client, db, address, keep=(), total=None):
                 times + ([mark["oldest_ts"]] if mark and mark["oldest_ts"] else [])
             )
         put(db, address, source, **fields)
-        for k in ("transfers", "links", "coinjoins", "wide"):
+        for k in ("transfers", "links", "coinjoins", "wide", "sent"):
             out[k] += part[k]
         if error:
             out["errors"].append(f"{source}: {error}")
     return out
-
-
-def _position(source, item):
-    return item["status"].get("block_height") or 0
