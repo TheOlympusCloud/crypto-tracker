@@ -51,13 +51,13 @@ def _cached(key, fetch):
 
 
 def parse_list(data):
-    """(chain id, contract) -> symbol of a token list; EVM contracts in lower case."""
+    """(chain id, contract) -> (symbol, name) of a token list; EVM contracts in lower case."""
     out = {}
     for t in data.get("tokens", []):
         try:
             address = str(t["address"])
             key = address.lower() if address.startswith("0x") else address
-            out[(int(t["chainId"]), key)] = str(t["symbol"])[:20]
+            out[(int(t["chainId"]), key)] = (str(t["symbol"])[:20], str(t.get("name") or "")[:40])
         except (KeyError, ValueError, TypeError):
             continue
     return out
@@ -78,8 +78,25 @@ def listed_on(listed, chain, token):
 
 
 def famous(listed):
-    """Symbols worth imitating: those of listed tokens on any chain, and the native coins."""
-    return {skeleton(s) for s in listed.values()} | set(prices.NATIVE)
+    """What is worth imitating: the symbols and names of listed tokens on any chain, and the
+    native coins."""
+    return {skeleton(text) for pair in listed.values() for text in pair if text} | set(
+        prices.NATIVE
+    )
+
+
+# What a fake dollar, ether or bitcoin is dressed as: one of these at the start or the end of
+# its symbol (XUSD, USDC2, ETH2), never in the middle of a word (METHANE).
+DRESS = {"USD": "a dollar token", "ETH": "ETH", "BTC": "BTC"}
+
+
+def dressed(symbol, name, famous):
+    """What a token pretends to be, from its symbol or name, or None."""
+    for text in (symbol, name):
+        if text and skeleton(text) in famous:
+            return skeleton(text)
+    bare = skeleton(symbol)
+    return next((what for k, what in DRESS.items() if bare.startswith(k) or bare.endswith(k)), None)
 
 
 def jupiter(client, mints):
@@ -123,9 +140,9 @@ def trust(chain, token, symbol, name="", listed="", famous=frozenset(), price=No
     if BAIT.search(f"{symbol} {name}") and not sure:
         reason = "Its name advertises a website or a reward: the usual bait of airdrop scams."
         return {"level": "scam", "reason": reason + " Never visit it or sign anything there."}
-    twin = skeleton(symbol) in famous
+    twin = dressed(symbol, name, famous)
     if twin and not sure:
-        reason = f"It calls itself {symbol}, but it is not the real {skeleton(symbol)}: no token "
+        reason = f"It calls itself {symbol}, like {twin}, but it is not the real one: no token "
         return {"level": "scam", "reason": reason + "list names it, and it has no reliable price."}
     if unasked and not sure:
         reason = "It arrived unasked, in transactions this wallet took no part in, was never "
