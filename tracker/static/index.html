@@ -29,6 +29,12 @@
     <h1>Crypto tracker</h1>
   </div>
   <div class="side">
+    <!-- Always at hand: paste, type or scan any address, mine or not (see lookUp in app.js). -->
+    <form id="lookup" role="search">
+      <input name="q" aria-label="Look up any address" placeholder="Look up any address" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="search">
+      <button type="button" id="scan" aria-label="Scan a QR code" title="Scan a QR code"></button>
+      <button class="find" aria-label="Look up" title="Look up"></button>
+    </form>
     <p id="status" role="status"></p>
     <!-- Alerts: shown once the API reports any (see renderAlerts in app.js). -->
     <button id="alerts" class="bell" aria-expanded="false" aria-controls="alertlist" hidden>
@@ -125,6 +131,11 @@
         <ul id="wallets"></ul>
       </div>
       <div class="card wide">
+        <h2 class="eyebrow">Watched wallets</h2>
+        <p class="hint">Not yours: addresses you looked up and kept at hand. They take no part in any verdict.</p>
+        <ul id="watched"></ul>
+      </div>
+      <div class="card wide">
         <h2 class="eyebrow">Chains</h2>
         <ul id="chains" class="rows"></ul>
       </div>
@@ -132,6 +143,16 @@
   </section>
 </main>
 <aside id="detail" aria-label="Details" hidden></aside>
+<dialog id="scanner" aria-labelledby="scantitle">
+  <h2 id="scantitle" class="eyebrow">Scan a wallet&rsquo;s QR code</h2>
+  <video id="camera" playsinline muted hidden></video>
+  <p id="scanhint" class="hint" role="status"></p>
+  <div class="buttons">
+    <!-- Works without the camera API, so also over plain HTTP: the phone's camera app takes the picture. -->
+    <label class="button">Take a photo<input id="photo" class="sr" type="file" accept="image/*" capture="environment"></label>
+    <button id="scanclose">Close</button>
+  </div>
+</dialog>
 <script src="vendor/cytoscape.min.js"></script>
 <script type="module" src="app.js"></script>
 </body>

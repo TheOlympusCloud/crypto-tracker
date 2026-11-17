@@ -43,7 +43,7 @@ nav button[aria-current] { background: var(--ink); color: var(--paper); }
 .side { display: flex; align-items: center; justify-content: flex-end; gap: 14px; min-width: 0; }
 #status { margin: 0; max-width: 34ch; color: var(--ink); font: 500 14px/1.25 var(--sans); text-align: right; }
 #status:empty { display: none; }
-#status.busy::before { content: ""; display: inline-block; width: 9px; height: 9px; margin-right: 8px; border-radius: 50%; background: var(--orange); outline: 1px solid var(--ink); animation: pulse 1s ease-in-out infinite alternate; }
+#status.busy::before, p.busy::before { content: ""; display: inline-block; width: 9px; height: 9px; margin-right: 8px; border-radius: 50%; background: var(--orange); outline: 1px solid var(--ink); animation: pulse 1s ease-in-out infinite alternate; }
 /* The alerts button: a black pill with its count in an orange dot. */
 .bell { flex: none; gap: 8px; padding: 0 5px 0 16px; background: var(--ink); color: var(--paper); }
 .bell:hover:not(:disabled) { background: var(--ink); color: var(--paper); }
@@ -51,6 +51,27 @@ nav button[aria-current] { background: var(--ink); color: var(--paper); }
 .bell:hover .pip { transform: scale(1.12) rotate(-8deg); }
 .bell .none { width: 30px; height: 30px; border-radius: 50%; background: var(--orange) var(--arrow) center / 18px no-repeat; }
 #alertlist { position: absolute; z-index: 6; top: calc(100% + 4px); right: 16px; width: min(400px, calc(100vw - 24px)); max-height: 70vh; overflow-y: auto; padding: 18px; animation: pop .3s var(--bounce); transform-origin: top right; }
+
+/* ---------- lookup ---------- */
+/* One field in the header, on every view: paste, type or scan any address. */
+#lookup { --scan: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M4 8V5.5A1.5 1.5 0 0 1 5.5 4H8M16 4h2.5A1.5 1.5 0 0 1 20 5.5V8M20 16v2.5a1.5 1.5 0 0 1-1.5 1.5H16M8 20H5.5A1.5 1.5 0 0 1 4 18.5V16M7.5 12h9' fill='none' stroke='%2314100d' stroke-width='1.8' stroke-linecap='round'/%3E%3C/svg%3E");
+  flex: 1 1 200px; display: flex; align-items: center; gap: 4px; min-width: 0; max-width: 340px; height: 44px; padding: 0 4px 0 0; background: #fff; border: 1px solid var(--ink); border-radius: var(--pill); transition: box-shadow .2s; }
+#lookup:focus-within { box-shadow: 3px 3px 0 var(--orange); }
+#lookup:has(input:focus-visible) { outline: 3px solid var(--ink); outline-offset: 2px; }
+#lookup input:focus-visible { outline: 0; } /* the whole pill shows the focus instead */
+#lookup input, #lookup input:hover { flex: 1; min-width: 0; height: 100%; margin: 0; padding: 0 4px 0 16px; border: 0; border-radius: var(--pill) 0 0 var(--pill); background: none; box-shadow: none; font: 400 13px var(--mono); }
+#lookup button { flex: none; width: 34px; height: 34px; padding: 0; }
+#scan, #scan:hover:not(:disabled) { border-color: transparent; background: var(--sand) var(--scan) center / 20px no-repeat; }
+#scan:hover:not(:disabled) { border-color: var(--ink); }
+#lookup .find, #lookup .find:hover:not(:disabled) { background: var(--orange) var(--arrow) center / 18px no-repeat; transition: transform .35s var(--bounce); }
+#lookup .find:hover:not(:disabled) { transform: rotate(45deg) scale(1.1); }
+/* The scanner: the camera when the browser gives one, a photo or a paste when it does not. */
+#scanner { width: min(420px, calc(100vw - 24px)); padding: 22px; border: 1px solid var(--orange); border-radius: var(--card); background: var(--paper); color: var(--ink); }
+#scanner::backdrop { background: #14100d99; }
+#camera { display: block; width: 100%; aspect-ratio: 1; object-fit: cover; margin-bottom: 12px; border-radius: var(--field); background: var(--ink); }
+label.button { margin: 0; }
+label.button:focus-within { outline: 3px solid var(--ink); outline-offset: 2px; }
+.holdings li { align-items: baseline; font-size: 17px; }
 
 /* ---------- type ---------- */
 h2, h3, h4 { font-family: var(--display); font-weight: 800; font-stretch: condensed; margin: 0; }
@@ -175,6 +196,8 @@ button.wallet:active:not(:disabled) { transform: none; box-shadow: none; }
 .tag { display: inline-flex; align-items: center; padding: 6px 12px; border: 1px solid transparent; border-radius: var(--pill); font: 700 12px/1 var(--sans); letter-spacing: .06em; text-transform: uppercase; white-space: nowrap; }
 .tag.private { background: var(--ink); color: var(--paper); }
 .tag.public { background: var(--orange); border-color: var(--ink); color: var(--ink); }
+.tag.watched { border: 1px dashed var(--ink); }
+.tag.external { border-color: var(--line-strong); color: var(--ink-quiet); }
 .tag.error { border: 1px dashed var(--linked); color: var(--linked-ink); background: var(--linked-wash); }
 .wallet .amounts { font-size: 17px; }
 .wallet .origin { display: block; margin-top: auto; font-size: 13px; }
@@ -232,8 +255,8 @@ input:not([type=checkbox]):not([type=range]):hover, select:hover { border-color:
 input[type=checkbox], input[type=range] { accent-color: var(--ink); }
 input[type=checkbox] { width: 20px; height: 20px; flex: none; margin: 0; }
 /* Buttons are pills: white with an ink edge, black when they are the thing to press. */
-button, a.button { display: inline-flex; align-items: center; justify-content: center; height: 40px; padding: 0 18px; background: #fff; color: var(--ink); border: 1px solid var(--ink); border-radius: var(--pill); font: 500 15px var(--sans); text-decoration: none; cursor: pointer; transition: background .2s, color .2s, transform .15s var(--ease); }
-button:hover:not(:disabled), a.button:hover { background: var(--ink); color: var(--paper); }
+button, a.button, label.button { display: inline-flex; align-items: center; justify-content: center; height: 40px; padding: 0 18px; background: #fff; color: var(--ink); border: 1px solid var(--ink); border-radius: var(--pill); font: 500 15px var(--sans); text-decoration: none; cursor: pointer; transition: background .2s, color .2s, transform .15s var(--ease); }
+button:hover:not(:disabled), a.button:hover, label.button:hover { background: var(--ink); color: var(--paper); }
 button:active:not(:disabled) { transform: scale(.96); }
 button.primary { gap: 12px; padding: 0 5px 0 20px; background: var(--ink); color: var(--paper); }
 button.primary::after { content: ""; width: 30px; height: 30px; border-radius: 50%; background: var(--orange) var(--arrow) center / 18px no-repeat; transition: transform .35s var(--bounce); }
@@ -242,9 +265,9 @@ button:disabled { opacity: .55; cursor: default; }
 :focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
 .vault :focus-visible, .private :focus-visible { outline-color: var(--paper); }
 form .primary, .card > .primary { margin-top: 10px; }
-#wallets li { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; border-bottom: 1px solid var(--line); padding: 4px 0; }
-#wallets .rowbtn { flex: 1 1 260px; width: auto; }
-#wallets .buttons { margin: 4px 0; }
+#wallets li, #watched li:not(.hint) { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; border-bottom: 1px solid var(--line); padding: 4px 0; }
+#wallets .rowbtn, #watched .rowbtn { flex: 1 1 260px; width: auto; }
+#wallets .buttons, #watched .buttons { margin: 4px 0; }
 #chains li { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 10px 0; }
 #chains b { font: 800 condensed 18px/1 var(--display); text-transform: uppercase; }
 #chains small { display: inline; }
@@ -304,11 +327,22 @@ form .primary, .card > .primary { margin-top: 10px; }
   #canvas > :not([hidden]) { animation: mode-in .4s ease-out; }
 }
 
-@media (min-width: 761px) { .with-detail main { margin-right: var(--panel); } }
+/* The panel takes the right of the screen; the header moves over too, so the lookup stays in reach. */
+@media (min-width: 761px) { .with-detail main, .with-detail header { margin-right: var(--panel); } }
+@media (min-width: 761px) and (max-width: 1400px) { .with-detail .brand h1 { display: none; } }
+@media (min-width: 761px) and (max-width: 1100px) {
+  .with-detail .side { grid-column: 1 / -1; justify-content: flex-start; padding-bottom: 8px; }
+  .with-detail #lookup { max-width: none; }
+}
 @media (max-width: 1000px) and (min-width: 761px) { #status { display: none; } }
 @media (max-width: 760px) {
   header { grid-template-columns: 1fr auto; min-height: 60px; padding: 0 12px; }
-  .brand { order: -1; }
+  .brand, .bell { order: -1; }
+  /* The lookup gets a row of its own under the brand. */
+  .side { display: contents; }
+  #lookup { grid-column: 1 / -1; flex: none; max-width: none; height: 52px; margin-bottom: 8px; }
+  #lookup input { font-size: 16px; } /* smaller text makes iOS zoom in on focus */
+  #lookup button { width: var(--tap); height: var(--tap); }
   h1 { font-size: 22px; }
   #status { position: absolute; left: 12px; right: 12px; top: 100%; z-index: 1; max-width: none; padding: 8px 14px; border-radius: var(--field); background: var(--paper); border: 1px solid var(--ink); text-align: left; }
   /* The views move to a black pill at the thumb, as in an app. */
@@ -332,7 +366,7 @@ form .primary, .card > .primary { margin-top: 10px; }
   .vault .amounts { font-size: 20px; }
   .cards, #view-manage .cards { grid-template-columns: 1fr; }
   .card { padding: 20px; }
-  button, a.button { height: var(--tap); }
+  button, a.button, label.button { height: var(--tap); }
   /* The table becomes one block per asset, each number under its own label. */
   table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
   table, tbody, tr, tbody th, td { display: block; }

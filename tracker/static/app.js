@@ -110,7 +110,7 @@ async function drawGraph() {
   // The view that becomes active fades in (style.css, #canvas); the other one is hidden.
   document.body.dataset.mode = mode;
   $("mode").ariaPressed = String(mode === "3d");
-  if (stale) active.setData(graph, { minConf: $("minconf").value / 100 });
+  if (stale) active.setData(scope ? scope.graph : graph, { minConf: $("minconf").value / 100 });
   stale = false;
   active.highlight(shownPath);
 }
@@ -309,6 +309,7 @@ function panel(...children) {
   }
 }
 function closePanel() {
+  if (leave()) drawGraph().catch(fail);
   $("detail").hidden = true;
   if (folded) $("legendbox").open = true;
   folded = false;
@@ -341,6 +342,7 @@ function openWallet(address) {
   const n = byAddress.get(address);
   const v = analysis.verdicts.find((x) => x.address === address);
   if (!n || !v) return;
+  if (leave()) drawGraph().catch(fail);
   const fiat = readFiat();
   const owned = readAddresses(n);
   const wallet = (pub) => act(() => api("wallets", { address: n.addresses && !n.addresses.length ? n.wallet : address, name: n.name, public: pub }));
@@ -379,6 +381,7 @@ function hopText(a, b) {
 
 // A path opened from a verdict or an origin: highlighted in the graph, spelled out as a list.
 function showPath(path, heading, back) {
+  leave();
   shownPath = path;
   show("graph").then(async () => {
     if (!path.length) (await renderer()).focus(back);
@@ -408,7 +411,7 @@ function showPath(path, heading, back) {
 }
 
 function selectNode(n) {
-  if (!n) return closePanel();
+  if (!n) return scope ? renderLookup() : closePanel(); // a tap beside the graph does not end a lookup
   const form = h(
     "form",
     {},
@@ -418,7 +421,10 @@ function selectNode(n) {
   );
   form.onsubmit = (e) => {
     e.preventDefault();
-    act(() => api("labels", { address: n.address, name: form.elements.label.value, category: form.elements.category.value }))();
+    const label = { name: form.elements.label.value, category: form.elements.category.value };
+    act(() => api("labels", { address: n.address, ...label }))();
+    // The looked-up wallet is not part of the data a refresh brings: rename it here.
+    if (scope) for (const x of [scope, ...scope.connections, ...scope.graph.nodes]) if (x.address === n.address) Object.assign(x, { label: label.name, category: label.name ? label.category : undefined });
   };
   const facts = h("dl", {});
   const row = (term, value) => value && facts.append(h("dt", {}, term), h("dd", {}, value));
@@ -436,13 +442,241 @@ function selectNode(n) {
       "div",
       { className: "buttons" },
       n.mine ? h("button", { className: "primary", onclick: () => openWallet(n.address) }, "Verdict and origin") : h("button", { onclick: act(() => api("wallets", { address: n.address, name: "", public: false })) }, "This is mine"),
-      h("button", { onclick: () => startSync([n.address]) }, n.synced_at ? "Re-sync" : "Expand"),
+      scope ? h("button", { onclick: renderLookup }, `Back to ${title(scope)}`) : h("button", { onclick: () => startSync([n.address]) }, n.synced_at ? "Re-sync" : "Expand"),
+      n.mine || n.address === scope?.address ? null : h("button", { onclick: () => lookUp(n.address).catch(fail) }, "Look up"),
       n.explorer_address ? h("a", { className: "button", href: n.explorer_address.replace("{}", encodeURIComponent(n.address.replace("bitcoincash:", ""))), target: "_blank", rel: "noreferrer noopener" }, "Explorer ↗") : null
     ),
     n.mine ? null : form
   );
 }
 const onSelect = selectNode;
+
+// ---------- lookup: any address, mine or not ----------
+
+// The looked-up wallet whose own connections are in the graph instead of mine. It is read
+// live and kept only here: closing its panel brings my graph back.
+let scope = null;
+let asked = 0; // only the newest lookup may fill the panel
+function leave() {
+  if (!scope) return false;
+  scope = null;
+  stale = true;
+  return true;
+}
+const chainName = (c) => (analysis.chains || []).find((x) => x.chain === c)?.name || c;
+const sums = (list) => list.map((b) => `${num(b.amount)} ${b.asset}`).join(", ");
+
+// From a pasted or scanned line to the wallet view. Only an EVM address needs a question.
+async function lookUp(text) {
+  $("status").textContent = "";
+  const found = await api("resolve", { q: text });
+  $("lookup").elements.q.value = found.address;
+  if (found.chain === "evm" && !found.hint && found.chains.length > 1) return askChains(found.address, found.chains, found.chains);
+  return openLookup(found.address, found.hint ? [found.hint] : []);
+}
+
+function askChains(address, chains, picked) {
+  const form = h(
+    "form",
+    {},
+    chains.map((c) => h("label", { className: "row" }, h("input", { type: "checkbox", value: c, checked: picked.includes(c) }), chainName(c))),
+    h("button", { className: "primary" }, "Look up")
+  );
+  form.onsubmit = (e) => {
+    e.preventDefault();
+    openLookup(address, [...form.querySelectorAll("input:checked")].map((i) => i.value));
+  };
+  panel(h("h2", {}, "Which chains?"), h("div", { className: "mono" }, address), h("p", { className: "hint" }, "The same address exists on every EVM chain. Each chain read is one more indexer that sees it."), form);
+}
+
+async function openLookup(address, chains = []) {
+  const mine = ++asked;
+  panel(h("h2", {}, "Looking up"), h("div", { className: "mono" }, address), h("p", { className: "hint busy", role: "status" }, "Reading it from the indexers. A busy address takes a little while."));
+  try {
+    const v = await api(`lookup/${encodeURIComponent(address)}${chains.length ? `?chains=${chains.join(",")}` : ""}`);
+    if (mine !== asked) return;
+    scope = v;
+    stale = true;
+    shownPath = [];
+    renderLookup();
+    await show("graph");
+    (await renderer()).focus(address);
+  } catch (e) {
+    if (mine !== asked) return;
+    panel(h("h2", {}, "Could not look it up"), h("div", { className: "mono" }, address), h("p", { className: "error" }, e.message), h("div", { className: "buttons" }, h("button", { onclick: () => openLookup(address, chains) }, "Try again")));
+  }
+}
+
+function renderLookup() {
+  const v = scope;
+  const fiat = v.value == null ? null : { currency: v.currency };
+  const own = analysis.verdicts.find((x) => x.address === v.address || (v.wallet && x.wallet === v.wallet));
+  const state = v.mine ? badge(v) : h("span", { className: `tag ${v.watched ? "watched" : "external"}` }, v.watched ? "watched" : "not yours");
+  // After a change of state the panel is redrawn from what is known, without reading the chain again.
+  const set = (change, call) => () =>
+    call()
+      .then(() => Object.assign(v, change))
+      .then(refresh)
+      .then(renderLookup)
+      .catch(fail);
+  const track = set({ mine: 1, public: 0, watched: false }, () => api("wallets", { address: v.address, name: "", public: false }).then(() => startSync([v.address])));
+  const watch = v.watched ? set({ watched: false }, () => api(`watch/${encodeURIComponent(v.address)}`, null, "DELETE")) : set({ watched: true }, () => api("watch", { address: v.address }));
+  const party = (c) => {
+    const kind = KINDS[kindOf(c)][2];
+    const moved = [c.received.length ? `in ${sums(c.received)}` : "", c.sent.length ? `out ${sums(c.sent)}` : "", c.count ? plural(c.count, "transfer") : "", c.count ? (c.first === c.last ? day(c.first) : `${day(c.first)} to ${day(c.last)}`) : ""];
+    return h(
+      "li",
+      {},
+      h(
+        "button",
+        { className: "rowbtn", onclick: () => selectNode(c) },
+        c.mine ? coin(c, 28) : icon(kindOf(c), 14),
+        h("span", {}, c.mine ? `${title(c)} (${c.public ? "public" : "private"})` : `${title(c)} · ${kind}`, h("small", {}, moved.filter(Boolean).join(" · "))),
+        c.guess ? h("span", { className: `conf ${c.mine ? "bad" : "warn"}`, title: `Guess that both have one owner: ${c.guess.kind}, ${pct(c.guess.confidence)} confidence` }, pct(c.guess.confidence), h("span", { className: "sr" }, ` ${c.guess.kind} guess`)) : null
+      )
+    );
+  };
+  const yours = v.connections.filter((c) => c.mine);
+  const others = v.connections.filter((c) => !c.mine);
+  const gaps = [
+    ...v.errors.map((e) => `Not everything could be read (${e}).`),
+    v.truncated ? "This address is very active and only its newest transactions are loaded: older counterparties and the tokens it holds are missing." : null,
+    v.hidden ? `${plural(v.hidden, "token")} without a trusted price ${v.hidden === 1 ? "is" : "are"} left out, with the transfers of such tokens: anyone can airdrop those.` : null,
+    v.more ? `${plural(v.more, "quieter counterparty").replace("partys", "parties")} not listed.` : null,
+    ...v.notes,
+    v.mine ? null : "Only direct dealings with your wallets show here. Links that run through other addresses are searched once you track it.",
+    "It was read live and nothing about it is kept: it takes no part in your verdicts unless you track it. The indexer of its chain did see this lookup.",
+  ];
+  panel(
+    heading(v.mine ? coin(v, 48) : h("span", { className: "coin" }, icon(kindOf(v), 32)), title(v), state, worth(v.value, fiat)),
+    h("div", { className: "mono" }, v.address),
+    v.chain === "evm" ? h("p", { className: "hint" }, `Read on ${v.chains.map(chainName).join(", ") || "no chain"}.`) : null,
+    h(
+      "div",
+      { className: "buttons" },
+      v.mine ? (own ? h("button", { className: "primary", onclick: () => openWallet(own.address) }, "Verdict and origin") : null) : h("button", { className: "primary", onclick: track }, "Track as mine"),
+      v.mine ? null : h("button", { onclick: watch }, v.watched ? "Stop watching" : "Watch"),
+      v.mine ? null : h("button", { onclick: () => selectNode(v) }, v.label ? "Edit label" : "Label"),
+      v.chain === "evm" ? h("button", { onclick: () => api("resolve", { q: v.address }).then((f) => askChains(v.address, f.chains, v.chains)).catch(fail) }, "Chains") : null,
+      v.explorer_address ? h("a", { className: "button", href: v.explorer_address.replace("{}", encodeURIComponent(v.address.replace("bitcoincash:", ""))), target: "_blank", rel: "noreferrer noopener" }, "Explorer ↗") : null
+    ),
+    v.mine ? null : h("p", { className: "hint" }, "Tracking adds it to your wallets, as private, and syncs it. Watching only keeps it at hand."),
+    h("h3", {}, "What it holds"),
+    v.assets.length ? h("ul", { className: "rows addresses holdings" }, v.assets.map((b) => h("li", {}, amount(b, `${b.asset} · ${chainName(b.chain)}`), worth(b.value, fiat)))) : h("p", { className: "hint" }, "Nothing found."),
+    h("h3", {}, v.mine ? "Your other wallets it dealt with" : "Links to your wallets"),
+    yours.length
+      ? h("ul", { className: "rows" }, yours.map(party))
+      : verdictBox("p", { level: v.truncated || v.errors.length ? "unknown" : "ok", headline: "No direct dealing with your wallets found" }),
+    h("h3", {}, `Counterparties (${others.length + v.more})`),
+    others.length ? h("ul", { className: "rows" }, others.map(party)) : h("p", { className: "hint" }, "None found."),
+    others.length > 60 ? h("p", { className: "hint" }, "The graph shows the 60 busiest.") : null,
+    h("h3", {}, "What this view leaves out"),
+    h("ul", { className: "caveats" }, gaps.filter(Boolean).map((c) => h("li", {}, c)))
+  );
+}
+
+function renderWatched() {
+  const watched = analysis.watched || [];
+  $("watched").replaceChildren(
+    ...(watched.length ? [] : [h("li", { className: "hint" }, "None yet. Look an address up and press Watch.")]),
+    ...watched.map((w) =>
+      h(
+        "li",
+        {},
+        h("button", { className: "rowbtn", onclick: () => lookUp(w.address).catch(fail) }, icon(kindOf(w), 14), h("span", {}, title(w), h("small", { className: "mono" }, w.address)), h("span", { className: "tag watched" }, "watched")),
+        h("span", { className: "buttons" }, h("button", { onclick: act(() => api(`watch/${encodeURIComponent(w.address)}`, null, "DELETE")) }, "Remove"))
+      )
+    )
+  );
+}
+
+$("lookup").onsubmit = (e) => {
+  e.preventDefault();
+  const q = e.target.elements.q.value.trim();
+  if (q) lookUp(q).catch(fail);
+};
+
+// ---------- QR scan ----------
+
+// The browser's own detector where it reads QR codes (Android, macOS); otherwise the vendored one.
+const native = "BarcodeDetector" in window ? BarcodeDetector.getSupportedFormats().then((f) => (f.includes("qr_code") ? new BarcodeDetector({ formats: ["qr_code"] }) : null), () => null) : Promise.resolve(null);
+// What a video frame or a photo says, or "" when no QR code is found in it.
+async function decode(source, width, height) {
+  const detector = await native;
+  if (detector) return (await detector.detect(source))[0]?.rawValue || "";
+  await import("./vendor/jsQR.js"); // not a module: it defines self.jsQR
+  // A phone photo is far larger than needed; a small code in it may still need the second pass.
+  for (const max of [1000, 2400]) {
+    const scale = Math.min(1, max / Math.max(width, height));
+    const canvas = Object.assign(document.createElement("canvas"), { width: Math.round(width * scale), height: Math.round(height * scale) });
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    ctx.drawImage(source, 0, 0, canvas.width, canvas.height);
+    const found = self.jsQR(ctx.getImageData(0, 0, canvas.width, canvas.height).data, canvas.width, canvas.height);
+    if (found?.data) return found.data;
+    if (scale === 1) break;
+  }
+  return "";
+}
+
+let stream = null;
+let scanning = 0; // bumped to stop the loop that reads the camera
+const scanHint = (text) => ($("scanhint").textContent = text);
+function stopCamera() {
+  scanning++;
+  stream?.getTracks().forEach((t) => t.stop());
+  stream = null;
+  $("camera").srcObject = null;
+  $("camera").hidden = true;
+}
+// The scanned text is not shown as it is: a QR code can hold anything, a private key too.
+function scanned(text) {
+  $("scanner").close();
+  $("lookup").elements.q.value = "";
+  lookUp(text).catch(fail);
+}
+
+async function openScanner() {
+  $("scanner").showModal();
+  const instead = "Take a photo of the code instead, or paste the address.";
+  // Browsers only give the camera to pages served over HTTPS or from localhost.
+  if (!navigator.mediaDevices?.getUserMedia) return scanHint(`${isSecureContext ? "This browser gives no camera here." : "The live camera needs HTTPS."} ${instead}`);
+  scanHint("Asking for the camera…");
+  const run = ++scanning;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false });
+  } catch {
+    return scanHint(`No camera, or it was not allowed. ${instead}`);
+  }
+  if (run !== scanning || !$("scanner").open) return stopCamera(); // closed while the browser was asking
+  const video = $("camera");
+  video.srcObject = stream;
+  video.hidden = false;
+  await video.play().catch(() => {});
+  scanHint("Point the camera at the wallet's QR code.");
+  while (run === scanning) {
+    const text = video.videoWidth ? await decode(video, video.videoWidth, video.videoHeight).catch(() => "") : "";
+    if (run !== scanning) return;
+    if (text) return scanned(text);
+    await new Promise((r) => setTimeout(r, 200));
+  }
+}
+$("scan").onclick = () => openScanner().catch(fail);
+$("scanclose").onclick = () => $("scanner").close();
+$("scanner").onclose = stopCamera; // the Close button, Escape and a successful scan all end here
+$("photo").onchange = async () => {
+  const [file] = $("photo").files;
+  $("photo").value = ""; // so that the same photo can be chosen again
+  if (!file) return;
+  scanHint("Reading the photo…");
+  try {
+    const image = await createImageBitmap(file);
+    const text = await decode(image, image.width, image.height);
+    if (text) scanned(text);
+    else scanHint("No QR code found in that photo. Try again, closer and straight on.");
+  } catch {
+    scanHint("That file could not be read as an image.");
+  }
+};
 
 // ---------- alerts ----------
 
@@ -513,6 +747,7 @@ async function refresh() {
   first = false;
   renderPortfolio();
   renderWallets();
+  renderWatched();
   renderChains();
   renderAlerts();
   await drawGraph();

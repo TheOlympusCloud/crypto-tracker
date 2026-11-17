@@ -19,6 +19,9 @@ list the wallets that are yours and mark as **public** the ones tied to your ide
   that grows with every sync.
 - **Alerts** when a verdict gets worse: a new link between two wallets, or a stronger one.
 
+- **Lookup of any address**, yours or not: paste, type or scan it in the box at the top of
+  every view. See [Look up an address](#look-up-an-address).
+
 A wallet is a single address or an HD wallet: paste an xpub, ypub, zpub or output
 descriptor and all its used addresses are found and treated as one wallet.
 
@@ -72,6 +75,41 @@ docker run -p 8000:8000 -v tracker-data:/data -e CT_PASSWORD=change-me crypto-tr
 | `CT_CURRENCY` | `USD` | Currency of the values, e.g. `EUR` (ECB reference rate). |
 | `CT_PRICES` | `on` | `off` never asks for prices. |
 | `CT_BTC_PAGES`, `CT_EVM_ROWS` | `8`, `1000` | History loaded per address (pages of 25 / rows per list). |
+
+## Look up an address
+
+The box at the top takes an address or a payment URI (`bitcoin:`, `litecoin:`,
+`dogecoin:`, `bitcoincash:`, `tron:`, `solana:`, `ethereum:0x...@chainId`); amounts and
+other parameters are dropped. The chain follows from the format. Only an EVM address
+needs a question, because it exists on every EVM chain: you pick the chains to read,
+unless the URI names one.
+
+The view shows what the address holds per chain, with values, and who it deals with:
+your own wallets first, then its counterparties with their labels, drawn around it in the
+graph. Tokens the price source does not know well are left out, with their transfers.
+
+A lookup is read-only. The address is fetched live and nothing about it is stored, so it
+is not treated as yours and no verdict or alert changes. From the view you can:
+
+- **Track as mine**: adds it to your wallets, private by default, and syncs it.
+- **Watch**: keeps it in a list under "Wallets & sync". Still not yours, still in no verdict.
+
+Like a sync, a lookup sends the address to the indexer of its chain.
+
+### Scanning a QR code
+
+The scan button opens the camera and reads the code of a wallet. Browsers only give a
+page the camera in a secure context, so the live camera needs one of:
+
+- the app opened as `http://localhost:8000` or `http://127.0.0.1:8000` on the same machine;
+- HTTPS: a reverse proxy with a certificate the phone trusts in front of the app (Caddy,
+  nginx, Traefik; a Tailscale or Let's Encrypt certificate works, a self-signed one only
+  once it is trusted on the phone). Set `CT_PASSWORD`, as for any non-loopback use.
+
+Over plain HTTP the scan button still works through **Take a photo**: the phone's own
+camera app takes the picture and the code is read from it. Pasting always works.
+Codes are decoded in the browser: by its built-in detector where there is one, otherwise
+by the bundled [jsQR](https://github.com/cozmo/jsQR) (Apache-2.0), which is what iOS uses.
 
 ## Privacy
 
