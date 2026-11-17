@@ -1,14 +1,15 @@
 import os
 import secrets
+import time
 from base64 import b64decode
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import alerts, chains, graph, hd, prices, sync
+from . import alerts, chains, graph, hd, lookup, prices, sync, uri
 from . import db as database
 
 app = FastAPI(title="Crypto tracker", docs_url=None, redoc_url=None)
@@ -45,6 +46,10 @@ class Label(BaseModel):
     category: str = "other"
 
 
+class Pasted(BaseModel):
+    q: str
+
+
 class Sync(BaseModel):
     addresses: list[str] = []  # empty: all my wallets
     depth: int = 0
@@ -78,6 +83,13 @@ def get_analysis(max_hops: int = 4):
             "chains": chains.coverage(),
             "fiat": prices.summary(db),
             "alerts": alerts.recent(db),
+            "watched": [
+                dict(r)
+                for r in db.execute(
+                    "SELECT w.address, l.name label, l.category FROM watch w "
+                    "LEFT JOIN label l USING (address) ORDER BY w.ts DESC"
+                )
+            ],
             "verdicts": graph.verdicts(db, max_hops),
             "origins": graph.origins(db, max_hops),
         }
@@ -137,6 +149,7 @@ def put_wallet(w: Wallet):
                     "name = excluded.name",
                     (one, int(w.public), w.name[:80]),
                 )
+            db.execute("DELETE FROM watch WHERE address = ?", (one,))  # tracked now, not watched
     finally:
         db.close()
     return {"ok": True, "wallet": one}
@@ -151,6 +164,54 @@ def delete_wallet(raw: str):
         write(forget + "wallet = ?", (raw,))
     else:
         write(forget + "address = ? AND wallet IS NULL", (address(raw),))
+    return {"ok": True}
+
+
+@app.post("/api/resolve")
+def resolve(pasted: Pasted):
+    """What a pasted line or a scanned QR code names. A POST, so that a secret scanned by
+    mistake does not end up in an access log."""
+    try:
+        one, chain, hint = uri.parse(pasted.q[:500])
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from None
+    readable = [c for c, cfg in chains.evm_chains().items() if not cfg.get("needs_key")]
+    return {
+        "address": one,
+        "chain": chain,
+        "chains": readable if chain == "evm" else [],  # the choice to offer for an EVM address
+        "hint": hint,  # the EVM chain a payment URI names
+    }
+
+
+@app.get("/api/lookup/{raw}")
+def get_lookup(raw: str, only: str = Query("", alias="chains")):
+    """Read-only view of any address: assets, counterparties and links to my wallets."""
+    one = address(raw)
+    picked = [c for c in only.split(",") if c]
+    for c in picked:
+        if chains.evm_chains().get(c, {"needs_key": True}).get("needs_key"):
+            raise HTTPException(422, f"{c} is not a chain this server can read")
+    db = database.connect()
+    try:
+        with httpx.Client(timeout=30, headers={"User-Agent": "crypto-tracker"}) as client:
+            return lookup.view(db, client, one, picked)
+    except (httpx.HTTPError, RuntimeError, ValueError, KeyError, TypeError) as e:
+        raise HTTPException(502, f"the indexer did not answer: {chains.describe(e)}") from None
+    finally:
+        db.close()
+
+
+@app.post("/api/watch")
+def put_watch(w: Wallet):
+    """Keep an address at hand without calling it mine: it stays out of every verdict."""
+    write("INSERT OR IGNORE INTO watch VALUES (?, ?)", (address(w.address), int(time.time())))
+    return {"ok": True}
+
+
+@app.delete("/api/watch/{raw}")
+def delete_watch(raw: str):
+    write("DELETE FROM watch WHERE address = ?", (address(raw),))
     return {"ok": True}
 
 

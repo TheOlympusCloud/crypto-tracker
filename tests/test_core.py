@@ -21,14 +21,6 @@ def tx(vins, vouts, txid="t1"):
     return {"txid": txid, "vin": vins, "vout": vouts, "status": {"block_time": 1000}}
 
 
-@pytest.fixture
-def db(tmp_path, monkeypatch):
-    monkeypatch.setenv("CT_DB", str(tmp_path / "t.db"))
-    db = database.connect()
-    yield db
-    db.close()
-
-
 def transfer(db, chain, txid, src, dst, amount, ts=0, asset="ETH", token=""):
     db.execute(
         "INSERT INTO transfer VALUES (?,?,?,?,?,?,?,?)",

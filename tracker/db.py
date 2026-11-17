@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS label(address TEXT PRIMARY KEY, name TEXT, category T
 CREATE TABLE IF NOT EXISTS balance(
   address TEXT, chain TEXT, asset TEXT, token TEXT, amount REAL,
   PRIMARY KEY(address, chain, token));
+CREATE TABLE IF NOT EXISTS watch(address TEXT PRIMARY KEY, ts INT);
 """
 
 EVM_RE = re.compile(r"0x[0-9a-fA-F]{40}")

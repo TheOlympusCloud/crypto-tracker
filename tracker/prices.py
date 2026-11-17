@@ -63,12 +63,13 @@ def _holdings(db, everything=False):
     return out
 
 
-def refresh(db, client):
-    """Fetch prices older than TTL. A failure keeps the old prices: values go stale, not away."""
+def refresh(db, client, extra=()):
+    """Fetch prices older than TTL, for what I hold and the `extra` keys. A failure keeps
+    the old prices: values go stale, not away."""
     if os.environ.get("CT_PRICES", "on") == "off":
         return
     held = _holdings(db, everything=True)
-    wanted = {key(r["chain"], r["asset"], r["token"]) for r in held} - {None}
+    wanted = ({key(r["chain"], r["asset"], r["token"]) for r in held} | set(extra)) - {None}
     if currency() != "USD":
         wanted.add(f"fx:{currency()}")
     fresh = {
@@ -108,10 +109,17 @@ def refresh(db, client):
     db.commit()
 
 
-def portfolio(db):
-    """Everything I hold, per asset and per wallet, valued with the cached prices."""
+def rates(db):
+    """The cached prices by key, and the factor from USD to the display currency (None
+    while that rate is unknown)."""
     price = {r["key"]: r for r in db.execute("SELECT * FROM price WHERE usd IS NOT NULL")}
     fx = 1.0 if currency() == "USD" else (price.get(f"fx:{currency()}") or {"usd": None})["usd"]
+    return price, fx
+
+
+def portfolio(db):
+    """Everything I hold, per asset and per wallet, valued with the cached prices."""
+    price, fx = rates(db)
 
     def unit(r):
         p = price.get(key(r["chain"], r["asset"], r["token"]))
