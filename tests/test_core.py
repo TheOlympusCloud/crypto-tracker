@@ -1330,3 +1330,150 @@ def test_a_wallet_is_renamed_by_posting_it_again(db):
     assert client.post("/api/wallets", json={"address": "hd:x", "name": "Vault"}).is_success
     names = {r[0] for r in db.execute("SELECT name FROM node WHERE wallet = 'hd:x'")}
     assert names == {"Vault"} and db.execute("SELECT name FROM hdwallet").fetchone()[0] == "Vault"
+
+
+def _esplora(history, balance=0):
+    """A mock Esplora that knows the transactions of some addresses."""
+    import httpx
+
+    def handler(request):
+        address = request.url.path.split("/")[3]
+        if request.url.path.endswith("/txs/chain"):
+            return httpx.Response(200, json=history.get(address, []))
+        stats = {
+            "funded_txo_sum": balance,
+            "spent_txo_sum": 0,
+            "tx_count": len(history.get(address, [])),
+        }
+        return httpx.Response(200, json={"chain_stats": stats})
+
+    return httpx.Client(transport=httpx.MockTransport(handler))
+
+
+def test_a_coinjoin_is_never_a_certain_link_and_raises_no_alert(db, monkeypatch):
+    from tracker import alerts, sync
+
+    monkeypatch.setattr(chains, "DELAY", 0)
+    public, private = BIP84[0], BIP84[1]
+    others = ["bc1q8c6fshw2dlwun7ekn9qwf37cu2rn755upcp6el", "3GtVZYzsKF6Feikdjd4bDyPdAiyeHANY9b",
+              "1JaUQDVNRdhfNsVncGkXedaPSM5Gc54Hso", SATOSHI]  # fmt: skip
+    mix = tx(
+        [vin(public, 110_000), vin(others[0], 120_000), vin(others[1], 130_000)],
+        [
+            vout(private, 100_000),
+            vout(others[2], 100_000),
+            vout(others[3], 100_000),
+            vout(others[0], 55_000),
+        ],
+        "mix",
+    )
+    assert heuristics.looks_like_coinjoin(mix)
+    mine(db, public, public=1)
+    mine(db, private)
+    alerts.check(db)  # baseline: nothing linked yet
+    with _esplora({public: [mix], private: [mix]}) as client:
+        sync.sync_address(db, client, public)
+        sync.sync_address(db, client, private)
+    assert [tuple(r) for r in db.execute("SELECT * FROM coinjoin")] == [("bitcoin", "mix")]
+    (verdict,) = [v for v in graph.verdicts(db) if v["address"] == private]
+    (link,) = verdict["links"]
+    assert link["confidence"] == heuristics.COMMON_INPUT_COINJOIN and link["kinds"] == ["coinjoin"]
+    alerts.check(db)
+    assert db.execute("SELECT COUNT(*) FROM alert").fetchone()[0] == 0
+    # The amounts are still facts: what the wallet received, and from which inputs.
+    (btc,) = graph.origins(db)[private]
+    assert btc["received"] == pytest.approx(0.001)
+    assert graph.build(db)["edges"][0]["coinjoin"] == 1
+
+    # An ordinary payment between the same two wallets is a certain link again.
+    plain = tx([vin(public, 50_000)], [vout(private, 49_000)], "plain")
+    with _esplora({private: [mix, plain]}) as client:
+        sync.sync_address(db, client, private)
+    again = next(v for v in graph.verdicts(db) if v["address"] == private)
+    assert again["links"][0]["confidence"] == 1.0
+
+
+def test_a_swap_source_that_is_down_makes_every_verdict_partial(db, monkeypatch):
+    import httpx
+
+    from tracker import swaps
+
+    monkeypatch.setattr(chains, "DELAY", 0)
+    monkeypatch.setattr(chains.time, "sleep", lambda s: None)
+    for address, public in ((A, 1), (BIP84[0], 0)):
+        db.execute(
+            "INSERT INTO node(address, mine, public, synced_at) VALUES (?, 1, ?, 1)",
+            (address, public),
+        )
+    assert {v["checked"] for v in graph.verdicts(db)} == {"full"}
+
+    with httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(503))) as client:
+        assert len(swaps.sync(db, client)) == 2
+    for verdict in graph.verdicts(db):
+        # They may have swapped straight into each other: "no link found" would be a lie.
+        assert verdict["checked"] == "partial" and verdict["links"] == []
+        assert (
+            "THORChain did not answer (HTTP 503), so swaps through it were not checked"
+            in verdict["coverage"]["error"]
+        )
+
+    def up(request):
+        return httpx.Response(200, json={"actions": []})
+
+    with httpx.Client(transport=httpx.MockTransport(up)) as client:
+        assert swaps.sync(db, client) == []
+    assert {v["checked"] for v in graph.verdicts(db)} == {"full"}
+    assert graph.verdicts(db)[0]["coverage"]["error"] is None
+
+
+def test_a_wide_transaction_is_flagged_and_keeps_my_own_wallets(db, monkeypatch):
+    from tracker import hd, sync
+
+    monkeypatch.setattr(chains, "DELAY", 0)
+    (d,) = hd.descriptors(ZPUB)
+    outputs = [hd.address(d, 0, i) for i in range(2, 62)]  # 60 recipients
+    payer, small = BIP84[0], outputs[-1]
+    batch = tx(
+        [vin(payer, 10_000_000)], [vout(a, 100_000 - i) for i, a in enumerate(outputs)], "batch"
+    )
+    assert chains.wide(payer, batch) and not chains.wide(
+        payer, tx([vin(payer, 5)], [vout(small, 4)])
+    )
+    cut = chains.utxo_transfers(payer, batch)
+    assert len(cut) == chains.FANOUT and small not in {
+        t[3] for t in cut
+    }  # the smallest is dropped...
+    kept = chains.utxo_transfers(payer, batch, keep={small})
+    assert len(kept) == chains.FANOUT and small in {t[3] for t in kept}  # ...unless it is mine
+
+    mine(db, payer, public=1)
+    mine(db, small)
+    with _esplora({payer: [batch]}) as client:
+        sync.sync_address(db, client, payer)
+    assert db.execute("SELECT cut FROM node WHERE address = ?", (payer,)).fetchone()[0] == 1
+    verdict = {v["address"]: v for v in graph.verdicts(db)}
+    assert verdict[small]["links"][0]["confidence"] == 1.0  # the link to my own wallet survived
+    (note,) = [n for n in verdict[payer]["coverage"]["notes"] if "very large transaction" in n]
+    assert note.startswith("1 very large") and "50 biggest counterparties" in note
+    assert not any("very large" in n for n in verdict[small]["coverage"]["notes"])
+
+
+def test_repeated_swaps_are_one_kind_of_evidence(db):
+    mine(db, A)
+    mine(db, B)
+    for n in range(2):
+        db.execute("INSERT INTO link VALUES (?, ?, 'swap', 0.95, ?)", (A, B, f"swap {n}"))
+    (link,) = graph.build(db)["links"]
+    assert (link["count"], link["confidence"]) == (2, 0.95)  # not 0.9975 shown as "100%"
+
+
+def test_weak_links_do_not_raise_alerts(db):
+    from tracker import alerts
+
+    mine(db, A, public=1)
+    mine(db, B)
+    alerts.check(db)
+    db.execute("INSERT INTO link VALUES (?, ?, 'common-input', 0.2, 'x')", (A, B))
+    alerts.check(db)
+    assert db.execute("SELECT COUNT(*) FROM alert").fetchone()[0] == 0
+    assert graph.verdicts(db)[0]["links"][0]["confidence"] == 0.2  # still listed in the verdict

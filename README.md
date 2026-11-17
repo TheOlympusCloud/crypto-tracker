@@ -250,10 +250,11 @@ in `tracker/heuristics.py` and `tracker/graph.py`.
 |---|---|---|
 | common-input | 0.9 | Two addresses are inputs of one Bitcoin transaction. |
 | common-input, CoinJoin | 0.2 | Same, but the transaction has 3+ inputs and 3+ equal outputs. |
+| coinjoin | 0.2 | A transfer inside such a transaction. Its amount is still a fact, but a CoinJoin exists so that nobody can tell which input paid which output: it is never read as a certain link, and never raises an alert. |
 | change | 0.5 to 0.75 | In a 2-output payment, the output that matches the input script type (0.6), or is the non-round one (0.5); 0.75 when both rules agree, nothing when they disagree. |
 | bridge | 0.5 to 0.95 | Money leaves one of your wallets on chain X and the same asset reaches another of your wallets on chain Y within 6 hours, 0 to 3% smaller. +0.25 if a labelled bridge is involved, +0.15 if within 0.5%, +0.1 if within 10 minutes; divided by the number of equally plausible matches. |
 | exchange-flow | 0.09 to 0.8 | Money leaves one wallet into an exchange and the same asset, 0 to 2% less, comes out of an exchange into another wallet within 48 hours. Starts at 0.5 (same exchange), 0.3 (two exchanges) or 0.15 (the deposit went to an address that was never expanded); +0.15 within 0.5%, +0.1 within an hour; x0.6 for round amounts; divided by the number of equally plausible matches. Repeated matches between the same two wallets are not independent proof: they lift the best single match at most halfway to 0.8, never past it. |
-| swap | 0.95 | THORChain or Maya Protocol recorded a swap from one address to the other (for example ETH in, BTC out). The record is public and names the destination, so this is close to a fact. |
+| swap | 0.95 | THORChain or Maya Protocol recorded a swap from one address to the other (for example ETH in, BTC out). The record is public and names the destination, so this is close to a fact. Several swaps between the same two addresses stay at 0.95. |
 
 Several transactions supporting the same guess combine as `1 - (1-c1)(1-c2)...`.
 
@@ -286,6 +287,13 @@ or at the hop limit, and says which.
   as the first characters of their mint address.
 - A token that only borrows a known name (a fake USDC) is listed apart, unpriced.
 - Very active addresses load only their newest history and are flagged in the UI.
+- A transaction with more than 50 counterparties (a CoinJoin, an exchange batch) keeps
+  its 50 largest and every wallet of yours; the wallet's verdict says how many were cut,
+  and amounts for those transactions are lower than on a block explorer.
+- If THORChain or Maya does not answer during a sync, every wallet reads "Partly checked"
+  until it answers again (or until `CT_SWAPS=off`): a swap may have gone unseen.
+- Alerts are raised for links of 50% confidence or more; weaker guesses are listed in
+  the verdict only.
 - Token balances come from the transfer history unless the indexer has a token-balance
   call (`"tokenlist": true`), so rebasing tokens are off.
 - Address checksums are verified, except the mixed-case form of EVM addresses and

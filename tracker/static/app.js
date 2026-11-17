@@ -230,6 +230,8 @@ function judge(v) {
   const best = (v.public ? v.links : exposing)[0] || v.links[0];
   // Only a complete check may say that nothing was found.
   if (!best) return v.checked === "full" ? { level: "ok", headline: "No link to your other wallets found" } : { level: "unknown", headline: "Partly checked: the last sync had errors" };
+  // Below even odds a link is a guess to look at, not a finding (a CoinJoin, a weak match).
+  if (best.confidence < 0.5) return { level: "warn", headline: `Weak guess: may be tied to ${best.public ? "public" : "private"} wallet ${nameOf(best.wallet)} (${pct(best.confidence)})` };
   if (v.public) return { level: "warn", headline: `Tied to ${plural(v.links.length, "other wallet")} of yours` };
   if (exposing.length) return { level: "bad", headline: `Linked to public wallet ${nameOf(best.wallet)} (${pct(best.confidence)})` };
   return { level: "warn", headline: `Linked to private wallet ${nameOf(best.wallet)} (${pct(best.confidence)})` };
@@ -390,7 +392,7 @@ function hopText(a, b) {
   const facts = graph.edges.filter((e) => (e.src === a && e.dst === b) || (e.src === b && e.dst === a));
   const guesses = graph.links.filter((k) => (k.a === a && k.b === b) || (k.a === b && k.b === a));
   return [
-    ...facts.map((e) => `${e.src === a ? "sent" : "received"} ${num(e.amount)} ${e.asset} on ${e.chain} (${plural(e.count, "transfer")}, ${e.first === e.last ? day(e.first) : `${day(e.first)} to ${day(e.last)}`})`),
+    ...facts.map((e) => `${e.src === a ? "sent" : "received"} ${num(e.amount)} ${e.asset} on ${e.chain} (${plural(e.count, "transfer")}, ${e.first === e.last ? day(e.first) : `${day(e.first)} to ${day(e.last)}`})${e.coinjoin ? " · inside a CoinJoin, which does not show who paid whom" : ""}`),
     ...guesses.map((k) => `guess: ${k.kind}, ${pct(k.confidence)} confidence (${plural(k.count, "transaction")})`),
   ];
 }

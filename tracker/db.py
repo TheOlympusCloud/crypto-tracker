@@ -13,7 +13,8 @@ CREATE TABLE IF NOT EXISTS node(
   synced_at INT,
   hub INT NOT NULL DEFAULT 0,
   error TEXT,
-  wallet TEXT);
+  wallet TEXT,
+  cut INT NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS hdwallet(
   id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', public INT NOT NULL DEFAULT 0,
   descriptor TEXT NOT NULL, error TEXT);
@@ -36,6 +37,8 @@ CREATE TABLE IF NOT EXISTS balance(
   address TEXT, chain TEXT, asset TEXT, token TEXT, amount REAL,
   PRIMARY KEY(address, chain, token));
 CREATE TABLE IF NOT EXISTS watch(address TEXT PRIMARY KEY, ts INT);
+CREATE TABLE IF NOT EXISTS coinjoin(chain TEXT, txid TEXT, PRIMARY KEY(chain, txid));
+CREATE TABLE IF NOT EXISTS failure(source TEXT PRIMARY KEY, error TEXT, ts INT);
 """
 
 EVM_RE = re.compile(r"0x[0-9a-fA-F]{40}")
@@ -56,6 +59,8 @@ def connect(path=None):
         db.execute("ALTER TABLE node ADD COLUMN wallet TEXT")  # databases from before HD wallets
     if "error" not in [r["name"] for r in db.execute("PRAGMA table_info(hdwallet)")]:
         db.execute("ALTER TABLE hdwallet ADD COLUMN error TEXT")
+    if "cut" not in [r["name"] for r in db.execute("PRAGMA table_info(node)")]:
+        db.execute("ALTER TABLE node ADD COLUMN cut INT NOT NULL DEFAULT 0")
     if "symbol" not in [r["name"] for r in db.execute("PRAGMA table_info(price)")]:
         db.execute("DROP TABLE price")  # only a cache; rebuilt with the new columns
         db.executescript(SCHEMA)

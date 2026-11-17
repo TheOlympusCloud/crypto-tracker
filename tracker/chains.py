@@ -15,7 +15,7 @@ import httpx
 from embit import base58
 
 from . import db as database
-from .heuristics import btc_inputs, btc_links
+from .heuristics import btc_inputs, btc_links, looks_like_coinjoin
 
 ESPLORA = os.environ.get("CT_ESPLORA", "https://blockstream.info/api").rstrip("/")
 # chain -> asset, API flavour, base URL, and what a reader of a verdict must know about it.
@@ -194,7 +194,7 @@ def describe(error):
     return str(error).splitlines()[0][:160] if str(error) else type(error).__name__
 
 
-def utxo_transfers(address, tx, chain="bitcoin", asset="BTC", unit=1e8, token=""):
+def utxo_transfers(address, tx, chain="bitcoin", asset="BTC", unit=1e8, token="", keep=()):
     ins = btc_inputs(tx)
     total = sum(ins.values()) or 1
     ts = tx["status"].get("block_time") or 0
@@ -209,8 +209,22 @@ def utxo_transfers(address, tx, chain="bitcoin", asset="BTC", unit=1e8, token=""
         flows = [(a, address, outs[address] * v / total) for a, v in ins.items()]
     else:
         return []
-    flows = sorted(flows, key=lambda f: -f[2])[:FANOUT]
-    return [(chain, tx["txid"], s, d, asset, token, v / unit, ts) for s, d, v in flows if v > 0]
+    # A very wide transaction is cut to its largest flows (see `wide`), but never loses a
+    # flow to or from an address in `keep`: my own wallets, where a dropped flow is a
+    # missed link.
+    flows.sort(key=lambda f: ((f[1] if f[0] == address else f[0]) not in keep, -f[2]))
+    return [
+        (chain, tx["txid"], s, d, asset, token, v / unit, ts) for s, d, v in flows[:FANOUT] if v > 0
+    ]
+
+
+def wide(address, tx):
+    """True when `utxo_transfers` cuts this transaction: more counterparties than FANOUT."""
+    ins = btc_inputs(tx)
+    outs = {o["scriptpubkey_address"] for o in tx["vout"] if o.get("scriptpubkey_address")}
+    if address in ins:
+        return len(outs - set(ins)) > FANOUT
+    return address in outs and len(ins) > FANOUT
 
 
 btc_transfers = utxo_transfers
@@ -297,14 +311,19 @@ def _haskoin(client, url, address):
     return txs, balance["confirmed"], balance["txs"]
 
 
-def fetch_utxo(client, address, chain="bitcoin"):
+def fetch_utxo(client, address, chain="bitcoin", keep=()):
     asset, api, url, _ = UTXO[chain]
     txs, balance, count = {"esplora": _esplora, "blockcypher": _blockcypher, "haskoin": _haskoin}[
         api
     ](client, url, address)
     return {
-        "transfers": [row for tx in txs for row in utxo_transfers(address, tx, chain, asset)],
+        "transfers": [
+            row for tx in txs for row in utxo_transfers(address, tx, chain, asset, keep=keep)
+        ],
         "links": [link for tx in txs for link in btc_links(address, tx)],
+        # Transactions whose transfers say nothing about ownership, and how many were cut.
+        "coinjoins": [tx["txid"] for tx in txs if looks_like_coinjoin(tx)],
+        "cut": sum(wide(address, tx) for tx in txs),
         "balances": [(chain, asset, "", balance / 1e8)],
         "hub": count > len(txs),
     }
@@ -451,11 +470,12 @@ def fetch_solana(client, address):
     }
 
 
-def fetch(client, address):
-    """Everything known about `address` on the chain(s) its format belongs to."""
+def fetch(client, address, keep=()):
+    """Everything known about `address` on the chain(s) its format belongs to. `keep` are
+    addresses whose flows survive the cut of a very wide transaction."""
     chain = database.chain_of(address)
     if chain in UTXO:
-        return fetch_utxo(client, address, chain)
+        return fetch_utxo(client, address, chain, keep)
     return {"evm": fetch_evm, "tron": fetch_tron, "solana": fetch_solana}[chain](client, address)
 
 

@@ -9,7 +9,7 @@ from itertools import combinations
 
 from . import chains, swaps
 from . import db as database
-from .heuristics import EXCHANGE_CAP, SERVICE, TRUSTED
+from .heuristics import COMMON_INPUT_COINJOIN, EXCHANGE_CAP, SERVICE, TRUSTED
 
 HOP_DECAY = 0.7  # each stranger a trace passes through weakens it by this factor
 
@@ -17,6 +17,20 @@ HOP_DECAY = 0.7  # each stranger a trace passes through weakens it by this facto
 def combine(confidences):
     """Independent pieces of evidence for the same link: 1 - prod(1 - c)."""
     return round(1 - math.prod(1 - c for c in confidences), 3)
+
+
+CUT = (
+    "{n} very large transaction(s) of this wallet show only their "
+    f"{chains.FANOUT} biggest counterparties here (and any wallet of yours), so the amounts "
+    "for them are lower than on a block explorer."
+)
+# True for a transfer row that is part of a transaction recorded as a CoinJoin.
+MIXED = (
+    "EXISTS (SELECT 1 FROM coinjoin c WHERE c.chain = transfer.chain AND c.txid = transfer.txid)"
+)
+# How several rows of one kind of guess between the same pair combine. Independent evidence
+# compounds (`combine`); the same observation made again does not.
+COMBINE = {"exchange-flow": lambda c: repeated(c), "swap": max}
 
 
 def repeated(confidences, cap=EXCHANGE_CAP):
@@ -36,9 +50,7 @@ def _links(db):
             "a": a,
             "b": b,
             "kind": kind,
-            "confidence": (repeated if kind == "exchange-flow" else combine)(
-                [r["confidence"] for r in rows]
-            ),
+            "confidence": COMBINE.get(kind, combine)([r["confidence"] for r in rows]),
             "evidence": [r["evidence"] for r in rows[:5]],
             "count": len(rows),
         }
@@ -52,7 +64,7 @@ def build(db, spam=False):
         dict(r)
         for r in db.execute(
             f"""SELECT chain, src, dst, asset, token, COUNT(*) count, SUM(amount) amount,
-                       MIN(ts) first, MAX(ts) last, MIN(txid) txid
+                       MIN(ts) first, MAX(ts) last, MIN(txid) txid, MIN({MIXED}) coinjoin
                 FROM transfer WHERE {where} GROUP BY chain, src, dst, token"""
         )
     ]
@@ -132,8 +144,17 @@ def trace(db, max_hops=4):
         if a != b and conf > adj[a].get(b, (0,))[0]:
             adj[a][b] = adj[b][a] = (conf, kind)
 
-    for r in db.execute(f"SELECT DISTINCT src, dst FROM transfer WHERE {TRUSTED}"):
-        connect(r["src"], r["dst"], 1.0, "transfer")
+    # A transfer ties two addresses together for certain, except inside a CoinJoin, whose
+    # whole point is that inputs cannot be matched to outputs: there it is worth no more
+    # than the common-input guess of such a transaction. A pair that also has an ordinary
+    # transfer keeps the certain link.
+    for r in db.execute(
+        f"SELECT src, dst, MIN({MIXED}) mixed FROM transfer WHERE {TRUSTED} GROUP BY src, dst"
+    ):
+        if r["mixed"]:
+            connect(r["src"], r["dst"], COMMON_INPUT_COINJOIN, "coinjoin")
+        else:
+            connect(r["src"], r["dst"], 1.0, "transfer")
     for k in _links(db):
         connect(k["a"], k["b"], k["confidence"], k["kind"])
 
@@ -213,6 +234,7 @@ def verdicts(db, max_hops=4):
             shared[b].setdefault(a, set()).add(name)
 
     scans = {r["id"]: r for r in db.execute("SELECT * FROM hdwallet")}
+    missed = swaps.unchecked(db)  # swap sources that were down: nobody was fully checked
     out = [
         {  # an HD wallet no address of which was found: say so, never show it as clean
             "address": w, "wallet": w, "addresses": [], "name": r["name"], "checked": "none",
@@ -274,7 +296,7 @@ def verdicts(db, max_hops=4):
             if not all(a in synced for a in members[w]):
                 return "none"
             failed = (w in scans and scans[w]["error"]) or any(r["error"] for r in rows)
-            return "partial" if failed else "full"
+            return "partial" if failed or missed else "full"
 
         out.append(
             {
@@ -299,6 +321,7 @@ def verdicts(db, max_hops=4):
                         for e in [
                             scans[w]["error"] if w in scans else None,
                             *[r["error"] for r in rows],
+                            *missed,
                         ]
                         if e
                     )
@@ -309,6 +332,7 @@ def verdicts(db, max_hops=4):
                     "notes": sorted(
                         {n for a in members[w] for n in chains.notes(database.chain_of(a))}
                         | ({swaps.NOTE} if os.environ.get("CT_SWAPS", "on") != "off" else set())
+                        | ({CUT.format(n=cut)} if (cut := sum(r["cut"] for r in rows)) else set())
                     ),
                 },
             }
