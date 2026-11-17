@@ -593,7 +593,7 @@ def test_hd_wallet_is_discovered_grouped_and_treated_as_one_wallet(db, monkeypat
         rows
     )
     assert card["wallet_balances"] == [
-        {"chain": "bitcoin", "asset": "BTC", "amount": pytest.approx(2900e-8)}
+        {"chain": "bitcoin", "asset": "BTC", "token": "", "amount": pytest.approx(2900e-8)}
     ]
     assert client.get("/api/analysis").json()["fiat"]["wallets"] == {
         card["address"]: pytest.approx(1.45)
@@ -1908,3 +1908,19 @@ def test_a_fake_usdc_is_its_own_row_worth_0(db):
     assert (fake["token"], fake["trust"]["level"]) == (D, "scam") and "real" in fake["trust"][
         "reason"
     ]
+
+
+def test_an_hd_wallet_keeps_its_fake_token_apart(db):
+    from tracker import graph
+
+    for address in (A, B):
+        db.execute("INSERT INTO node(address, mine, wallet) VALUES (?, 1, 'hd:x')", (address,))
+    db.executemany(
+        "INSERT INTO balance(address, chain, asset, token, amount, trust) "
+        "VALUES (?, 'ethereum', 'USDC', ?, ?, ?)",
+        [(A, C, 100.0, "verified"), (B, C, 50.0, "verified"), (B, D, 5000.0, "scam")],
+    )
+    db.commit()
+    (hd,) = [n for n in graph.build(db)["nodes"] if n.get("wallet_balances")]
+    got = sorted((b["amount"], b.get("trust", {}).get("level")) for b in hd["wallet_balances"])
+    assert got == [(150.0, "verified"), (5000.0, "scam")]  # never 5150 USDC

@@ -82,9 +82,11 @@ def build(db, spam=False):
     marks = ",".join("?" * len(nodes))
     for r in db.execute(f"SELECT * FROM label WHERE address IN ({marks})", list(nodes)):
         nodes[r["address"]].update(describe(r))
-    # Tokens judged fake come too, also without "Unknown tokens": the page marks them worth 0.
+    # Tokens judged come too, also without "Unknown tokens": a listed one is real, and a fake
+    # one is shown marked worth 0.
     for r in db.execute(
-        f"SELECT * FROM balance WHERE ({where}) OR trust = 'scam' ORDER BY amount DESC"
+        f"SELECT * FROM balance WHERE ({where}) OR trust IN ('verified', 'scam') "
+        "ORDER BY amount DESC"
     ):
         b = {"chain": r["chain"], "asset": r["asset"], "amount": r["amount"], "token": r["token"]}
         if r["trust"]:
@@ -95,17 +97,17 @@ def build(db, spam=False):
         if node.get("mine") and node.get("wallet"):
             members[node["wallet"]].append(node)
     for group in members.values():
-        total = defaultdict(float)
+        # Summed per token, not per symbol: a fake USDC is never added to the real one.
+        total = {}
         for node in group:
             for b in node.get("balances", []):
-                total[(b["chain"], b["asset"])] += b["amount"]
+                key = (b["chain"], b.get("token", ""))
+                total.setdefault(key, {**b, "amount": 0.0})["amount"] += b["amount"]
         # The wallet's first address stands for it on cards; the others keep their own rows.
         group[0]["addresses"] = [
             {"address": n["address"], "balances": n.get("balances", [])} for n in group
         ]
-        group[0]["wallet_balances"] = [
-            {"chain": c, "asset": a, "amount": v} for (c, a), v in total.items()
-        ]
+        group[0]["wallet_balances"] = list(total.values())
     return {"nodes": list(nodes.values()), "edges": edges, "links": links}
 
 
