@@ -10,10 +10,12 @@ import os
 import re
 import time
 import unicodedata
+from collections import defaultdict
 
 import httpx
 
 from . import chains, prices
+from .heuristics import SERVICE
 
 UNISWAP = "https://tokens.uniswap.org"  # Uniswap Labs' default list: the built-in EVM chains
 JUPITER = "https://lite-api.jup.ag/tokens/v2/search"  # Jupiter's token API, up to 100 mints a call
@@ -134,3 +136,62 @@ def trust(chain, token, symbol, name="", listed="", famous=frozenset(), price=No
     if sure:
         return {"level": "unknown", "reason": "It has a market price, but is on no token list."}
     return {"level": "unknown", "reason": "It is on no token list and has no reliable price."}
+
+
+def wanted(db, addresses):
+    """Those of `addresses` that are my wallets or labelled as a service other than a mixer."""
+    some, out = list(addresses), set()
+    services = sorted(SERVICE - {"mixer"})
+    for i in range(0, len(some), 400):
+        part = some[i : i + 400]
+        marks = ",".join("?" * len(part))
+        out |= {
+            r[0]
+            for r in db.execute(
+                f"SELECT address FROM node WHERE mine AND address IN ({marks}) UNION "
+                f"SELECT address FROM label WHERE category IN ({','.join('?' * len(services))}) "
+                f"AND address IN ({marks})",
+                [*part, *services, *part],
+            )
+        }
+    return out
+
+
+def judge(db, client, price, held, transfers, address, complete, names=None, sent=()):
+    """How far each token held can be trusted: {(chain, token): {"asset", "name", "trust"}}.
+    `held` is {(chain, token): (asset, amount)}, `transfers` the address's transfer rows,
+    `price` the cached prices by key, `complete` whether the whole history is loaded, `names`
+    the tokens' full names where the indexer gave them, `sent` the transactions it sent.
+
+    A token was not asked for when it arrived from strangers, in transactions this address
+    took no part in, and was never moved: what my wallets or a known service (an exchange
+    withdrawal) send was wanted."""
+    names = names or {}
+    took_part = {t[1] for t in transfers if t[2] == address} | set(sent)
+    arrived, moved, senders = defaultdict(set), set(), defaultdict(set)
+    for c, txid, src, dst, _, token, _, _ in transfers:
+        if token and dst == address:
+            arrived[(c, token)].add(txid)
+            senders[(c, token)].add(src)
+        if token and src == address:
+            moved.add((c, token))
+    known_senders = wanted(db, set().union(*senders.values()))
+    listed = uniswap(client) if any(token for _, token in held) else {}
+    famed = famous(listed)
+    known = jupiter(client, [t for c, t in held if c == "solana" and t])
+    out = {}
+    for (c, token), (asset, _) in held.items():
+        p = price.get(prices.key(c, asset, token))
+        jup = known.get(token) if c == "solana" else None
+        if token and c == "solana":  # Solana does not name its tokens on chain
+            asset = (jup or {}).get("symbol") or (p and p["symbol"]) or asset
+        name = (jup or {}).get("name") or names.get((c, token), "")
+        on = "Uniswap's default token list" if listed_on(listed, c, token) else ""
+        on = on or ("Jupiter's verified list" if (jup or {}).get("verified") else "")
+        unasked = None  # the history is incomplete, or never showed the token arriving
+        if complete and arrived[(c, token)]:
+            unasked = (c, token) not in moved and not arrived[(c, token)] & took_part
+            unasked = unasked and not senders[(c, token)] & known_senders
+        level = trust(c, token, asset, name, on, famed, p, unasked)
+        out[(c, token)] = {"asset": asset, "name": name, "trust": level}
+    return out

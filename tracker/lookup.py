@@ -12,7 +12,6 @@ from collections import defaultdict
 from . import chains, prices, tokens
 from . import db as database
 from .graph import combine
-from .heuristics import SERVICE
 from .labels import SETS, describe
 
 LISTED = 200  # counterparties returned, busiest first
@@ -57,40 +56,21 @@ def view(db, client, address, evm=()):
         p = price.get(prices.key(c, asset, token))
         return not token or blind or bool(p and (p["confidence"] or 0) >= prices.CONFIDENT)
 
-    # Every token held is listed, with how far it can be trusted. A token was not asked for
-    # when it arrived from strangers, in transactions this address took no part in, and was
-    # never moved: what my wallets or a known service (an exchange withdrawal) send was wanted.
-    took_part = {t[1] for t in transfers if t[2] == address} | data.get("sent", set())
-    arrived, moved, senders = defaultdict(set), set(), defaultdict(set)
-    for c, txid, src, dst, _, token, _, _ in transfers:
-        if token and dst == address:
-            arrived[(c, token)].add(txid)
-            senders[(c, token)].add(src)
-        if token and src == address:
-            moved.add((c, token))
-    known_senders = wanted(db, set().union(*senders.values()))
-    listed = tokens.uniswap(client) if any(token for _, token in held) else {}
-    famous = tokens.famous(listed)
-    known = tokens.jupiter(client, [t for c, t in held if c == "solana" and t])
+    # Every token held is listed, with how far it can be trusted.
+    judged = tokens.judge(
+        db, client, price, held, transfers, address, not data["hub"],
+        data.get("names", {}), data.get("sent", set()),
+    )  # fmt: skip
     assets = []
     for (c, token), (asset, amount) in held.items():
         p = price.get(prices.key(c, asset, token))
-        jup = known.get(token) if c == "solana" else None
-        if token and c == "solana":  # Solana does not name its tokens on chain
-            asset = (jup or {}).get("symbol") or (p and p["symbol"]) or asset
-        name = (jup or {}).get("name") or data.get("names", {}).get((c, token), "")
-        on = "Uniswap's default token list" if tokens.listed_on(listed, c, token) else ""
-        on = on or ("Jupiter's verified list" if (jup or {}).get("verified") else "")
-        unasked = None  # the history is incomplete, or never showed the token arriving
-        if not data["hub"] and arrived[(c, token)]:
-            unasked = (c, token) not in moved and not arrived[(c, token)] & took_part
-            unasked = unasked and not senders[(c, token)] & known_senders
-        trust = tokens.trust(c, token, asset, name, on, famous, p, unasked)
+        j = judged[(c, token)]
         # A scam token's price is part of the bait: only a reliable price gives a value.
-        fair = p and fx and vouched(c, asset, token) and trust["level"] != "scam"
+        fair = p and fx and vouched(c, asset, token) and j["trust"]["level"] != "scam"
         assets.append(
-            {"chain": c, "asset": asset, "token": token, "name": name, "amount": amount,
-             "value": amount * p["usd"] * fx if fair else None, "trust": trust}
+            {"chain": c, "asset": j["asset"], "token": token, "name": j["name"],
+             "amount": amount, "value": amount * p["usd"] * fx if fair else None,
+             "trust": j["trust"]}
         )  # fmt: skip
     assets.sort(key=lambda a: (a["trust"]["level"] == "scam", -(a["value"] or 0), -a["amount"]))
 
@@ -200,25 +180,6 @@ def view(db, client, address, evm=()):
             "links": [k for k in links if k["a"] in drawn and k["b"] in drawn],
         },
     }
-
-
-def wanted(db, addresses):
-    """Those of `addresses` that are my wallets or labelled as a service other than a mixer."""
-    some, out = list(addresses), set()
-    services = sorted(SERVICE - {"mixer"})
-    for i in range(0, len(some), 400):
-        part = some[i : i + 400]
-        marks = ",".join("?" * len(part))
-        out |= {
-            r[0]
-            for r in db.execute(
-                f"SELECT address FROM node WHERE mine AND address IN ({marks}) UNION "
-                f"SELECT address FROM label WHERE category IN ({','.join('?' * len(services))}) "
-                f"AND address IN ({marks})",
-                [*part, *services, *part],
-            )
-        }
-    return out
 
 
 def lookalike(a, b):
