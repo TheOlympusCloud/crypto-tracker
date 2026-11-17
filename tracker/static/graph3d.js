@@ -441,7 +441,8 @@ export function create3d(el, { onSelect }) {
       coin.userData = { kind: kindOf(node.n), shared: true };
       return [[coin, i]];
     });
-    world.add(...solidMeshes, ...coins.map((x) => x[0]));
+    // add() without arguments complains: a graph may have no solids, or no labels.
+    if (solidMeshes.length + coins.length) world.add(...solidMeshes, ...coins.map((x) => x[0]));
 
     const line = (pairs, colors, material) => {
       const geometry = new THREE.BufferGeometry();
@@ -492,7 +493,7 @@ export function create3d(el, { onSelect }) {
       .map(([k, i]) => [textSprite([[`${k.kind} ${pct(k.confidence)}`, FONT.mono, linkColor(k.kind)]], 1.6), ...guessPairs[i]]);
     const shrink = Math.min(1, Math.max(0.6, el.clientWidth / 900));
     nodeLabels = nodes.flatMap((node, i) => (node.label ? [[textSprite(node.label, 0, shrink), i]] : []));
-    world.add(...[...linkLabels, ...nodeLabels].map((x) => x[0]));
+    if (linkLabels.length + nodeLabels.length) world.add(...[...linkLabels, ...nodeLabels].map((x) => x[0]));
 
     if (grew) {
       heat = 6;
