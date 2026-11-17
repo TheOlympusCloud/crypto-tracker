@@ -118,7 +118,7 @@ def trust(chain, token, symbol, name="", listed="", famous=frozenset(), price=No
     if listed:
         return {"level": "verified", "reason": f"This exact contract is on {listed}."}
     sure = bool(price and price["usd"] and (price["confidence"] or 0) >= prices.CONFIDENT)
-    if BAIT.search(f"{symbol} {name}"):
+    if BAIT.search(f"{symbol} {name}") and not sure:
         reason = "Its name advertises a website or a reward: the usual bait of airdrop scams."
         return {"level": "scam", "reason": reason + " Never visit it or sign anything there."}
     twin = skeleton(symbol) in famous

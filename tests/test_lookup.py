@@ -250,7 +250,7 @@ def stored(db):
 def test_lookup_bitcoin_shows_assets_connections_and_links_to_my_wallets(db, client):
     mine(db, SEGWIT, public=1)
     db.execute("UPDATE node SET name = 'Savings' WHERE address = ?", (SEGWIT,))
-    db.execute("INSERT INTO label VALUES (?, 'Kraken 4', 'cex', 'user')", (D_BTC,))
+    db.execute("INSERT INTO label VALUES (?, 'Kraken 4', 'cex', 'graphsense-tagpacks')", (D_BTC,))
     db.commit()
     before, verdicts = stored(db), graph.verdicts(db)
 
@@ -324,6 +324,8 @@ def test_lookup_evm_reads_the_chosen_chains_and_lists_every_token(db, client):
     assert "Uniswap" in reasons["USDC"] and "not the" in reasons["USDС"]
     assert "unasked" in reasons["FREE"]
     assert v["value"] == 4007.0 and v["unvouched"] == 2
+    (me,) = [n for n in v["graph"]["nodes"] if n["address"] == A]
+    assert [b["asset"] for b in me["balances"]] == ["ETH", "USDC"]  # no scam bait in the graph
     assert {c["address"] for c in v["connections"]} == {D, B}  # nor is the airdropper a party
     assert v["explorer_address"].startswith("https://etherscan.io/")
 
@@ -432,6 +434,11 @@ def test_risk_of_an_address_that_was_never_used_or_is_brand_new():
     assert "not a guarantee" in old["reason"]
     # Only part of a very active history is read: its first transaction is not its age.
     assert risk([row("t1", NOW - 3 * DAY)], hub=True)["level"] == "ok"
+
+
+def test_risk_without_label_sets_says_it_cannot_recognise_flagged_addresses():
+    blind = risk([row("t1", NOW - 900 * DAY)], labels=False)
+    assert blind["level"] == "unknown" and "label sets" in blind["reason"]
 
 
 def test_risk_of_an_address_that_could_not_be_read_fully_says_so():

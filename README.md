@@ -95,7 +95,8 @@ label, your wallets it dealt with, and the red flags looked for. Those are a lab
 flags it (scam, hack or sanctions, from the open label sets or set by you), a mixer, direct
 dealings with either, an address that was never used, a new one, and an address that
 starts and ends like one of your wallets or an address you paid: the trap of address
-poisoning. It never says safe.
+poisoning. It never says safe, and says "not fully checked" while no open label set is
+downloaded, as flagged addresses cannot be recognised then.
 
 Then what the address holds per chain, every token included, with values, and who it
 deals with: your own wallets first, then its counterparties with their labels, drawn
@@ -103,11 +104,11 @@ around it in the graph. Each token carries a badge, its reason one tap away:
 
 - **verified**: the native coin, or a token whose exact contract is on Uniswap's default
   token list (EVM, Solana) or Jupiter's verified list (Solana);
-- **likely scam**: a name that advertises a website or a reward; a token that calls itself
-  like a listed one (USDC, also with lookalike letters) without being it; or a token that
-  arrived unasked, from strangers (not your wallets, not a labelled exchange or service) in
-  transactions the address took no part in, was never moved and has no reliable price.
-  These are folded away under the rest;
+- **likely scam**, unless it has a reliable price: a name that advertises a website or a
+  reward; a token that calls itself like a listed one (USDC, also with lookalike letters)
+  without being it; or a token that arrived unasked, from strangers (not your wallets, not
+  a labelled exchange or service) in transactions the address took no part in, and was
+  never moved. These are folded away under the rest;
 - **unknown**: everything else. It is the default: a market price alone is no list match.
 
 Only tokens with a reliable price get a value, and only their transfers make

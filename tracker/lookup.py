@@ -17,6 +17,7 @@ from .heuristics import SERVICE
 LISTED = 200  # counterparties returned, busiest first
 DRAWN = 60  # of those, how many are in the graph
 NEW = 30 * 86400  # an address first seen this recently is new
+OPEN_SETS = ("etherscan-labels", "graphsense-tagpacks")  # the label sources of labels.py
 WORDS = {"cex": "exchange", "dex": "DEX", "bridge": "bridge", "mixer": "mixer"}
 WORDS |= {"flagged": "flagged", "defi": "DeFi", "service": "service", "other": "label"}
 
@@ -152,7 +153,11 @@ def view(db, client, address, evm=()):
         node.update(chains.explorer(node["chain"]))
     me = nodes[address]
     me["icon"] = chains.icon(chain, read)  # in the panel and on its node in the graph
-    me["balances"] = [{k: a[k] for k in ("chain", "asset", "amount")} for a in assets]
+    me["balances"] = [  # likely scams stay off the graph, as their names are bait
+        {k: a[k] for k in ("chain", "asset", "amount")}
+        for a in assets
+        if a["trust"]["level"] != "scam"
+    ]
     if len(read) == 1:
         me.update(chains.explorer(read[0]))  # an EVM address read on one chain opens there
 
@@ -167,6 +172,7 @@ def view(db, client, address, evm=()):
     values = [a["value"] for a in assets if a["value"] is not None]
     errors = data.get("errors", [])
     used = bool(transfers or any(a["amount"] for a in assets))
+    sets = db.execute("SELECT 1 FROM label WHERE source IN (?, ?) LIMIT 1", OPEN_SETS).fetchone()
     where = f"{chains.name(chain)} address"
     if chain == "evm":
         where += f", read on {', '.join(map(chains.name, read)) or 'no chain'}"
@@ -179,7 +185,9 @@ def view(db, client, address, evm=()):
         "currency": prices.currency() if fx else "USD",
         # tokens without a reliable price: their transfers are left out of the counterparties
         "unvouched": sum(not vouched(a["chain"], a["asset"], a["token"]) for a in assets),
-        "risk": risk(where, me, transfers, ranked, twins(db, address), data["hub"], errors, used),
+        "risk": risk(
+            where, me, transfers, ranked, twins(db, address), data["hub"], errors, used, bool(sets)
+        ),
         "connections": ranked[:LISTED],
         "more": max(0, len(ranked) - LISTED),
         "truncated": bool(data["hub"]),
@@ -230,7 +238,7 @@ def twins(db, address):
     return [(a, whose) for a, whose in used if lookalike(address, a)]
 
 
-def risk(where, me, real, parties, twins, hub=False, errors=(), held=True, now=None):
+def risk(where, me, real, parties, twins, hub=False, errors=(), held=True, labels=True, now=None):
     """Is this address risky to send to? {"level", "headline", "reason", "reasons"}; each
     reason is {"level": bad | warn | unknown | info, "text"}. It never says safe: the best it
     says is that no red flag was found, and what was looked at."""
@@ -252,6 +260,9 @@ def risk(where, me, real, parties, twins, hub=False, errors=(), held=True, now=N
     say("info", f"{where}.")
     for text in errors:
         say("unknown", f"Not everything could be read ({text}).")
+    if not labels:
+        say("unknown", "No open label sets are downloaded, so known scam, hack and sanctioned "
+            "addresses go unrecognised: tick “Also download open label sets” and sync.")  # fmt: skip
     times = [t[7] for t in real if t[7]]
     count = len({t[1] for t in real})
     if not real and not held:

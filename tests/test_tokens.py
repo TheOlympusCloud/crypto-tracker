@@ -60,6 +60,8 @@ def test_a_borrowed_name_with_a_reliable_price_is_only_unknown():
 def test_a_name_that_advertises_a_site_or_a_reward_is_a_likely_scam(symbol, name):
     t = trust(symbol=symbol, name=name)
     assert t["level"] == "scam" and "advertises" in t["reason"]
+    # A token with a real market whose name happens to hold a domain ("yearn.finance") is not.
+    assert trust(symbol=symbol, name=name, price=SURE)["level"] == "unknown"
 
 
 def test_unasked_dust_without_a_price_is_a_likely_scam():
