@@ -213,7 +213,8 @@ def put_wallet(w: Wallet):
 @app.delete("/api/wallets/{raw}")
 def delete_wallet(raw: str):
     """Stop treating the wallet as mine. Its transfers stay: they are public facts."""
-    forget = "UPDATE node SET mine = 0, public = 0, name = '', wallet = NULL WHERE "
+    # hub too: a wallet still filling in its history must not be taken for a busy service.
+    forget = "UPDATE node SET mine = 0, public = 0, name = '', wallet = NULL, hub = 0 WHERE "
     if raw.startswith("hd:"):
         write("DELETE FROM hdwallet WHERE id = ?", (raw,))
         write(forget + "wallet = ?", (raw,))

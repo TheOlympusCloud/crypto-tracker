@@ -392,3 +392,38 @@ def test_old_swaps_are_read_in_full_and_an_old_vault_keeps_its_label(db, monkeyp
     with httpx.Client(transport=httpx.MockTransport(fake)) as client:
         swaps.sync(db, client)  # reads only what is new: the oldest swap is not in it
     assert labelled() == "Maya Protocol"  # rebuilt from every stored swap, not the newest page
+
+
+def test_a_wallet_filling_in_is_partly_checked(db):
+    from test_core import mine
+
+    from tracker import graph
+
+    mine(db, A)
+    db.execute("UPDATE node SET synced_at = 1 WHERE address = ?", (A,))
+    db.commit()
+    (v,) = graph.verdicts(db)
+    assert v["checked"] == "full"  # no bookmark yet (before the first full read): as before
+    history.put(db, A, "ethereum:txlist", complete=0, oldest_ts=1_600_000_000)
+    history.put(db, A, "swaps:Maya Protocol", complete=1)
+    db.commit()
+    (v,) = graph.verdicts(db)
+    # Never "no link found" while older transactions are still to be read.
+    assert v["checked"] == "partial" and v["coverage"]["filling"] == 1_600_000_000
+    history.put(db, A, "ethereum:txlist", complete=1)
+    db.commit()
+    (v,) = graph.verdicts(db)
+    assert v["checked"] == "full" and v["coverage"]["filling"] is None
+
+
+def test_a_removed_wallet_is_not_taken_for_a_service(db):
+    from fastapi.testclient import TestClient
+    from test_core import mine
+
+    from tracker.app import app
+
+    mine(db, A)
+    db.execute("UPDATE node SET hub = 1 WHERE address = ?", (A,))  # it was still filling in
+    db.commit()
+    assert TestClient(app, base_url="http://localhost").delete(f"/api/wallets/{A}").is_success
+    assert db.execute("SELECT hub FROM node WHERE address = ?", (A,)).fetchone()[0] == 0

@@ -159,6 +159,7 @@ def test_trace_finds_exposure_and_refuses_paths_through_services(db):
         "error": None,
         "counterparties": 1,
         "expanded": 0,
+        "filling": None,  # no full history being read
         "notes": [
             "Not read on base, arbitrum, optimism, polygon, bsc: that needs a free Etherscan API key.",
             swaps.NOTE,
