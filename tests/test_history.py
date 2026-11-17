@@ -221,3 +221,123 @@ def test_evm_history_fills_in_by_moving_endblock(db, monkeypatch, evm):
     assert stored(db) == 35 and history.state(db, A)["complete"]
     backwards = [end for action, _, end in fake.asked if action == "txlist" and end]
     assert backwards and all(int(e) < 10_000 for e in backwards)  # it moved endblock down
+
+
+def tron_hex(i):
+    from embit import base58
+
+    raw = bytearray(base58.decode_check(TRX))
+    raw[-1] = i % 256  # another valid Tron address
+    return bytes(raw).hex()
+
+
+class TronGrid:
+    """Native and TRC-20 transfers to TRX, newest first, honouring max_timestamp and limit."""
+
+    def __init__(self, native, trc20):
+        from embit import base58
+
+        payer = tron_hex(7)
+        self.payer = base58.encode_check(bytes.fromhex(payer))
+        self.native = [
+            {"txID": f"n{i:03d}", "block_timestamp": 1_600_000_000_000 - i * 1000, "ret": [{"contractRet": "SUCCESS"}],
+             "raw_data": {"contract": [{"type": "TransferContract", "parameter": {"value": {"owner_address": payer, "to_address": base58.decode_check(TRX).hex(), "amount": 1_000_000}}}]}}
+            for i in range(native)
+        ]  # fmt: skip
+        self.trc20 = [
+            {"transaction_id": f"k{i:03d}", "block_timestamp": 1_590_000_000_000 - i * 1000, "type": "Transfer", "from": self.payer, "to": TRX, "value": "5000000",
+             "token_info": {"address": "TOLD" if i == trc20 - 1 else "TNEW", "symbol": "OLD" if i == trc20 - 1 else "NEW", "decimals": 6}}
+            for i in range(trc20)
+        ]  # fmt: skip
+
+    def __call__(self, request):
+        import httpx
+
+        path, q = request.url.path, request.url.params
+        if path.endswith(f"/accounts/{TRX}"):  # balances: one old token never in a newest page
+            return httpx.Response(
+                200, json={"data": [{"balance": 0, "trc20": [{"TOLD": "5000000"}]}]}
+            )
+        rows = self.trc20 if path.endswith("/trc20") else self.native
+        if q.get("max_timestamp"):
+            rows = [r for r in rows if r["block_timestamp"] <= int(q["max_timestamp"])]
+        return httpx.Response(200, json={"data": rows[: int(q["limit"])]})
+
+
+def test_tron_fills_in_with_timestamps_and_old_tokens_keep_their_name(db, monkeypatch):
+    import httpx
+    from test_core import mine
+
+    from tracker import sync
+
+    monkeypatch.setattr(chains, "DELAY", 0)
+    monkeypatch.setattr(chains, "TRON_ROWS", 5)
+    monkeypatch.setattr(history, "BUDGET", {"default": 2})
+    mine(db, TRX)
+    db.commit()
+    fake = TronGrid(native=23, trc20=7)
+    for _ in range(5):
+        with httpx.Client(transport=httpx.MockTransport(fake)) as client:
+            sync.sync_address(db, client, TRX)
+    assert stored(db) == 30 and history.state(db, TRX)["complete"]
+    # The OLD token only appears in the oldest transfer: once the history is whole, its
+    # balance follows from it, with its name.
+    old = db.execute("SELECT asset, amount FROM balance WHERE token = 'TOLD'").fetchone()
+    assert tuple(old) == ("OLD", 5.0)
+
+
+class SolanaRPC:
+    """Signatures newest first, honouring before and limit; each pays SOL one lamport-ish."""
+
+    def __init__(self, n):
+        self.sigs = [{"signature": f"s{i:03d}", "slot": 500_000 - i} for i in range(n)]
+
+    def __call__(self, request):
+        import json
+
+        import httpx
+
+        body = json.loads(request.content)
+        method, params = body["method"], body["params"]
+        payer = "775HG7Z2skCZugQ6LERhgbf82TPb2eGh4ucwVkjJm4GB"
+        if method == "getBalance":
+            result = {"value": 0}
+        elif method == "getTokenAccountsByOwner":
+            result = {"value": []}
+        elif method == "getSignaturesForAddress":
+            opts = params[1]
+            sigs = self.sigs
+            if opts.get("before"):
+                sigs = sigs[[s["signature"] for s in sigs].index(opts["before"]) + 1 :]
+            result = sigs[: opts["limit"]]
+        else:  # getTransaction
+            i = int(params[0][1:])
+            result = {
+                "blockTime": 1_600_000_000 - i,
+                "transaction": {"message": {"accountKeys": [payer, SOL]}},
+                "meta": {
+                    "fee": 0,
+                    "preBalances": [2_000_000, 0],
+                    "postBalances": [1_000_000, 1_000_000],
+                },
+            }
+        return httpx.Response(200, json={"result": result})
+
+
+def test_solana_fills_in_with_signatures(db, monkeypatch):
+    import httpx
+    from test_core import mine
+
+    from tracker import sync
+
+    monkeypatch.setattr(chains, "DELAY", 0)
+    monkeypatch.setattr(chains, "SOLANA_TXS", 5)  # the plain read
+    monkeypatch.setattr(chains, "SOLANA_PAGE", 5)
+    monkeypatch.setattr(history, "BUDGET", {"default": 2, "solana": 2})
+    mine(db, SOL)
+    db.commit()
+    fake = SolanaRPC(30)
+    for _ in range(7):  # each sync: one page for what is new, one page further back
+        with httpx.Client(transport=httpx.MockTransport(fake)) as client:
+            sync.sync_address(db, client, SOL)
+    assert stored(db) == 30 and history.state(db, SOL)["complete"]

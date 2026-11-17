@@ -35,6 +35,8 @@ UTXO = {
 TRON = os.environ.get("CT_TRON", "https://api.trongrid.io").rstrip("/")
 SOLANA = os.environ.get("CT_SOLANA", "https://api.mainnet-beta.solana.com")
 SOLANA_TXS = int(os.environ.get("CT_SOLANA_TXS", "25"))
+SOLANA_PAGE = 25  # signatures per page of a full read: each one is a request of its own
+TRON_ROWS = 200  # rows per page of a Tron list
 SHALLOW = {
     "tron": "Tron: the 200 newest transfers of an address are read; counterparties are not "
     "expanded automatically.",
@@ -390,15 +392,12 @@ def fetch_btc(client, address):
     return fetch_utxo(client, address, "bitcoin")
 
 
-def fetch_tron(client, address):
+def tron_transfers(native, tokens):
+    """Transfer rows of Tron's native and TRC-20 lists, and the tokens seen, by contract."""
+
     def b58(hex_address):  # the native transfer list speaks hex
         return base58.encode_check(bytes.fromhex(hex_address))
 
-    account = (get(client, f"{TRON}/v1/accounts/{address}").json().get("data") or [{}])[0]
-    page = {"limit": 200, "only_confirmed": "true"}
-    native = get(client, f"{TRON}/v1/accounts/{address}/transactions", page).json().get("data", [])
-    tokens = get(client, f"{TRON}/v1/accounts/{address}/transactions/trc20", page).json()
-    tokens = tokens.get("data", [])
     transfers, info = [], {}
     for t in native:
         try:
@@ -420,6 +419,33 @@ def fetch_tron(client, address):
                 transfers.append((*row, token["address"], amount, t["block_timestamp"] // 1000))
         except (KeyError, ValueError, TypeError):
             continue
+    return transfers, info
+
+
+def page_tron(client, address, kind, cursor=None):
+    """One page of a Tron list ("native" or "trc20") from timestamp `cursor` (ms) down."""
+    tail = "/trc20" if kind == "trc20" else ""
+    params = {
+        "limit": TRON_ROWS,
+        "only_confirmed": "true",
+        **({"max_timestamp": cursor} if cursor else {}),
+    }
+    rows = get(client, f"{TRON}/v1/accounts/{address}/transactions{tail}", params).json()
+    rows = rows.get("data", [])
+    positions = [int(r.get("block_timestamp") or 0) for r in rows]
+    low = min(positions, default=None)
+    # Read the lowest timestamp again (stored once), unless one timestamp filled the page.
+    nxt = cursor if low is None else str(low if low != max(positions) else low - 1)
+    return Page(rows, positions, nxt, len(rows) < TRON_ROWS)
+
+
+def fetch_tron(client, address):
+    account = (get(client, f"{TRON}/v1/accounts/{address}").json().get("data") or [{}])[0]
+    page = {"limit": TRON_ROWS, "only_confirmed": "true"}
+    native = get(client, f"{TRON}/v1/accounts/{address}/transactions", page).json().get("data", [])
+    tokens = get(client, f"{TRON}/v1/accounts/{address}/transactions/trc20", page).json()
+    tokens = tokens.get("data", [])
+    transfers, info = tron_transfers(native, tokens)
     balances = [("tron", "TRX", "", account.get("balance", 0) / 1e6)]
     for entry in account.get("trc20", []):
         for contract, raw in entry.items():
@@ -431,7 +457,7 @@ def fetch_tron(client, address):
         "transfers": transfers,
         "links": [],
         "balances": balances,
-        "hub": len(native) >= 200 or len(tokens) >= 200,
+        "hub": len(native) >= TRON_ROWS or len(tokens) >= TRON_ROWS,
     }
 
 
@@ -484,6 +510,25 @@ def solana_transfers(address, sig, tx):
         # The symbol is not on chain; the portfolio fills it in from the price source.
         rows += flows(deltas, mint[:4] + "...", 10**decimals, mint)
     return rows
+
+
+def page_solana(client, address, cursor=None, stop=None):
+    """One page of a Solana address's signatures from signature `cursor` back, with the
+    transaction of each one newer than slot `stop` (an older one is already stored)."""
+    opts = {"limit": SOLANA_PAGE, **({"before": cursor} if cursor else {})}
+    sigs = _rpc(client, "getSignaturesForAddress", address, opts)
+    items = []
+    for s in sigs:
+        tx = None
+        if not s.get("err") and (stop is None or (s.get("slot") or 0) > stop):
+            tx = _rpc(
+                client, "getTransaction", s["signature"],
+                {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 1},
+            )  # fmt: skip
+        items.append((s["signature"], tx if tx and tx.get("meta") else None))
+    positions = [s.get("slot") or 0 for s in sigs]
+    nxt = sigs[-1]["signature"] if sigs else cursor
+    return Page(items, positions, nxt, len(sigs) < SOLANA_PAGE)
 
 
 def fetch_solana(client, address):

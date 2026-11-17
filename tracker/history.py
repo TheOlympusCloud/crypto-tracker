@@ -61,16 +61,27 @@ def _reader(client, source, address):
     """A function cursor -> chains.Page for one source of an address."""
     chain, _, action = source.partition(":")
     if chain in chains.UTXO:
-        return lambda cursor: chains.page_utxo(client, chain, address, cursor)
+        return lambda cursor, stop: chains.page_utxo(client, chain, address, cursor)
     if action in LISTS:
         cfg = chains.evm_chains()[chain]
-        return lambda cursor: chains.page_evm(client, cfg, address, action, cursor)
+        return lambda cursor, stop: chains.page_evm(client, cfg, address, action, cursor)
+    if chain == "tron":
+        return lambda cursor, stop: chains.page_tron(client, address, action, cursor)
+    if chain == "solana":
+        return lambda cursor, stop: chains.page_solana(client, address, cursor, stop)
     raise KeyError(source)
 
 
 def _convert(source, address, items, keep):
     """What a sync stores from raw items: transfers, links, CoinJoins and wide transactions."""
     chain, _, action = source.partition(":")
+    nothing = {"links": [], "coinjoins": [], "wide": [], "sent": []}
+    if chain == "tron":
+        native, tokens = (items, []) if action == "native" else ([], items)
+        return {"transfers": chains.tron_transfers(native, tokens)[0], **nothing}
+    if chain == "solana":
+        rows = [r for sig, tx in items if tx for r in chains.solana_transfers(address, sig, tx)]
+        return {"transfers": rows, **nothing}
     if action in LISTS:
         symbol = chains.evm_chains()[chain]["symbol"]
         mine = [it for it in items if action == "txlist" and str(it.get("from")).lower() == address]
@@ -99,7 +110,7 @@ def walk(read, cursor, stop, budget):
     items, where, used, error = [], [], 0, None
     while used < budget:
         try:
-            page = read(cursor)
+            page = read(cursor, stop)
         except (chains.httpx.HTTPError, RuntimeError, ValueError, KeyError, TypeError) as e:
             error = chains.describe(e)
             break
