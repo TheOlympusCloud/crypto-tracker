@@ -20,15 +20,17 @@ def behaviour(db):
     mine = "(SELECT address FROM node WHERE mine)"
     known = "(SELECT address FROM label WHERE source != 'heuristic')"
     rows = []
-    # An address that was read in full and sends on to an exchange, and to nowhere else or
-    # one other place, behaves like one of that exchange's deposit addresses.
+    # An address that was read in full and whose every payment went to a known exchange
+    # behaves like one of that exchange's deposit addresses. One that also pays anybody
+    # else does not: it is more likely a wallet nobody registered, perhaps the user's own.
+    exchanges = "(SELECT address FROM label WHERE category = 'cex' AND source != 'heuristic')"
     for r in db.execute(
-        f"""SELECT t.src, l.name, (SELECT COUNT(DISTINCT dst) FROM transfer WHERE src = t.src) outs
-            FROM transfer t JOIN label l ON l.address = t.dst
+        f"""SELECT t.src, MIN(l.name) name FROM transfer t JOIN label l ON l.address = t.dst
             WHERE l.category = 'cex' AND l.source != 'heuristic'
               AND t.src NOT IN {mine} AND t.src NOT IN {known}
               AND t.src IN (SELECT address FROM node WHERE synced_at AND NOT hub)
-            GROUP BY t.src HAVING outs <= 2"""
+              AND NOT EXISTS (SELECT 1 FROM transfer x WHERE x.src = t.src AND x.dst NOT IN {exchanges})
+            GROUP BY t.src"""
     ):
         exchange = r["name"].rstrip("0123456789 #:")
         rows.append(
@@ -36,10 +38,14 @@ def behaviour(db):
         )
     # In one transaction a wallet of mine pays one asset out and gets another one back: the
     # addresses on the other side are a pool or a router, whatever they are called.
+    # shortcut: exactly one unit of a token is taken for an NFT changing hands, where the
+    # other side is a person, and is left out (so is a swap of exactly 1.0 of a token);
+    # needs token decimals in the transfer rows to be told apart properly.
     for r in db.execute(
         f"""SELECT DISTINCT o.dst paid, i.src payer FROM transfer o
             JOIN transfer i ON i.chain = o.chain AND i.txid = o.txid AND i.dst = o.src
-            WHERE o.src IN {mine} AND i.token != o.token"""
+            WHERE o.src IN {mine} AND i.token != o.token
+              AND NOT (o.token != '' AND o.amount = 1) AND NOT (i.token != '' AND i.amount = 1)"""
     ):
         for address in (r["paid"], r["payer"]):
             rows.append((address, "Swap contract", "dex", "DEX pool or router"))

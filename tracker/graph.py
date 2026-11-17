@@ -378,17 +378,23 @@ def origins(db, max_hops=4):
         node = nodes.get(address)
         if node and node["mine"]:
             return "own"
-        if address in labels:
-            return labels[address]["category"]
+        label = labels.get(address)
+        if label and label["source"] not in CONFIDENCE:
+            return label["category"]
         if not node or not node["synced_at"]:
-            return "unknown:not expanded"
-        if node["hub"]:
-            return "unknown:very active address"
-        if hops >= max_hops:
-            return "unknown:hop limit"
-        if not inbound.get((address, chain, token)):
-            return "unknown:no earlier transfer of this asset"
-        return None
+            stop = "unknown:not expanded"
+        elif node["hub"]:
+            stop = "unknown:very active address"
+        elif hops >= max_hops:
+            stop = "unknown:hop limit"
+        elif not inbound.get((address, chain, token)):
+            stop = "unknown:no earlier transfer of this asset"
+        else:
+            return None
+        # A label that is only a guess is the answer where the walk cannot go on anyway.
+        # Where it can, the money is followed past it: a wrong guess must not become the
+        # origin and hide the real one.
+        return label["category"] if label else stop
 
     memo = {}
 

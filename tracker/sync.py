@@ -153,7 +153,7 @@ def run(addresses=None, depth=0, import_labels=False, wallets=()):
         with httpx.Client(timeout=30, headers={"User-Agent": "crypto-tracker"}) as client:
             if import_labels or labels.due(db):
                 status["current"] = "labels"
-                _, missing = labels.import_open(db, client)
+                _, missing = labels.import_open(db, client, everything=import_labels)
                 status["notes"] += [f"label set not downloaded: {name}" for name in missing]
             if addresses is None:
                 done = [

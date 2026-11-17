@@ -175,43 +175,66 @@ def store(db, rows):
     db.commit()
 
 
-def due(db):
-    """True when the open label sets should be downloaded (again). CT_LABELS=off: never."""
+SETS = [f"{explorer}-labels" for explorer in EXPLORERS] + ["graphsense-tagpacks", "solana-programs"]
+
+
+def stale(db):
+    """The sets to download now: never fetched, or older than REFRESH. Each set has its own
+    date, so one that failed is tried again on the next sync without re-reading the rest."""
     if os.environ.get("CT_LABELS", "on") == "off":
-        return False
-    row = db.execute("SELECT value FROM meta WHERE key = 'labels_at'").fetchone()
-    return not row or time.time() - float(row["value"]) > REFRESH
+        return []
+    at = {r["key"]: float(r["value"]) for r in db.execute("SELECT * FROM meta")}
+    return [name for name in SETS if time.time() - at.get(f"labels_at:{name}", 0) > REFRESH]
 
 
-def import_open(db, client):
-    """Download the open sets and load them. One set failing does not stop the others.
-    Returns (labels read, names of the sets that could not be read)."""
-    rows, failed = [], []
+def due(db):
+    return bool(stale(db))
+
+
+def import_open(db, client, everything=False):
+    """Download the stale label sets (all of them with `everything`) and load them. One set
+    failing does not stop the others. Returns (labels read, names of the sets not read)."""
+    wanted = SETS if everything else stale(db)
+    rows, done, failed = [], [], []
     for explorer in EXPLORERS:
+        name = f"{explorer}-labels"
+        if name not in wanted:
+            continue
         try:
             reply = client.get(EXPLORER_DUMPS.format(explorer)).raise_for_status()
-            rows += parse_etherscan(json.loads(reply.text), f"{explorer}-labels")
+            rows += parse_etherscan(json.loads(reply.text), name)
+            done.append(name)
         except (httpx.HTTPError, ValueError, AttributeError, TypeError):
-            failed.append(f"{explorer}-labels")
-    try:
-        archive = client.get(TAGPACKS, follow_redirects=True).raise_for_status().content
-        # Members are read in memory, never extracted to disk.
-        with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
-            for member in tar:
-                if member.isfile() and "/packs/" in member.name and member.name.endswith(".yaml"):
-                    try:
-                        text = tar.extractfile(member).read().decode("utf-8", "replace")
-                        rows += parse_tagpack(text)
-                    except yaml.YAMLError:
-                        continue
-    except (httpx.HTTPError, tarfile.TarError, OSError):
-        failed.append("graphsense-tagpacks")
-    try:
-        rows += parse_solana_programs(client.get(SOLANA_PROGRAMS).raise_for_status().text)
-    except httpx.HTTPError:
-        failed.append("solana-programs")
+            failed.append(name)
+    if "graphsense-tagpacks" in wanted:
+        try:
+            archive = client.get(TAGPACKS, follow_redirects=True).raise_for_status().content
+            # Members are read in memory, never extracted to disk.
+            with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
+                for member in tar:
+                    if (
+                        member.isfile()
+                        and "/packs/" in member.name
+                        and member.name.endswith(".yaml")
+                    ):
+                        try:
+                            text = tar.extractfile(member).read().decode("utf-8", "replace")
+                            rows += parse_tagpack(text)
+                        except yaml.YAMLError:
+                            continue
+            done.append("graphsense-tagpacks")
+        except (httpx.HTTPError, tarfile.TarError, OSError):
+            failed.append("graphsense-tagpacks")
+    if "solana-programs" in wanted:
+        try:
+            rows += parse_solana_programs(client.get(SOLANA_PROGRAMS).raise_for_status().text)
+            done.append("solana-programs")
+        except httpx.HTTPError:
+            failed.append("solana-programs")
     store(db, rows)
-    if rows:
-        db.execute("INSERT OR REPLACE INTO meta VALUES ('labels_at', ?)", (str(time.time()),))
-        db.commit()
+    now = str(time.time())
+    db.executemany(
+        "INSERT OR REPLACE INTO meta VALUES (?, ?)", [(f"labels_at:{n}", now) for n in done]
+    )
+    db.commit()
     return len(rows), failed

@@ -1602,6 +1602,13 @@ def test_behaviour_names_deposit_addresses_swap_contracts_and_hubs(db):
         "DEX pool or router",
     )
 
+    # Exactly one unit of a token back is how an NFT sale looks: the seller is a person.
+    seller = "0x" + "a1" * 20
+    transfer(db, "ethereum", "nft", A, seller, 0.3)
+    transfer(db, "ethereum", "nft", seller, A, 1, asset="APE", token=D)
+    detect.behaviour(db)
+    assert db.execute("SELECT COUNT(*) FROM label WHERE address = ?", (seller,)).fetchone()[0] == 0
+
     # A guess that stops being true goes away on the next run.
     db.execute("DELETE FROM transfer WHERE txid = 'swap'")
     detect.behaviour(db)
@@ -1696,13 +1703,117 @@ def test_label_sets_are_refreshed_when_due(db, monkeypatch):
             return httpx.Response(200, json={A: {"name": "Kraken 4", "labels": ["kraken"]}})
         return httpx.Response(404)  # every other set is unreachable: the import still succeeds
 
-    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+    asked = []
+
+    def counting(request):
+        asked.append(request.url.path)
+        return handler(request)
+
+    with httpx.Client(transport=httpx.MockTransport(counting)) as client:
         count, failed = labels.import_open(db, client)
-    assert count == 1 and "graphsense-tagpacks" in failed and "etherscan-labels" not in failed
+        assert count == 1 and "graphsense-tagpacks" in failed and "etherscan-labels" not in failed
+        first = len(asked)
+        # The sets that failed are due again at once, and only they are asked for again.
+        assert labels.due(db) and "etherscan-labels" not in labels.stale(db)
+        labels.import_open(db, client)
+        assert len(asked) == 2 * first - 1 and not any(
+            "etherscan/combined" in p for p in asked[first:]
+        )
     row = db.execute("SELECT * FROM label").fetchone()
     assert (row["name"], row["type"], row["source"]) == ("Kraken 4", "exchange", "etherscan-labels")
-    assert not labels.due(db)
     db.execute("UPDATE meta SET value = '0'")
-    assert labels.due(db)
+    assert "etherscan-labels" in labels.stale(db)
     monkeypatch.setenv("CT_LABELS", "off")
     assert not labels.due(db)
+
+
+def test_an_unregistered_wallet_between_two_of_mine_is_not_called_a_deposit_address(db):
+    from tracker import detect
+
+    middle = "0x" + "3" * 40
+    mine(db, A, public=1)
+    mine(db, B)
+    db.execute(
+        "INSERT INTO label(address, name, category, source) VALUES (?, 'Binance 14', 'cex', 'etherscan-labels')",
+        (BINANCE,),
+    )
+    db.execute("INSERT INTO node(address, synced_at) VALUES (?, 1)", (middle,))
+    transfer(db, "ethereum", "1", A, middle, 2)
+    transfer(db, "ethereum", "2", middle, B, 1)  # it pays my other wallet...
+    transfer(db, "ethereum", "3", middle, BINANCE, 1)  # ...and once sent to an exchange
+
+    def state():
+        (link,) = graph.verdicts(db)[1]["links"]
+        (eth,) = graph.origins(db)[B]
+        return link["confidence"], [(s["address"], s["kind"]) for s in eth["sources"]]
+
+    before = state()
+    assert before == (graph.HOP_DECAY, [(A, "own")])
+    detect.behaviour(db)
+    assert db.execute("SELECT COUNT(*) FROM label WHERE address = ?", (middle,)).fetchone()[0] == 0
+    assert state() == before  # the link is as strong as before, and the origin is still my wallet
+
+    # Even when such an address does carry a guessed label (here a contract name), the money
+    # is followed past it: the guess must not become the origin.
+    labels.store(db, [(middle, "GnosisSafeProxy", "other", "multisig or smart wallet", "explorer")])
+    assert state()[1] == [(A, "own")]
+    # Where it cannot be followed any further, the guess is the answer.
+    db.execute("UPDATE node SET synced_at = NULL WHERE address = ?", (middle,))
+    assert state()[1] == [(middle, "other")]
+    # And a label that is not a guess ends the walk, as before.
+    labels.store(db, [(middle, "Kraken 9", "cex", "exchange", "user")])
+    assert graph.origins(db)[B][0]["sources"][0]["kind"] == "cex"
+
+
+def test_a_protocol_vault_outranks_a_contract_name_and_cuts_the_path(db, monkeypatch):
+    import httpx
+
+    from tracker import swaps
+
+    monkeypatch.setattr(chains, "DELAY", 0)
+    monkeypatch.setattr(chains.time, "sleep", lambda s: None)
+    router = "0x" + "5" * 40
+    mine(db, A, public=1)
+    mine(db, B)
+    mine(db, BIP84[0])
+    transfer(db, "ethereum", "0xd48a", A, router, 5)
+    transfer(db, "ethereum", "0xother", B, router, 3)  # my other wallet used the same router
+    # The explorer named the router before the swap records were read.
+    labels.store(db, [(router, "THORChain_Router", "dex", "DEX contract", "explorer")])
+    (weak,) = next(v for v in graph.verdicts(db) if v["address"] == B)["links"]
+    assert 0 < weak["confidence"] < 0.2  # a guessed service only weakens the path between A and B
+
+    action = {
+        "type": "swap",
+        "status": "success",
+        "in": [
+            {"address": A, "txID": "D48A", "coins": [{"amount": "500000000", "asset": "ETH.ETH"}]}
+        ],
+        "out": [
+            {"address": BIP84[0], "txID": "", "coins": [{"amount": "28231", "asset": "BTC.BTC"}]}
+        ],
+    }
+
+    def handler(request):
+        hit = request.url.params["address"] == A
+        return httpx.Response(200, json={"actions": [action] if hit else []})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        assert swaps.sync(db, client) == []
+    row = db.execute("SELECT * FROM label WHERE address = ?", (router,)).fetchone()
+    assert row["source"] == "swap-protocol" and row["name"] in ("THORChain", "Maya Protocol")
+    verdict = next(v for v in graph.verdicts(db) if v["address"] == B)
+    assert [
+        k for k in verdict["links"] if k["wallet"] == A and k["kinds"] == ["transfer", "transfer"]
+    ] == []
+    assert any(
+        s["wallet"] == A for s in verdict["shared_services"]
+    )  # named as a shared service instead
+
+    # A label set by hand still wins over the protocol's.
+    labels.store(db, [(router, "My note", "dex", "", "user")])
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        swaps.sync(db, client)
+    assert (
+        db.execute("SELECT name FROM label WHERE address = ?", (router,)).fetchone()[0] == "My note"
+    )

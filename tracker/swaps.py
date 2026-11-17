@@ -10,7 +10,7 @@ import time
 
 import httpx
 
-from . import chains
+from . import chains, labels
 from . import db as database
 from .heuristics import pair
 
@@ -117,9 +117,10 @@ def sync(db, client):
             # only once this protocol has answered for every address: if it is down, its
             # vaults keep their labels, or they would turn into strangers that link wallets.
             db.execute("DELETE FROM label WHERE source = 'swap-protocol' AND name = ?", (protocol,))
-            db.executemany(
-                "INSERT OR IGNORE INTO label(address, name, category, source) VALUES (?, ?, 'dex', 'swap-protocol')",
-                [(v, protocol) for v in found],
+            # Through the ranking: the protocol's own record outranks a contract name or a
+            # guess that got there first, and yields to a label set by hand.
+            labels.store(
+                db, [(v, protocol, "dex", "swap protocol vault", "swap-protocol") for v in found]
             )
             db.execute("DELETE FROM failure WHERE source = ?", (protocol,))
         except Exception as e:  # noqa: BLE001 - whatever one source sends, the other and the sync go on
