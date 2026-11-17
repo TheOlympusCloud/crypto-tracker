@@ -27,6 +27,21 @@ descriptor and all its used addresses are found and treated as one wallet.
 
 One web app, installable on a phone as a PWA.
 
+## Screenshots
+
+All taken from a demo instance with invented wallets and addresses.
+
+| | |
+|---|---|
+| ![A wallet's verdict: linked to a public wallet at 70%, with the evidence and what the check may have missed](docs/screenshots/verdict.webp) | ![3D graph with the path from a private wallet to a public one, hop by hop](docs/screenshots/graph-3d.webp) |
+| **Verdict** for one wallet: what it can be tied to, how strongly, and what the check could not cover. | **3D graph**: the path between a private and a public wallet, numbered hop by hop. |
+| ![The same path in the flat 2D graph](docs/screenshots/graph-2d.webp) | ![Lookup of an address that is not yours: what it holds and its links to your wallets](docs/screenshots/lookup.webp) |
+| **2D graph**: the same path, flat. The default on phones. | **Lookup** of any address: what it holds and how it connects to your wallets. |
+
+<img src="docs/screenshots/mobile.webp" alt="Portfolio totals on a phone, split into private and public" width="280">
+
+**On a phone**: the portfolio, split into private and public.
+
 ## Chains
 
 | Chain | Works without a key | How deep it is read |
