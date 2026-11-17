@@ -404,7 +404,7 @@ function openWallet(address) {
     ),
     rename,
     owned.length ? h("h3", {}, addresses(owned.length)) : null,
-    owned.length ? h("ul", { className: "rows addresses" }, owned.map((a) => h("li", {}, h("span", { className: "mono" }, a.address), h("span", { className: "amounts" }, (a.balances || []).map((b) => amount(b)))))) : null,
+    owned.length ? h("ul", { className: "rows addresses" }, owned.map((a) => h("li", {}, h("span", { className: "mono" }, a.address), h("span", { className: "amounts" }, (a.balances || []).map((b) => (fake(b) ? h("span", {}, amount(b), trustEl(b)) : amount(b))))))) : null,
     h("h3", {}, "Can it be tied to your other wallets?"),
     verdictBox("p", judge(v)),
     h("ul", { className: "rows" }, v.links.map((k) => evidence(address, v, k))),
