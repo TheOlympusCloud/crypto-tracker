@@ -432,7 +432,7 @@ def fetch_solana(client, address):
             client,
             "getTransaction",
             s["signature"],
-            {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0},
+            {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 1},  # v1 parses like v0
         )
         if tx and tx.get("meta"):
             transfers += solana_transfers(address, s["signature"], tx)

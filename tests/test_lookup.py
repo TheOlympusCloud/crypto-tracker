@@ -139,6 +139,11 @@ def indexers(request):
 
         method = json.loads(request.content)["method"]
         amount = lambda n: {"amount": str(n), "decimals": 6}
+        params = json.loads(request.content)["params"]
+        if method == "getTransaction" and params[1]["maxSupportedTransactionVersion"] < 1:
+            # as the public RPC answers since version 1 transactions exist
+            message = "Transaction version (1) is not supported by the requesting client."
+            return httpx.Response(200, json={"error": {"code": -32015, "message": message}})
         result = {
             "getBalance": {"value": 1_000_000_000},
             "getTokenAccountsByOwner": {
