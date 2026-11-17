@@ -63,6 +63,7 @@ def test_uri_names_the_address_and_drops_the_rest(text, expected):
         f"ethereum:{SATOSHI}",
         f"solana:{A}",
         f"ethereum:{C}/transfer?uint256=1",  # a token payment without a payee
+        f"ethereum:{C}@1/approve?address={B}&uint256=1",  # some other call: no wallet named
         "ethereum:vitalik.eth",
         "solana:https://example.com/pay",  # a transaction request, not an address
         "https://example.com/" + A,
@@ -214,7 +215,9 @@ def test_lookup_bitcoin_shows_assets_connections_and_links_to_my_wallets(db, cli
     before, verdicts = stored(db), graph.verdicts(db)
 
     found = client.post("/api/resolve", json={"q": f"bitcoin:{SATOSHI}?amount=0.1"}).json()
-    assert found == {"address": SATOSHI, "chain": "bitcoin", "chains": [], "hint": None}
+    assert found == {
+        "address": SATOSHI, "chain": "bitcoin", "chains": [], "hint": None, "needs_key": None
+    }  # fmt: skip
     v = client.get(f"/api/lookup/{SATOSHI}").json()
 
     assert (v["address"], v["chain"], v["mine"], v["watched"]) == (SATOSHI, "bitcoin", 0, False)
@@ -243,6 +246,11 @@ def test_lookup_evm_reads_the_chosen_chains_and_hides_airdrops(db, client):
     found = client.post("/api/resolve", json={"q": A}).json()
     assert found["chain"] == "evm" and found["chains"] == ["ethereum", "polygon"]
     assert client.post("/api/resolve", json={"q": f"ethereum:{A}@137"}).json()["hint"] == "polygon"
+    # A code for a chain that needs a key is no dead end: the readable chains are offered.
+    keyless = client.post("/api/resolve", json={"q": f"ethereum:{A}@8453"}).json()
+    assert (keyless["hint"], keyless["needs_key"]) == (None, "base")
+    assert keyless["chains"] == ["ethereum", "polygon"]
+    before = stored(db)
     assert client.get(f"/api/lookup/{A}?chains=base").status_code == 422  # needs a key
     assert client.get(f"/api/lookup/{A}?chains=nope").status_code == 422
 
@@ -259,9 +267,11 @@ def test_lookup_evm_reads_the_chosen_chains_and_hides_airdrops(db, client):
     both = client.get(f"/api/lookup/{A}").json()
     assert both["chains"] == ["ethereum", "polygon"]
     assert {(a["chain"], a["asset"]) for a in both["assets"]} >= {("polygon", "POL")}
+    assert stored(db) == before
 
 
 def test_lookup_solana_names_tokens_from_the_price_source(db, client):
+    before = stored(db)
     v = client.get(f"/api/lookup/{SOL}").json()
     assert [(a["asset"], a["amount"], a["value"]) for a in v["assets"]] == [
         ("USDC", 112.5, 112.5),
@@ -271,6 +281,7 @@ def test_lookup_solana_names_tokens_from_the_price_source(db, client):
     (payer,) = v["connections"]
     assert payer["address"] == PAYER and len(payer["received"]) == 2
     assert v["notes"] and "Solana" in v["notes"][0]
+    assert stored(db) == before
 
 
 def test_watching_keeps_an_address_out_of_my_wallets_until_it_is_tracked(db, client):

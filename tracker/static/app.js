@@ -471,11 +471,12 @@ async function lookUp(text) {
   $("status").textContent = "";
   const found = await api("resolve", { q: text });
   $("lookup").elements.q.value = found.address;
-  if (found.chain === "evm" && !found.hint && found.chains.length > 1) return askChains(found.address, found.chains, found.chains);
+  const missing = found.needs_key ? `This code is for ${chainName(found.needs_key)}, which this server cannot read without an Etherscan API key (CT_ETHERSCAN_KEY). The address can still be read on these chains.` : "";
+  if (found.chain === "evm" && !found.hint && (missing || found.chains.length > 1)) return askChains(found.address, found.chains, found.chains, missing);
   return openLookup(found.address, found.hint ? [found.hint] : []);
 }
 
-function askChains(address, chains, picked) {
+function askChains(address, chains, picked, missing = "") {
   const form = h(
     "form",
     {},
@@ -486,7 +487,7 @@ function askChains(address, chains, picked) {
     e.preventDefault();
     openLookup(address, [...form.querySelectorAll("input:checked")].map((i) => i.value));
   };
-  panel(h("h2", {}, "Which chains?"), h("div", { className: "mono" }, address), h("p", { className: "hint" }, "The same address exists on every EVM chain. Each chain read is one more indexer that sees it."), form);
+  panel(h("h2", {}, "Which chains?"), h("div", { className: "mono" }, address), missing ? h("p", { className: "error" }, missing) : null, h("p", { className: "hint" }, "The same address exists on every EVM chain. Each chain read is one more indexer that sees it."), form);
 }
 
 async function openLookup(address, chains = []) {

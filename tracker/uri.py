@@ -25,6 +25,8 @@ def parse(text):
     if scheme not in SCHEMES:  # EIP-681: [pay-]target[@chain id][/function]
         target, _, function = target.removeprefix("pay-").partition("/")
         target, _, chain_id = target.partition("@")
+        if function not in ("", "transfer"):
+            raise ValueError("that is a contract call, not a wallet's address")
         if function == "transfer":  # a token payment: the target is the token, not the payee
             target = parse_qs(query).get("address", [""])[0]
         by_id = {str(v[0]): name for name, v in chains.EVM.items() if name in evm}

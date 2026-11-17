@@ -180,7 +180,10 @@ def resolve(pasted: Pasted):
         "address": one,
         "chain": chain,
         "chains": readable if chain == "evm" else [],  # the choice to offer for an EVM address
-        "hint": hint,  # the EVM chain a payment URI names
+        # The EVM chain a payment URI names. One this server cannot read is not a hint:
+        # the chains it can read are offered instead, and the missing one is named.
+        "hint": hint if hint in readable else None,
+        "needs_key": hint if hint and hint not in readable else None,
     }
 
 
