@@ -88,7 +88,7 @@ const renderers = {};
 let mode = matchMedia("(max-width: 760px)").matches ? "2d" : "3d";
 let stale = true; // the active renderer has not seen the current data
 // Labels are drawn on canvases, which do not wait for web fonts by themselves.
-const fonts = Promise.all(["900 16px 'Red Hat Display'", "500 16px 'Red Hat Text'", "400 16px 'JetBrains Mono'"].map((f) => document.fonts.load(f))).catch(() => {});
+const fonts = Promise.all(["800 condensed 16px 'Bricolage Grotesque'", "500 16px 'Red Hat Text'", "400 16px 'JetBrains Mono'"].map((f) => document.fonts.load(f))).catch(() => {});
 
 async function renderer() {
   if (!renderers[mode]) {
@@ -556,6 +556,22 @@ $("mode").onclick = () => {
   stale = true;
   drawGraph().catch(fail);
 };
+// The ticker's pause button. The choice is kept, so a ticker that was stopped stays stopped.
+function pauseTicker(paused) {
+  $("tickerpause").ariaPressed = String(paused);
+  $("tickerpause").ariaLabel = $("tickerpause").title = paused ? "Play the ticker" : "Pause the ticker";
+  $("tickerpause").parentElement.classList.toggle("paused", paused);
+}
+$("tickerpause").onclick = () => {
+  const paused = $("tickerpause").ariaPressed !== "true";
+  pauseTicker(paused);
+  try {
+    localStorage.setItem("ticker", paused ? "paused" : "");
+  } catch {} // private browsing: the choice lasts for this visit only
+};
+try {
+  pauseTicker(localStorage.getItem("ticker") === "paused");
+} catch {}
 for (const b of document.querySelectorAll("nav button")) b.onclick = () => show(b.dataset.view);
 document.addEventListener("keydown", (e) => e.key === "Escape" && closePanel());
 

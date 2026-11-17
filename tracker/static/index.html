@@ -7,7 +7,7 @@
 <title>Crypto tracker</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
-<link rel="preload" href="vendor/fonts/red-hat-display-900.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="vendor/fonts/bricolage-grotesque-var.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="vendor/fonts/red-hat-text-400.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="style.css">
 <script type="importmap">
@@ -55,7 +55,10 @@
       <!-- Fiat totals: shown once the API reports values (see readFiat in app.js). -->
       <dl id="totals" class="totals" hidden></dl>
     </div>
-    <div class="ticker" aria-hidden="true"><div id="ticker"></div></div>
+    <div class="tape">
+      <button id="tickerpause" aria-pressed="false" aria-label="Pause the ticker" title="Pause the ticker"></button>
+      <div class="ticker" aria-hidden="true"><div id="ticker"></div></div>
+    </div>
     <div id="summary" class="vaults"></div>
     <h2 class="sectionhead"><small>Assets</small>The whole stash</h2>
     <div id="assets"></div>

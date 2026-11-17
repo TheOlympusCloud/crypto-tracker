@@ -1,5 +1,5 @@
-@font-face { font-family: "Red Hat Display"; font-weight: 700; font-display: swap; src: url("vendor/fonts/red-hat-display-700.woff2") format("woff2"); }
-@font-face { font-family: "Red Hat Display"; font-weight: 900; font-display: swap; src: url("vendor/fonts/red-hat-display-900.woff2") format("woff2"); }
+/* One variable file: weight 200 to 800, width 75% to 100%. Headlines use it heavy and narrow. */
+@font-face { font-family: "Bricolage Grotesque"; font-weight: 200 800; font-stretch: 75% 100%; font-display: swap; src: url("vendor/fonts/bricolage-grotesque-var.woff2") format("woff2"); }
 @font-face { font-family: "Red Hat Text"; font-weight: 400; font-display: swap; src: url("vendor/fonts/red-hat-text-400.woff2") format("woff2"); }
 @font-face { font-family: "Red Hat Text"; font-weight: 500; font-display: swap; src: url("vendor/fonts/red-hat-text-500.woff2") format("woff2"); }
 @font-face { font-family: "Red Hat Text"; font-weight: 700; font-display: swap; src: url("vendor/fonts/red-hat-text-700.woff2") format("woff2"); }
@@ -18,7 +18,7 @@
   --private: var(--ink); --public: var(--orange);
   --tied: #8a5a00; --tied-ink: #5c3b00; --tied-wash: #ffe9b8; /* tied to another wallet of yours */
   --linked: #c4161c; --linked-ink: #8f1016; --linked-wash: #fbe3e0; /* linked to a public wallet */
-  --display: "Red Hat Display", "Arial Black", sans-serif; --sans: "Red Hat Text", system-ui, sans-serif; --mono: "JetBrains Mono", ui-monospace, monospace;
+  --display: "Bricolage Grotesque", "Arial Narrow", sans-serif; --sans: "Red Hat Text", system-ui, sans-serif; --mono: "JetBrains Mono", ui-monospace, monospace;
   --pill: 100px; --card: 22px; --field: 14px; --tap: 44px; --panel: min(480px, 100vw);
   --ease: cubic-bezier(.2, .7, .1, 1); --bounce: cubic-bezier(.3, 1.5, .5, 1);
   --arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M8 16 16 8M9.5 8H16v6.5' fill='none' stroke='%2314100d' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
@@ -36,7 +36,7 @@ header { position: relative; z-index: 3; display: grid; grid-template-columns: 1
 .brand { display: flex; align-items: center; gap: 10px; color: var(--orange-big); }
 .mark { transition: transform .7s var(--bounce); }
 .brand:hover .mark { transform: rotate(180deg); }
-h1 { margin: 0; font: 900 26px/1 var(--display); letter-spacing: -.01em; text-transform: uppercase; white-space: nowrap; }
+h1 { margin: 0; font: 800 condensed 26px/1 var(--display); letter-spacing: -.01em; text-transform: uppercase; white-space: nowrap; }
 nav { display: flex; gap: 8px; }
 nav button { white-space: nowrap; }
 nav button[aria-current] { background: var(--ink); color: var(--paper); }
@@ -53,14 +53,14 @@ nav button[aria-current] { background: var(--ink); color: var(--paper); }
 #alertlist { position: absolute; z-index: 6; top: calc(100% + 4px); right: 16px; width: min(400px, calc(100vw - 24px)); max-height: 70vh; overflow-y: auto; padding: 18px; animation: pop .3s var(--bounce); transform-origin: top right; }
 
 /* ---------- type ---------- */
-h2, h3, h4 { font-family: var(--display); font-weight: 900; margin: 0; }
+h2, h3, h4 { font-family: var(--display); font-weight: 800; font-stretch: condensed; margin: 0; }
 .display { font-size: clamp(40px, 7.6vw, 104px); line-height: .9; letter-spacing: -.02em; text-transform: uppercase; color: var(--orange-big); text-wrap: balance; }
 .kicker { margin: 0 0 14px; font: 500 15px/1 var(--sans); letter-spacing: .02em; text-transform: uppercase; color: var(--ink); }
 /* A section opens the way the studio's do: a small line, then a shout. */
 .sectionhead { margin: 72px auto 28px; text-align: center; font-size: clamp(34px, 5.6vw, 72px); line-height: .92; letter-spacing: -.02em; text-transform: uppercase; text-wrap: balance; }
 .sectionhead small { display: block; margin-bottom: 14px; font: 500 15px/1 var(--sans); letter-spacing: .02em; color: var(--ink); }
 .sectionhead + .hint { max-width: 60ch; margin: -12px auto 28px; text-align: center; font-size: 16px; }
-.eyebrow { margin: 0 0 14px; font: 900 20px/1 var(--display); letter-spacing: -.01em; text-transform: uppercase; }
+.eyebrow { margin: 0 0 14px; font: 800 condensed 20px/1 var(--display); letter-spacing: -.01em; text-transform: uppercase; }
 h3 { font-size: 20px; line-height: 1.05; letter-spacing: -.01em; text-transform: uppercase; margin: 32px 0 12px; }
 h4 { font: 500 15px/1.4 var(--sans); margin: 18px 0 6px; color: var(--ink); }
 .hint { color: var(--ink-quiet); font-size: 14px; margin: 4px 0; font-weight: 400; }
@@ -96,14 +96,21 @@ main > section { height: 100%; overflow: hidden auto; padding: 0 16px 80px; anim
 .totals .private { background: var(--ink); color: var(--paper); }
 .totals .public { background: var(--orange); }
 .totals dt { font: 500 14px/1 var(--sans); letter-spacing: .02em; text-transform: uppercase; color: inherit; }
-.totals dd { margin: 10px 0 0; font: 900 clamp(22px, 4.2vw, 56px)/1 var(--display); letter-spacing: -.02em; font-variant-numeric: tabular-nums; word-break: break-word; }
+.totals dd { margin: 10px 0 0; font: 800 condensed clamp(22px, 4.2vw, 56px)/1 var(--display); letter-spacing: -.02em; font-variant-numeric: tabular-nums; word-break: break-word; }
 
-/* The ticker: what you hold, going round. It repeats the table below and is hidden from readers. */
-#view-portfolio > .ticker { max-width: none; margin: 12px -16px 0; }
-.ticker { overflow: hidden; background: var(--ink); color: var(--paper); white-space: nowrap; }
+/* The ticker: what you hold, going round. It repeats the table below and is hidden from readers.
+   The round button stops and starts it; hovering it pauses it too. */
+#view-portfolio > .tape { max-width: none; margin: 12px -16px 0; }
+.tape { display: flex; align-items: center; background: var(--ink); color: var(--paper); }
+.tape :focus-visible { outline-color: var(--paper); }
+.ticker { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; }
 #ticker { display: inline-flex; padding: 13px 0; animation: ticker 40s linear infinite; }
-.ticker:hover #ticker { animation-play-state: paused; }
-#ticker span { display: inline-flex; align-items: baseline; gap: 10px; padding: 0 18px; font: 900 18px/1 var(--display); text-transform: uppercase; }
+.ticker:hover #ticker, .paused #ticker { animation-play-state: paused; }
+/* Two bars to pause, a triangle to play: drawn in ink on the orange dot. */
+#tickerpause { flex: none; width: 34px; height: 34px; margin: 0 6px 0 12px; padding: 0; border-color: var(--orange); background: var(--orange) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M7 6h3.5v12H7zM13.5 6H17v12h-3.5z' fill='%2314100d'/%3E%3C/svg%3E") center / 22px no-repeat; }
+#tickerpause:hover:not(:disabled) { background-color: var(--paper); border-color: var(--paper); }
+#tickerpause[aria-pressed=true] { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M8.5 5.5v13L19 12z' fill='%2314100d'/%3E%3C/svg%3E"); }
+#ticker span { display: inline-flex; align-items: baseline; gap: 10px; padding: 0 18px; font: 800 condensed 18px/1 var(--display); text-transform: uppercase; }
 #ticker span::after { content: "•"; margin-left: 26px; color: var(--orange); }
 #ticker i { font: 400 16px/1 var(--mono); font-style: normal; text-transform: none; }
 
@@ -137,7 +144,7 @@ table { width: 100%; border-collapse: collapse; }
 th, td { padding: 16px 20px; text-align: right; border-top: 1px solid var(--line); font-size: 16px; font-weight: 400; }
 thead th { border-top: 0; padding: 18px 20px 12px; font: 500 13px var(--sans); letter-spacing: .02em; text-transform: uppercase; color: var(--ink-quiet); }
 th:first-child, td:last-child, th:last-child, th:nth-last-child(2) { text-align: left; }
-tbody th { font: 900 22px/1 var(--display); letter-spacing: -.01em; }
+tbody th { font: 800 condensed 22px/1 var(--display); letter-spacing: -.01em; }
 tbody tr { transition: background .2s; }
 tbody tr:hover { background: var(--sand); }
 .splitcell { width: 24%; min-width: 120px; }
@@ -158,7 +165,7 @@ button.wallet:hover:not(:disabled) { background: var(--paper); color: var(--ink)
 button.wallet:active:not(:disabled) { transform: none; box-shadow: none; }
 .head { display: flex; gap: 12px; align-items: center; min-width: 0; }
 .head > :nth-child(2) { flex: 1; min-width: 0; }
-.name { display: block; font: 900 22px/1 var(--display); letter-spacing: -.01em; text-transform: uppercase; overflow-wrap: anywhere; }
+.name { display: block; font: 800 condensed 22px/1 var(--display); letter-spacing: -.01em; text-transform: uppercase; overflow-wrap: anywhere; }
 .head .mono { display: block; margin-top: 4px; }
 .wallet .head .mono { color: var(--orange-ink); font-size: 13px; }
 /* The round orange arrow that says "this opens". */
@@ -239,7 +246,7 @@ form .primary, .card > .primary { margin-top: 10px; }
 #wallets .rowbtn { flex: 1 1 260px; width: auto; }
 #wallets .buttons { margin: 4px 0; }
 #chains li { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 10px 0; }
-#chains b { font: 900 18px/1 var(--display); text-transform: uppercase; }
+#chains b { font: 800 condensed 18px/1 var(--display); text-transform: uppercase; }
 #chains small { display: inline; }
 #chains .hint { flex-basis: 100%; margin: 0; display: block; }
 
@@ -254,10 +261,10 @@ form .primary, .card > .primary { margin-top: 10px; }
 #graphbar input[type=range] { width: 120px; vertical-align: middle; }
 .seg { height: 40px; padding: 3px; gap: 2px; overflow: hidden; }
 .seg:hover:not(:disabled) { background: #fff; }
-.seg span { display: flex; align-items: center; height: 100%; padding: 0 16px; border-radius: var(--pill); color: var(--ink); font: 900 15px var(--display); transition: background .25s, color .25s; }
+.seg span { display: flex; align-items: center; height: 100%; padding: 0 16px; border-radius: var(--pill); color: var(--ink); font: 800 condensed 15px var(--display); transition: background .25s, color .25s; }
 .seg[aria-pressed=true] span:first-child, .seg[aria-pressed=false] span:last-child { background: var(--ink); color: var(--paper); }
 #legendbox { position: absolute; right: 32px; top: 16px; width: 270px; max-height: calc(100% - 48px); overflow-y: auto; padding: 0 18px; font-size: 14px; }
-#legendbox summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; height: var(--tap); cursor: pointer; list-style: none; font: 900 18px var(--display); text-transform: uppercase; }
+#legendbox summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; height: var(--tap); cursor: pointer; list-style: none; font: 800 condensed 18px var(--display); text-transform: uppercase; }
 #legendbox summary::-webkit-details-marker { display: none; }
 #legendbox summary::after { content: "+"; display: grid; place-items: center; width: 26px; height: 26px; border-radius: 50%; background: var(--orange); font: 400 16px/1 var(--mono); }
 #legendbox[open] summary::after { content: "–"; }
@@ -311,7 +318,8 @@ form .primary, .card > .primary { margin-top: 10px; }
   nav :focus-visible { outline-color: var(--paper); } /* ink on the ink pill would not show */
   .with-detail nav { display: none; }
   main > section { padding: 0 12px 104px; }
-  #view-portfolio > .ticker { margin: 10px -12px 0; }
+  #view-portfolio > .tape { margin: 10px -12px 0; }
+  #tickerpause { width: var(--tap); height: var(--tap); margin: 4px 2px 4px 8px; }
   .hero { padding: 40px 14px 24px; }
   .display { font-size: clamp(40px, 13.5vw, 64px); }
   .sticker { padding: 7px 14px; font-size: 14px; }
@@ -352,4 +360,6 @@ form .primary, .card > .primary { margin-top: 10px; }
   /* The ticker stands still, so it shows one pass and no more. */
   #ticker { flex-wrap: wrap; white-space: normal; row-gap: 10px; }
   #ticker span[data-again] { display: none; }
+  #tickerpause { display: none; } /* nothing moves, so there is nothing to pause */
+  .ticker { padding: 0 16px; }
 }

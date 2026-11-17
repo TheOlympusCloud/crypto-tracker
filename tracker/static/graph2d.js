@@ -38,7 +38,7 @@ export function create2d(el, { onSelect }) {
         },
       },
       // My wallets keep their names at any zoom.
-      { selector: "node[?mine]", style: { color: PAPER.ink, "font-family": "Red Hat Display, sans-serif", "font-weight": 900, "font-size": "data(font)", "min-zoomed-font-size": 0, "text-transform": "uppercase" } },
+      { selector: "node[?mine]", style: { color: PAPER.ink, "font-family": "Bricolage Grotesque, sans-serif", "font-weight": 800, "font-size": "data(font)", "min-zoomed-font-size": 0, "text-transform": "uppercase" } },
       {
         selector: "edge",
         style: {
