@@ -17,8 +17,11 @@ self.addEventListener("fetch", (e) => {
   e.respondWith(
     fetch(e.request, { cache: "no-cache" })
       .then((r) => {
-        const copy = r.clone();
-        caches.open(CACHE).then((c) => c.put(e.request, copy));
+        // Only a good answer is kept for offline use: never a password prompt or an error.
+        if (r.ok) {
+          const copy = r.clone();
+          caches.open(CACHE).then((c) => c.put(e.request, copy));
+        }
         return r;
       })
       .catch(() => caches.match(e.request))
