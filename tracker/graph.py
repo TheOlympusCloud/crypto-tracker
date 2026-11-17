@@ -82,10 +82,14 @@ def build(db, spam=False):
     marks = ",".join("?" * len(nodes))
     for r in db.execute(f"SELECT * FROM label WHERE address IN ({marks})", list(nodes)):
         nodes[r["address"]].update(describe(r))
-    for r in db.execute(f"SELECT * FROM balance WHERE {where} ORDER BY amount DESC"):
-        nodes[r["address"]].setdefault("balances", []).append(
-            {"chain": r["chain"], "asset": r["asset"], "amount": r["amount"]}
-        )
+    # Tokens judged fake come too, also without "Unknown tokens": the page marks them worth 0.
+    for r in db.execute(
+        f"SELECT * FROM balance WHERE ({where}) OR trust = 'scam' ORDER BY amount DESC"
+    ):
+        b = {"chain": r["chain"], "asset": r["asset"], "amount": r["amount"], "token": r["token"]}
+        if r["trust"]:
+            b |= {"name": r["name"], "trust": {"level": r["trust"], "reason": r["reason"]}}
+        nodes[r["address"]].setdefault("balances", []).append(b)
     members = defaultdict(list)
     for address, node in sorted(nodes.items()):
         if node.get("mine") and node.get("wallet"):

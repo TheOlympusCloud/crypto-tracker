@@ -1880,3 +1880,31 @@ def test_a_protocol_vault_outranks_a_contract_name_and_cuts_the_path(db, monkeyp
     assert (
         db.execute("SELECT name FROM label WHERE address = ?", (router,)).fetchone()[0] == "My note"
     )
+
+
+def test_a_fake_usdc_is_its_own_row_worth_0(db):
+    from tracker import graph, prices
+
+    mine(db, A)
+    mine(db, B)
+    db.executemany(
+        "INSERT INTO balance(address, chain, asset, token, amount, trust, reason) "
+        "VALUES (?, 'ethereum', 'USDC', ?, ?, ?, ?)",
+        [
+            (A, C, 100.0, "verified", "This exact contract is on Uniswap's default token list."),
+            (B, D, 5000.0, "scam", "It calls itself USDC, like USDC, but it is not the real one."),
+        ],
+    )
+    db.execute(f"INSERT INTO price VALUES ('ethereum:{C}', 1.0, 1, 'USDC', 0.99)")
+    db.execute(f"INSERT INTO price VALUES ('ethereum:{D}', 1.0, 1, 'USDC', 0.95)")  # bait price
+    db.commit()
+    p = prices.portfolio(db)
+    rows = sorted((a["asset"], a["fake"], a["amount"], a["value"]) for a in p["assets"])
+    assert rows == [("USDC", False, 100.0, 100.0), ("USDC", True, 5000.0, 0)]
+    assert p["total"] == 100.0 and p["unpriced"] == []
+    assert prices.summary(db)["assets"] == {"USDC": 100.0}
+    # The graph data carries the mark, also without "Unknown tokens", so the page can show it.
+    (fake,) = next(n for n in graph.build(db)["nodes"] if n["address"] == B)["balances"]
+    assert (fake["token"], fake["trust"]["level"]) == (D, "scam") and "real" in fake["trust"][
+        "reason"
+    ]
