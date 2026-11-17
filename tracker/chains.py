@@ -63,10 +63,18 @@ NEEDS = {  # what a chain takes when no key reads it
     "optimism": "Needs a free Blockscout key (CT_BLOCKSCOUT_KEY).",
     "arbitrum": "Needs a free Blockscout key (CT_BLOCKSCOUT_KEY) or a free Etherscan key "
     "(CT_ETHERSCAN_KEY).",
-    "bsc": "Etherscan's free plan no longer covers BNB Chain; a paid key can be set in a "
-    "CT_CHAINS file.",
+    "bsc": "Needs a free NodeReal key (CT_NODEREAL_KEY): Etherscan's free plan no longer covers "
+    "BNB Chain.",
 }
 NEEDS["polygon"] = NEEDS["arbitrum"]
+# BNB Chain through NodeReal's MegaNode, BNB Chain's own replacement for BscScan's API.
+NODEREAL = "https://bsc-mainnet.nodereal.io/v1/{}"
+NR_WINDOW = 100_000  # blocks one nr_getAssetTransfers query may span
+NR_PAUSE = 1.7  # seconds between calls: the free plan allows 150 units a second, a query is 250
+NR_LISTS = {"external": "txlist", "internal": "txlistinternal", "20": "tokentx"}
+# Blocks below the head read again next time: NodeReal's index may trail the head, or a short
+# reorg replace its last blocks. About 2.5 minutes; the rows read twice are stored once.
+NR_SETTLE = 200
 NAMES = {"bitcoincash": "Bitcoin Cash", "bsc": "BNB Chain", "evm": "EVM"}
 TOKEN_PROGRAMS = (  # Solana's two token programs: SPL Token, and Token-2022 (e.g. xStocks)
     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
@@ -84,7 +92,7 @@ def icon(chain, read=()):
     return read[0] if chain == "evm" and len(read) == 1 else chain
 
 
-def builtin_evm(etherscan=None, blockscout=None):
+def builtin_evm(etherscan=None, blockscout=None, nodereal=None):
     """Etherscan-style config per built-in chain, from the free sources each one has. A chain
     no key reads is marked with what it takes, instead of failing on every sync."""
     out = {}
@@ -100,6 +108,9 @@ def builtin_evm(etherscan=None, blockscout=None):
                 "apikey": blockscout,
                 "tokenlist": True,
             }
+        elif nodereal and chain == "bsc":
+            cfg |= {"url": NODEREAL.format(nodereal), "api": "nodereal"}
+            cfg["note"] = "Addresses that are not yours: only about the last day is read."
         elif etherscan and chain in ETHERSCAN_FREE:
             cfg |= {
                 "url": "https://api.etherscan.io/v2/api",
@@ -112,7 +123,11 @@ def builtin_evm(etherscan=None, blockscout=None):
     return out
 
 
-DEFAULT_EVM = builtin_evm(os.environ.get("CT_ETHERSCAN_KEY"), os.environ.get("CT_BLOCKSCOUT_KEY"))
+DEFAULT_EVM = builtin_evm(
+    os.environ.get("CT_ETHERSCAN_KEY"),
+    os.environ.get("CT_BLOCKSCOUT_KEY"),
+    os.environ.get("CT_NODEREAL_KEY"),
+)
 BTC_PAGES = int(os.environ.get("CT_BTC_PAGES", "8"))  # 25 transactions per page
 EVM_ROWS = int(os.environ.get("CT_EVM_ROWS", "1000"))  # newest rows per list call
 FANOUT = 50  # counterparties kept per UTXO transaction
@@ -169,7 +184,7 @@ def coverage():
     ]
     for chain, cfg in evm_chains().items():
         needs = cfg.get("needs_key")
-        note = needed(cfg) if needs else ""
+        note = needed(cfg) if needs else cfg.get("note", "")
         out.append(
             {
                 "chain": chain,
@@ -372,7 +387,9 @@ def fetch_utxo(client, address, chain="bitcoin", keep=()):
 
 # One page of an address's history, newest first: the raw items, their positions (block
 # height, timestamp or slot), the cursor of the next older page, and whether it is the last.
-Page = namedtuple("Page", "items positions next last")
+# `span` (lowest, highest): the positions a page covered, for a reader whose pages can be
+# empty (NodeReal's block windows); a reached bookmark shows there, rows or not.
+Page = namedtuple("Page", "items positions next last span", defaults=[None])
 
 
 def page_utxo(client, chain, address, cursor=None):
@@ -484,17 +501,18 @@ def fetch_tron(client, address):
     }
 
 
-def _rpc(client, method, *params):
+def _rpc(client, method, *params, url=None):
+    """A JSON-RPC call, to the Solana RPC unless `url` says otherwise."""
     for attempt in range(4):
         time.sleep(DELAY)
         r = client.post(
-            SOLANA, json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
+            url or SOLANA, json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
         )
         if r.status_code != 429 and r.status_code < 500:
             break
         time.sleep(2 ** (attempt + 1))
     if r.status_code == 429:
-        raise RuntimeError("rate limited by the Solana RPC (HTTP 429): raise CT_DELAY")
+        raise RuntimeError("rate limited by the RPC (HTTP 429): raise CT_DELAY")
     data = r.raise_for_status().json()
     if "error" in data:
         raise RuntimeError(f"{method}: {str(data['error'].get('message'))[:120]}")
@@ -665,6 +683,98 @@ def page_evm(client, cfg, address, action, cursor=None):
     return Page(items, positions, nxt, len(items) < EVM_ROWS)
 
 
+def _nr(client, cfg, method, *params):
+    time.sleep(max(NR_PAUSE - DELAY, 0))  # _rpc pauses DELAY too
+    return _rpc(client, method, *params, url=cfg["url"])
+
+
+def _number(value):
+    """NodeReal writes some numbers in hex ("0x12"), others as they are ("18", or a number)."""
+    return int(value, 16) if isinstance(value, str) and value.startswith("0x") else int(value)
+
+
+def _nr_row(t):
+    """A NodeReal transfer as an Etherscan-style row, for evm_transfers."""
+    return {
+        "hash": t["hash"],
+        "from": t["from"],
+        "to": t.get("to") or "",
+        "value": str(_number(t.get("value") or 0)),
+        "blockNumber": str(_number(t["blockNum"])),
+        "timeStamp": str(t.get("blockTimeStamp") or t.get("blockTimestamp") or 0),
+        "isError": "0" if t.get("receiptsStatus", 1) else "1",
+        "contractAddress": t.get("contractAddress") or "",
+        "tokenSymbol": t.get("asset") or "?",
+        "tokenDecimal": str(_number(t.get("decimal") or 18)),
+    }
+
+
+def page_nodereal(client, cfg, address, cursor=None):
+    """One window of a BNB Chain address's history, NR_WINDOW blocks from block `cursor` down
+    (None: the newest). Normal, internal and BEP-20 transfers come at once, each as
+    (list, Etherscan-style row); a query names the sender or the recipient, so two of them."""
+    high = int(cursor) if cursor else _number(_nr(client, cfg, "eth_blockNumber"))
+    low = max(0, high - NR_WINDOW + 1)
+    rows = []
+    for side in ("fromAddress", "toAddress"):
+        query = {"category": list(NR_LISTS), side: address, "fromBlock": hex(low)}
+        query |= {"toBlock": hex(high), "order": "desc", "maxCount": hex(1000)}
+        query["excludeZeroValue"] = False  # a claim moves nothing, but it was sent: tokens.judge
+        while True:
+            found = _nr(client, cfg, "nr_getAssetTransfers", query)
+            got = found.get("transfers") or []
+            for t in got:
+                try:
+                    rows.append((NR_LISTS[t["category"]], _nr_row(t)))
+                except (KeyError, ValueError, TypeError):
+                    continue  # a row we do not understand is not a transfer
+            more = found.get("pageKey") or found.get("PageKey")
+            if not got or not more:
+                break
+            query["pageKey"] = more
+    rows.sort(key=lambda r: -int(r[1]["blockNumber"]))
+    positions = [int(row["blockNumber"]) for _, row in rows]
+    return Page(rows, positions, str(max(low - 1, 0)), low == 0, (low, max(low, high - NR_SETTLE)))
+
+
+def nodereal_lists(chain, cfg, address, rows):
+    """Transfers and sent transactions of (list, row) pairs from page_nodereal."""
+    return {
+        "transfers": [
+            t for name, row in rows
+            for t in evm_transfers(chain, cfg["symbol"], [row], name == "tokentx")
+        ],
+        "sent": [
+            row["hash"] for name, row in rows if name == "txlist" and row["from"].lower() == address
+        ],
+    }  # fmt: skip
+
+
+def _fetch_nodereal(client, chain, cfg, address, out):
+    """BNB Chain's snapshot: the newest window of transfers, the balance and the tokens held."""
+    page = page_nodereal(client, cfg, address)
+    lists = nodereal_lists(chain, cfg, address, page.items)
+    out["transfers"] += lists["transfers"]
+    out["sent"] |= set(lists["sent"])
+    out["hub"] |= len(page.items) >= 1000  # that busy in a day: likely a service
+    native = _number(_nr(client, cfg, "eth_getBalance", address, "latest")) / 1e18
+    if native:
+        out["balances"].append((chain, cfg["symbol"], "", native))
+    # shortcut: the first 1,000 tokens; page on if spam-heavy wallets need all
+    for n in range(1, 11):
+        held = _nr(client, cfg, "nr_getTokenHoldings", address, hex(n), hex(100)) or {}
+        details = held.get("details") or []
+        for t in details:
+            decimals = _number(t.get("tokenDecimails") or t.get("tokenDecimals") or 18)
+            amount = _number(t.get("tokenBalance") or "0x0") / 10**decimals
+            if amount:
+                token = t["tokenAddress"].lower()
+                out["balances"].append((chain, (t.get("tokenSymbol") or "?")[:20], token, amount))
+                out["names"][(chain, token)] = (t.get("tokenName") or "")[:40]
+        if len(details) < 100:
+            break
+
+
 def fetch_evm(client, address, chains=None):
     # "names": (chain, contract) -> the token's full name, where the indexer gives one.
     # "sent": the transactions the address sent, also those that move no value (a claim()).
@@ -678,6 +788,9 @@ def fetch_evm(client, address, chains=None):
             return _evm_call(client, cfg, address, action, partial=True, **extra)
 
         try:
+            if cfg.get("api") == "nodereal":
+                _fetch_nodereal(client, chain, cfg, address, out)
+                continue
             page = {"page": 1, "offset": EVM_ROWS, "sort": "desc"}
             for action in ("txlist", "txlistinternal", "tokentx"):
                 items = call(action, **page)
