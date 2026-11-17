@@ -345,7 +345,17 @@ function openWallet(address) {
   if (leave()) drawGraph().catch(fail);
   const fiat = readFiat();
   const owned = readAddresses(n);
-  const wallet = (pub) => act(() => api("wallets", { address: n.addresses && !n.addresses.length ? n.wallet : address, name: n.name, public: pub }));
+  // An HD wallet none of whose addresses is known yet is addressed by its id.
+  const id = n.addresses && !n.addresses.length ? n.wallet : address;
+  const wallet = (pub) => act(() => api("wallets", { address: id, name: n.name, public: pub }));
+  const rename = h("form", { className: "rename", hidden: true }, h("label", {}, "Name ", h("input", { name: "alias", value: n.name || "", maxLength: 80, autocomplete: "off", enterKeyHint: "done" })), h("button", { className: "primary" }, "Save name"));
+  rename.onsubmit = (e) => {
+    e.preventDefault();
+    api("wallets", { address: id, name: rename.elements.alias.value, public: Boolean(n.public) })
+      .then(refresh)
+      .then(() => openWallet(address)) // the panel again, with the new name
+      .catch(fail);
+  };
   panel(
     heading(coin(n, 48), title(n), badge(n), partly(v, worth(fiat?.wallets?.[address], fiat))),
     h("div", { className: "mono" }, address),
@@ -355,8 +365,14 @@ function openWallet(address) {
       { className: "buttons" },
       h("button", { className: "primary", onclick: () => showPath([], "", address) }, "Show in graph"),
       h("button", { onclick: wallet(!n.public) }, n.public ? "Make private" : "Make public"),
-      h("button", { onclick: () => startSync([n.wallet || address]) }, "Re-sync")
+      h("button", { onclick: () => startSync([n.wallet || address]) }, "Re-sync"),
+      h("button", { ariaExpanded: "false", onclick: (e) => {
+        rename.hidden = !rename.hidden;
+        e.currentTarget.ariaExpanded = String(!rename.hidden);
+        if (!rename.hidden) rename.elements.alias.select();
+      } }, "Rename")
     ),
+    rename,
     owned.length ? h("h3", {}, addresses(owned.length)) : null,
     owned.length ? h("ul", { className: "rows addresses" }, owned.map((a) => h("li", {}, h("span", { className: "mono" }, a.address), h("span", { className: "amounts" }, (a.balances || []).map((b) => amount(b)))))) : null,
     h("h3", {}, "Can it be tied to your other wallets?"),

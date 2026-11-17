@@ -1289,3 +1289,44 @@ def test_vault_labels_survive_a_sync_in_which_their_protocol_is_down(db, monkeyp
         graph.verdicts(db)[1]["links"] == []
         and db.execute("SELECT COUNT(*) FROM alert").fetchone()[0] == 0
     )
+
+
+def test_a_wallet_is_renamed_by_posting_it_again(db):
+    from tracker.app import app
+
+    client = TestClient(app, base_url="http://localhost")
+    assert client.post(
+        "/api/wallets", json={"address": A, "name": "hot", "public": True}
+    ).is_success
+    assert client.post(
+        "/api/wallets", json={"address": A, "name": "  Daily\n spending\t ", "public": True}
+    ).is_success
+    row = db.execute("SELECT name, public, mine FROM node WHERE address = ?", (A,)).fetchone()
+    assert tuple(row) == ("Daily spending", 1, 1)  # one line, and still public
+    assert client.post(
+        "/api/wallets", json={"address": A, "name": "x" * 200, "public": True}
+    ).is_success
+    assert len(db.execute("SELECT name FROM node").fetchone()[0]) == 80
+    assert client.post("/api/wallets", json={"address": A, "name": "", "public": True}).is_success
+    assert (
+        client.get("/api/graph").json()["nodes"][0]["name"] == ""
+    )  # no name: the address is shown
+    assert client.post("/api/wallets", json={"address": "nope", "name": "x"}).status_code == 422
+
+    # An HD wallet is renamed as a whole, by one of its addresses or by its id.
+    db.execute(
+        "INSERT INTO hdwallet(id, name, public, descriptor) VALUES ('hd:x', 'Ledger', 0, ?)",
+        (ZPUB,),
+    )
+    db.execute(
+        "INSERT INTO node(address, mine, name, wallet) VALUES (?, 1, 'Ledger', 'hd:x')", (B,)
+    )
+    db.execute(
+        "INSERT INTO node(address, mine, name, wallet) VALUES (?, 1, 'Ledger', 'hd:x')", (C,)
+    )
+    db.commit()
+    assert client.post("/api/wallets", json={"address": B, "name": "Cold"}).is_success
+    assert {r[0] for r in db.execute("SELECT name FROM node WHERE wallet = 'hd:x'")} == {"Cold"}
+    assert client.post("/api/wallets", json={"address": "hd:x", "name": "Vault"}).is_success
+    names = {r[0] for r in db.execute("SELECT name FROM node WHERE wallet = 'hd:x'")}
+    assert names == {"Vault"} and db.execute("SELECT name FROM hdwallet").fetchone()[0] == "Vault"
