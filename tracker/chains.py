@@ -500,7 +500,9 @@ def evm_transfers(chain, native, items, token=False):
 
 def fetch_evm(client, address, chains=None):
     # "names": (chain, contract) -> the token's full name, where the indexer gives one.
+    # "sent": the transactions the address sent, also those that move no value (a claim()).
     out = {"transfers": [], "links": [], "balances": [], "hub": False, "errors": [], "names": {}}
+    out["sent"] = set()
     for chain, cfg in (chains or evm_chains()).items():
         if cfg.get("needs_key"):
             continue  # reported once by coverage(), not as an error on every address
@@ -522,6 +524,9 @@ def fetch_evm(client, address, chains=None):
             for action in ("txlist", "txlistinternal", "tokentx"):
                 items = call(action, **page)
                 out["hub"] |= len(items) >= EVM_ROWS
+                if action == "txlist":
+                    mine = [it for it in items if str(it.get("from")).lower() == address]
+                    out["sent"] |= {it.get("hash") for it in mine}
                 out["transfers"] += evm_transfers(chain, cfg["symbol"], items, action == "tokentx")
             native = int(call("balance") or 0) / 1e18
             if native:

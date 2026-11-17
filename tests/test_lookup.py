@@ -158,9 +158,9 @@ def indexers(request):
                 )
             ],
         }
-        return httpx.Response(
-            200, json={"status": "1", "result": answers[request.url.params["action"]]}
-        )
+        action = request.url.params["action"]
+        result = answers[action] + EXTRA[action] if action in EXTRA else answers[action]
+        return httpx.Response(200, json={"status": "1", "result": result})
     if host == "api.mainnet-beta.solana.com":
         import json
 
@@ -214,6 +214,7 @@ def indexers(request):
 
 
 D_BTC = "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2"
+EXTRA = {}  # action -> rows a test adds to the Etherscan-style answers
 SPAM, SPAMMER = "0x" + "5" * 40, "0x" + "6" * 40
 
 
@@ -354,6 +355,33 @@ def test_lookup_solana_lists_spl_and_token_2022_tokens_with_their_names(db, clie
     assert {e["asset"] for e in v["graph"]["edges"]} == {"SOL", "USDC"}
     assert v["notes"] and "Solana" in v["notes"][0]
     assert stored(db) == before
+
+
+def test_tokens_from_my_wallets_a_service_or_a_claim_were_wanted(db, client, monkeypatch):
+    NEWT, CLAIMED, DISTRIBUTOR = ("0x" + c * 40 for c in "894")
+    arrives = {"to": A, "timeStamp": "5", "tokenDecimal": "6", "value": "1000000"}
+    monkeypatch.setitem(EXTRA, "tokentx", [
+        arrives | {"from": D, "hash": "h5", "tokenSymbol": "NEWT", "contractAddress": NEWT},
+        arrives | {"from": DISTRIBUTOR, "hash": "h7", "tokenSymbol": "GOV"}
+        | {"contractAddress": CLAIMED},
+    ])  # fmt: skip
+    # The wallet's own claim() call: no value moves, so it is no transfer, but it took part.
+    claim = {"from": A, "to": DISTRIBUTOR, "hash": "h7", "timeStamp": "5", "value": "0"}
+    monkeypatch.setitem(EXTRA, "txlist", [claim])
+
+    def trust():
+        v = client.get(f"/api/lookup/{A}?chains=ethereum").json()
+        return {a["asset"]: a["trust"]["level"] for a in v["assets"]}
+
+    assert trust()["GOV"] == "unknown"  # claimed: the wallet took part
+    assert (trust()["NEWT"], trust()["FREE"]) == ("scam", "scam")  # both from strangers
+    db.execute("INSERT INTO label VALUES (?, 'Binance 14', 'cex', 'etherscan-labels')", (D,))
+    db.commit()
+    assert (trust()["NEWT"], trust()["FREE"]) == ("unknown", "scam")  # withdrawn from an exchange
+    db.execute("DELETE FROM label")
+    mine(db, D)
+    db.commit()
+    assert (trust()["NEWT"], trust()["FREE"]) == ("unknown", "scam")  # sent by my own wallet
 
 
 def test_lookup_warns_before_sending_to_a_flagged_address(db, client):

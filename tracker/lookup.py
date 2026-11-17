@@ -12,6 +12,7 @@ from collections import defaultdict
 from . import chains, prices, tokens
 from . import db as database
 from .graph import combine
+from .heuristics import SERVICE
 
 LISTED = 200  # counterparties returned, busiest first
 DRAWN = 60  # of those, how many are in the graph
@@ -55,15 +56,18 @@ def view(db, client, address, evm=()):
         p = price.get(prices.key(c, asset, token))
         return not token or blind or bool(p and (p["confidence"] or 0) >= prices.CONFIDENT)
 
-    # Every token held is listed, with how far it can be trusted. A token that arrived in
-    # transactions this address took no part in, and that it never moved, was not asked for.
-    took_part = {t[1] for t in transfers if t[2] == address}
-    arrived, moved = defaultdict(set), set()
+    # Every token held is listed, with how far it can be trusted. A token was not asked for
+    # when it arrived from strangers, in transactions this address took no part in, and was
+    # never moved: what my wallets or a known service (an exchange withdrawal) send was wanted.
+    took_part = {t[1] for t in transfers if t[2] == address} | data.get("sent", set())
+    arrived, moved, senders = defaultdict(set), set(), defaultdict(set)
     for c, txid, src, dst, _, token, _, _ in transfers:
         if token and dst == address:
             arrived[(c, token)].add(txid)
+            senders[(c, token)].add(src)
         if token and src == address:
             moved.add((c, token))
+    known_senders = wanted(db, set().union(*senders.values()))
     listed = tokens.uniswap(client) if any(token for _, token in held) else {}
     famous = tokens.famous(listed)
     known = tokens.jupiter(client, [t for c, t in held if c == "solana" and t])
@@ -79,6 +83,7 @@ def view(db, client, address, evm=()):
         unasked = None  # the history is incomplete, or never showed the token arriving
         if not data["hub"] and arrived[(c, token)]:
             unasked = (c, token) not in moved and not arrived[(c, token)] & took_part
+            unasked = unasked and not senders[(c, token)] & known_senders
         trust = tokens.trust(c, token, asset, name, on, famous, p, unasked)
         # A scam token's price is part of the bait: only a reliable price gives a value.
         fair = p and fx and vouched(c, asset, token) and trust["level"] != "scam"
@@ -186,6 +191,25 @@ def view(db, client, address, evm=()):
             "links": [k for k in links if k["a"] in drawn and k["b"] in drawn],
         },
     }
+
+
+def wanted(db, addresses):
+    """Those of `addresses` that are my wallets or labelled as a service other than a mixer."""
+    some, out = list(addresses), set()
+    services = sorted(SERVICE - {"mixer"})
+    for i in range(0, len(some), 400):
+        part = some[i : i + 400]
+        marks = ",".join("?" * len(part))
+        out |= {
+            r[0]
+            for r in db.execute(
+                f"SELECT address FROM node WHERE mine AND address IN ({marks}) UNION "
+                f"SELECT address FROM label WHERE category IN ({','.join('?' * len(services))}) "
+                f"AND address IN ({marks})",
+                [*part, *services, *part],
+            )
+        }
+    return out
 
 
 def lookalike(a, b):
