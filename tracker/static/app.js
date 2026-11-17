@@ -123,7 +123,7 @@ async function drawGraph() {
 }
 
 // What the graph shows: the data, less what is folded away, but never a hop of the shown path.
-const drawn = () => fold(scope ? scope.graph : graph, collapsed, shownPath);
+const drawn = () => fold(scope ? scope.graph : graph, collapsed, shownPath, $("minconf").value / 100);
 
 function toggleFold(n) {
   if (!collapsed.delete(n.address)) collapsed.add(n.address);

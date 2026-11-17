@@ -11,15 +11,15 @@ FOLD = (Path(__file__).parent.parent / "tracker" / "static" / "fold.js").as_uri(
 ME, CEX, MIXER, S1, S2, S3, T = "me", "cex", "mixer", "s1", "s2", "s3", "t"
 
 
-def fold(graph, folded, keep=()):
+def fold(graph, folded, keep=(), min_conf=0):
     if not shutil.which("node"):
         pytest.skip("Node is not installed")
     script = (
         f"import {{ fold }} from {json.dumps(FOLD)};"
-        "const [g, f, k] = JSON.parse(process.argv[1]);"
-        "console.log(JSON.stringify(fold(g, new Set(f), k)));"
+        "const [g, f, k, m] = JSON.parse(process.argv[1]);"
+        "console.log(JSON.stringify(fold(g, new Set(f), k, m)));"
     )
-    args = json.dumps([graph, list(folded), list(keep)])
+    args = json.dumps([graph, list(folded), list(keep), min_conf])
     out = subprocess.run(
         ["node", "--input-type=module", "-e", script, args], capture_output=True, check=False
     )
@@ -66,3 +66,17 @@ def test_my_wallets_and_a_shown_path_are_never_hidden():
     g = fold(GRAPH, [ME])  # my own busy wallet folds too, but is never hidden itself
     assert shown(g) == {ME: 1, CEX: None, MIXER: None, S1: None, S2: None, S3: None}
     assert S1 in shown(fold(GRAPH, [CEX], keep=[S1, CEX]))  # a highlighted path stays whole
+
+
+def test_only_what_is_drawn_ties_a_stranger_to_an_address():
+    # The slider hides s2's guess (0.9) to the mixer: s2 deals with the exchange alone.
+    assert shown(fold(GRAPH, [CEX], min_conf=0.95)) == {
+        ME: None,
+        CEX: 2,
+        MIXER: None,
+        S3: None,
+        T: None,
+    }
+    # Sending to itself does not tie an address to anything.
+    looped = {**GRAPH, "edges": [*GRAPH["edges"], edge(S1, S1)]}
+    assert S1 not in shown(fold(looped, [CEX]))
