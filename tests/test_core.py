@@ -1924,3 +1924,31 @@ def test_an_hd_wallet_keeps_its_fake_token_apart(db):
     (hd,) = [n for n in graph.build(db)["nodes"] if n.get("wallet_balances")]
     got = sorted((b["amount"], b.get("trust", {}).get("level")) for b in hd["wallet_balances"])
     assert got == [(150.0, "verified"), (5000.0, "scam")]  # never 5150 USDC
+
+
+def test_wallets_that_only_sent_fake_tokens_are_not_in_the_graph(db):
+    """Pablo: the wallets that only sent me tokens without value are not shown in the graph."""
+    from tracker import graph, sync
+
+    fake = "0x" + "9" * 40
+    airdropper, payer, both = ("0x" + c * 40 for c in "456")
+    mine(db, A)
+    db.execute("INSERT INTO node(address, synced_at) VALUES (?, 1)", (airdropper,))  # expanded once
+    db.execute(
+        "INSERT INTO balance(address, chain, asset, token, amount, trust) "
+        "VALUES (?, 'ethereum', 'USDC', ?, 1000, 'scam')",
+        (A, fake),
+    )
+    transfer(db, "ethereum", "t1", airdropper, A, 1000, asset="USDC", token=fake)
+    transfer(db, "ethereum", "t2", payer, A, 1, asset="ETH")
+    transfer(db, "ethereum", "t3", both, A, 5, asset="USDC", token=fake)
+    transfer(db, "ethereum", "t4", both, A, 2, asset="ETH")
+    transfer(db, "ethereum", "t5", A, B, 1000, asset="USDC", token=fake)  # I passed the fake on
+    db.commit()
+    for spam in (False, True):  # also with "Unknown tokens" ticked
+        g = graph.build(db, spam)
+        shown = {n["address"] for n in g["nodes"]}
+        assert airdropper not in shown and B not in shown, spam
+        assert {A, payer, both} <= shown, spam
+        assert all(e["token"] != fake for e in g["edges"]), spam
+    assert set(sync.neighbours(db, [A])) == {payer, both}  # nobody crawls an airdropper

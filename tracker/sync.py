@@ -5,7 +5,7 @@ import time
 
 import httpx
 
-from . import alerts, chains, detect, hd, heuristics, labels, prices, swaps, tokens
+from . import alerts, chains, detect, graph, hd, heuristics, labels, prices, swaps, tokens
 from . import db as database
 
 EXPAND_PER_LEVEL = 40  # neighbours synced per depth level, most active first
@@ -83,8 +83,8 @@ def neighbours(db, addresses):
     marks = ",".join("?" * len(addresses))
     rows = db.execute(
         f"""SELECT other, COUNT(*) n FROM (
-              SELECT dst other FROM transfer WHERE src IN ({marks})
-              UNION ALL SELECT src FROM transfer WHERE dst IN ({marks}))
+              SELECT dst other FROM transfer WHERE src IN ({marks}) AND NOT {graph.FAKE}
+              UNION ALL SELECT src FROM transfer WHERE dst IN ({marks}) AND NOT {graph.FAKE})
             WHERE other NOT IN (SELECT address FROM node WHERE synced_at IS NOT NULL)
               AND other NOT IN (SELECT address FROM label)
             GROUP BY other ORDER BY n DESC""",

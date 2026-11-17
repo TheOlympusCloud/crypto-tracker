@@ -59,8 +59,13 @@ def _links(db):
     ]
 
 
+# Transfers of a token judged fake in one of my wallets: never drawn, not even with "Unknown
+# tokens", so an address that only sent me such tokens is not in the graph at all.
+FAKE = "token IN (SELECT token FROM balance WHERE trust = 'scam')"
+
+
 def build(db, spam=False):
-    where = "1" if spam else TRUSTED
+    where = f"({'1' if spam else TRUSTED}) AND NOT {FAKE}"
     edges = [
         dict(r)
         for r in db.execute(
@@ -70,7 +75,19 @@ def build(db, spam=False):
         )
     ]
     links = _links(db)
-    nodes = {r["address"]: dict(r) for r in db.execute("SELECT * FROM node")}
+    only_fake = {
+        r[0]
+        for r in db.execute(
+            f"SELECT src FROM transfer WHERE {FAKE} UNION SELECT dst FROM transfer WHERE {FAKE} "
+            f"EXCEPT SELECT src FROM transfer WHERE NOT {FAKE} "
+            f"EXCEPT SELECT dst FROM transfer WHERE NOT {FAKE}"
+        )
+    } - {x for k in links for x in (k["a"], k["b"])}
+    nodes = {
+        r["address"]: dict(r)
+        for r in db.execute("SELECT * FROM node")
+        if r["mine"] or r["address"] not in only_fake
+    }
     for address in {x for e in edges for x in (e["src"], e["dst"])} | {
         x for k in links for x in (k["a"], k["b"])
     }:
