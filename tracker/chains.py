@@ -8,7 +8,7 @@ EVM chains share one Etherscan-style adapter; Tron and Solana are read more shal
 import json
 import os
 import time
-from collections import Counter, namedtuple
+from collections import Counter, defaultdict, namedtuple
 from datetime import datetime
 
 import httpx
@@ -56,6 +56,17 @@ EVM = {
     "avalanche": (43114, "AVAX", "avax"),
 }
 KEYLESS = {"ethereum", "avalanche"}  # served by Routescan without a key
+BLOCKSCOUT = {"base", "arbitrum", "optimism", "polygon"}  # one free key: dev.blockscout.com
+ETHERSCAN_FREE = {"arbitrum", "polygon"}  # besides Ethereum, what Etherscan's free plan covers
+NEEDS = {  # what a chain takes when no key reads it
+    "base": "Needs a free Blockscout key (CT_BLOCKSCOUT_KEY).",
+    "optimism": "Needs a free Blockscout key (CT_BLOCKSCOUT_KEY).",
+    "arbitrum": "Needs a free Blockscout key (CT_BLOCKSCOUT_KEY) or a free Etherscan key "
+    "(CT_ETHERSCAN_KEY).",
+    "bsc": "Etherscan's free plan no longer covers BNB Chain; a paid key can be set in a "
+    "CT_CHAINS file.",
+}
+NEEDS["polygon"] = NEEDS["arbitrum"]
 NAMES = {"bitcoincash": "Bitcoin Cash", "bsc": "BNB Chain", "evm": "EVM"}
 TOKEN_PROGRAMS = (  # Solana's two token programs: SPL Token, and Token-2022 (e.g. xStocks)
     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
@@ -73,28 +84,35 @@ def icon(chain, read=()):
     return read[0] if chain == "evm" and len(read) == 1 else chain
 
 
-def builtin_evm(key):
-    """Etherscan-style config per built-in chain. Without an Etherscan key only the keyless
-    chains can be read; the others are marked instead of failing on every sync."""
+def builtin_evm(etherscan=None, blockscout=None):
+    """Etherscan-style config per built-in chain, from the free sources each one has. A chain
+    no key reads is marked with what it takes, instead of failing on every sync."""
     out = {}
     for chain, (chain_id, symbol, llama) in EVM.items():
         cfg = {"symbol": symbol, "llama": llama}
         if chain in KEYLESS:
             cfg["url"] = f"https://api.routescan.io/v2/network/mainnet/evm/{chain_id}/etherscan/api"
             cfg["tokenbalance"] = True  # Routescan lists every token held, without a key
-        elif key:
+        elif blockscout and chain in BLOCKSCOUT:
+            cfg |= {
+                "url": "https://api.blockscout.com/v2/api",
+                "params": {"chain_id": str(chain_id)},
+                "apikey": blockscout,
+                "tokenlist": True,
+            }
+        elif etherscan and chain in ETHERSCAN_FREE:
             cfg |= {
                 "url": "https://api.etherscan.io/v2/api",
                 "params": {"chainid": str(chain_id)},
-                "apikey": key,
+                "apikey": etherscan,
             }
         else:
-            cfg["needs_key"] = True
+            cfg["needs_key"] = NEEDS[chain]
         out[chain] = cfg
     return out
 
 
-DEFAULT_EVM = builtin_evm(os.environ.get("CT_ETHERSCAN_KEY"))
+DEFAULT_EVM = builtin_evm(os.environ.get("CT_ETHERSCAN_KEY"), os.environ.get("CT_BLOCKSCOUT_KEY"))
 BTC_PAGES = int(os.environ.get("CT_BTC_PAGES", "8"))  # 25 transactions per page
 EVM_ROWS = int(os.environ.get("CT_EVM_ROWS", "1000"))  # newest rows per list call
 FANOUT = 50  # counterparties kept per UTXO transaction
@@ -151,7 +169,7 @@ def coverage():
     ]
     for chain, cfg in evm_chains().items():
         needs = cfg.get("needs_key")
-        note = "Needs a free Etherscan API key in CT_ETHERSCAN_KEY." if needs else ""
+        note = needed(cfg) if needs else ""
         out.append(
             {
                 "chain": chain,
@@ -165,15 +183,19 @@ def coverage():
     return [{**c, "name": name(c["chain"]), **explorer(c["chain"])} for c in out]
 
 
+def needed(cfg):
+    """What a chain that is not read takes; a CT_CHAINS entry may only say "needs_key": true."""
+    return cfg["needs_key"] if isinstance(cfg["needs_key"], str) else "Needs an API key."
+
+
 def notes(chain):
     """Caveats for a wallet with an address on `chain` (as returned by db.chain_of)."""
     if chain == "evm":
-        missing = [c for c, cfg in evm_chains().items() if cfg.get("needs_key")]
-        return (
-            [f"Not read on {', '.join(missing)}: that needs a free Etherscan API key."]
-            if missing
-            else []
-        )
+        missing = defaultdict(list)  # what it takes -> the chains that need it
+        for c, cfg in evm_chains().items():
+            if cfg.get("needs_key"):
+                missing[needed(cfg)].append(c)
+        return [f"Not read on {', '.join(cs)}. {need}" for need, cs in missing.items()]
     note = UTXO[chain][3] if chain in UTXO else SHALLOW.get(chain, "")
     return [note] if note else []
 
@@ -614,8 +636,10 @@ def _evm_call(client, cfg, address, action, **extra):
     if cfg.get("apikey"):
         params["apikey"] = cfg["apikey"]
     data = get(client, cfg["url"], {**cfg.get("params", {}), **params, **extra}).json()
-    # Etherscan reports an empty list as status 0, "No transactions found".
-    if data.get("status") != "1" and not str(data.get("message", "")).startswith("No "):
+    # Etherscan reports an empty list as status 0, "No transactions found". Blockscout answers
+    # status 2 when some blocks of the range are not traced yet (Optimism's internal
+    # transactions): it gives what it has.
+    if data.get("status") not in ("1", "2") and not str(data.get("message", "")).startswith("No "):
         raise RuntimeError(f"{action}: {data.get('message')} {str(data.get('result'))[:80]}")
     return data.get("result") or []
 
@@ -668,9 +692,9 @@ def fetch_evm(client, address, chains=None):
                     if t.get("type") == "ERC-20" and int(t.get("balance") or 0):
                         amount = int(t["balance"]) / 10 ** int(t.get("decimals") or 18)
                         symbol = (t.get("symbol") or "?")[:20]
-                        out["balances"].append(
-                            (chain, symbol, t["contractAddress"].lower(), amount)
-                        )
+                        token = t["contractAddress"].lower()
+                        out["balances"].append((chain, symbol, token, amount))
+                        out["names"][(chain, token)] = (t.get("name") or "")[:40]
             if cfg.get("tokenbalance"):  # a Routescan extension; last, so its errors spare the rest
                 # shortcut: one page of EVM_ROWS tokens; page on if spam-heavy wallets need all
                 for t in call("addresstokenbalance", page=1, offset=EVM_ROWS):

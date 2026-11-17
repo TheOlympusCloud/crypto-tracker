@@ -53,7 +53,8 @@ All taken from a demo instance with invented wallets and addresses.
 | Bitcoin Cash | yes | Same heuristics; the 100 newest transactions per address. |
 | Dogecoin | yes | Same heuristics; the 50 newest transactions. The free indexer allows about 100 lookups an hour: when that is used up the sync moves on, and the remaining addresses are read on a later sync. |
 | Ethereum, Avalanche C | yes | Native coin and ERC-20 transfers, every ERC-20 token held, counterparties expanded. |
-| Base, Arbitrum, Optimism, Polygon, BNB Chain | **needs `CT_ETHERSCAN_KEY`** | Same as Ethereum once the key is set. One free Etherscan key covers them. |
+| Base, Arbitrum, Optimism, Polygon | **needs `CT_BLOCKSCOUT_KEY`** | Same as Ethereum once the key is set. One free [Blockscout key](https://dev.blockscout.com) covers all four. Arbitrum and Polygon can also use a free `CT_ETHERSCAN_KEY`. |
+| BNB Chain | **not read for free** | Etherscan's free plan no longer covers it (nor Base and Optimism). With a paid Etherscan key, add it in a `CT_CHAINS` file (`"bsc": {"url": "https://api.etherscan.io/v2/api", "params": {"chainid": "56"}, "apikey": "…", "symbol": "BNB", "llama": "bsc"}`). |
 | Tron | yes | TRX and TRC-20 transfers, the 200 newest; counterparties not expanded automatically. |
 | Solana | yes | SOL and SPL tokens (Token-2022 too, e.g. xStocks), the 25 newest transactions, read as net balance changes; counterparties not expanded automatically. |
 
@@ -131,7 +132,8 @@ docker run -p 8000:8000 -v tracker-data:/data -e CT_PASSWORD=change-me crypto-tr
 | `CT_PASSWORD` | unset | HTTP Basic password (any user name). Put TLS in front of it. After one good password the browser or app gets a cookie and is not asked again for 400 days; a new password signs every device out. |
 | `CT_DB` | `tracker.db` | SQLite file. |
 | `CT_ESPLORA` | `https://blockstream.info/api` | Bitcoin indexer (Esplora API: Blockstream, mempool.space, your own). |
-| `CT_ETHERSCAN_KEY` | unset | Free Etherscan API key; turns on Base, Arbitrum, Optimism, Polygon and BNB Chain. Set it in the environment, never in a file you commit. |
+| `CT_BLOCKSCOUT_KEY` | unset | Free Blockscout API key (`proapi_…`, from [dev.blockscout.com](https://dev.blockscout.com)); turns on Base, Arbitrum, Optimism and Polygon, token balances included. Set it in the environment, never in a file you commit. |
+| `CT_ETHERSCAN_KEY` | unset | Free Etherscan API key; turns on Arbitrum and Polygon, the chains Etherscan's free plan still covers. Not needed with `CT_BLOCKSCOUT_KEY`. |
 | `CT_CHAINS` | unset | JSON file that adds EVM chains or points built-in ones at your own indexer, see `chains.example.json`. Keep the real file as `chains.json` (git-ignored). |
 | `CT_LITECOIN`, `CT_BITCOINCASH`, `CT_DOGECOIN`, `CT_TRON`, `CT_SOLANA` | public APIs | Base URL of the indexer for that chain (Esplora, Haskoin, BlockCypher, TronGrid, Solana RPC). |
 | `CT_DELAY` | `0.25` | Seconds between API calls. |
@@ -365,6 +367,8 @@ or at the hop limit, and says which.
 - The token badge knows only the lists above and its own rules: a scam token can still be
   "unknown", and a lookup with an incomplete history never calls a token unasked.
 - A token that only borrows a known name (a fake USDC) is listed apart, unpriced.
+- Blockscout has not traced every internal transaction (contract-to-wallet payments) of
+  some chains yet, seen on Optimism; it answers with those it has, and the rest are missing.
 - Very active addresses that are not yours load only their newest history and are flagged
   in the UI. A very large wallet of yours can take several syncs to read in full.
 - A transaction with more than 50 counterparties (a CoinJoin, an exchange batch) keeps

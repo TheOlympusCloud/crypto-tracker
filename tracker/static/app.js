@@ -543,7 +543,8 @@ async function lookUp(text) {
   const found = await api("resolve", { q: text });
   $("lookup").elements.q.value = found.address;
   markBox(found.icon);
-  const missing = found.needs_key ? `This code is for ${chainName(found.needs_key)}, which this server cannot read without an Etherscan API key (CT_ETHERSCAN_KEY). The address can still be read on these chains.` : "";
+  const why = (analysis.chains || []).find((c) => c.chain === found.needs_key)?.note || "";
+  const missing = found.needs_key ? `This code is for ${chainName(found.needs_key)}, which this server does not read yet. ${why} The address can still be read on these chains.` : "";
   if (found.chain === "evm" && !found.hint && (missing || found.chains.length > 1)) return askChains(found.address, found.chains, found.chains, missing);
   return openLookup(found.address, found.hint ? [found.hint] : []);
 }
