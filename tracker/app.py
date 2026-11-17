@@ -1,3 +1,4 @@
+import hmac
 import os
 import secrets
 import time
@@ -13,20 +14,57 @@ from . import alerts, chains, graph, hd, lookup, prices, sync, uri
 from . import db as database
 
 app = FastAPI(title="Crypto tracker", docs_url=None, redoc_url=None)
-CATEGORIES = {"cex", "dex", "bridge", "mixer", "defi", "service", "other"}
+CATEGORIES = {"cex", "dex", "bridge", "mixer", "flagged", "defi", "service", "other"}
+
+
+SESSION = "ct_session"
+SESSION_DAYS = 400  # the longest a browser keeps a cookie
+
+
+SECRETS = {}  # database path -> the random secret its install keys session cookies with
+
+
+def session(password):
+    """The session cookie's value: the password's HMAC under a secret made once per install,
+    so the cookie tells nothing about the password, and a new password ends every session."""
+    path = os.environ.get("CT_DB", "tracker.db")
+    if path not in SECRETS:
+        db = database.connect()
+        try:
+            with db:
+                db.execute(
+                    "INSERT OR IGNORE INTO meta VALUES ('session_secret', ?)",
+                    (secrets.token_hex(32),),
+                )
+            row = db.execute("SELECT value FROM meta WHERE key = 'session_secret'").fetchone()
+            SECRETS[path] = bytes.fromhex(row[0])
+        finally:
+            db.close()
+    return hmac.new(SECRETS[path], password.encode(), "sha256").hexdigest()
 
 
 @app.middleware("http")
 async def basic_auth(request: Request, call_next):
     password = os.environ.get("CT_PASSWORD")
     if password:
+        token = session(password)
+        if secrets.compare_digest(request.cookies.get(SESSION, "").encode(), token.encode()):
+            return await call_next(request)
         try:
-            scheme, _, token = request.headers.get("authorization", "").partition(" ")
-            given = b64decode(token).decode().partition(":")[2] if scheme == "Basic" else ""
+            scheme, _, given = request.headers.get("authorization", "").partition(" ")
+            given = b64decode(given).decode().partition(":")[2] if scheme == "Basic" else ""
         except ValueError:
             given = ""
         if not secrets.compare_digest(given.encode(), password.encode()):
             return Response(status_code=401, headers={"WWW-Authenticate": "Basic"})
+        # Home-screen apps and WebViews forget HTTP Basic when they close: a cookie they keep.
+        response = await call_next(request)
+        tls = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
+        response.set_cookie(
+            SESSION, token, max_age=SESSION_DAYS * 86400, path="/", secure=tls,
+            httponly=True, samesite="lax",
+        )  # fmt: skip
+        return response
     elif request.url.hostname not in ("127.0.0.1", "localhost", "::1"):
         # Without a password only loopback names are served, so a hostile web page cannot
         # rebind its own domain to this port and read the wallet list.
@@ -91,7 +129,7 @@ def get_analysis(max_hops: int = 4):
             "fiat": prices.summary(db),
             "alerts": alerts.recent(db),
             "watched": [
-                dict(r)
+                {**r, "chain": database.chain_of(r["address"])}
                 for r in db.execute(
                     "SELECT w.address, l.name label, l.category FROM watch w "
                     "LEFT JOIN label l USING (address) ORDER BY w.ts DESC"
@@ -191,6 +229,7 @@ def resolve(pasted: Pasted):
         # the chains it can read are offered instead, and the missing one is named.
         "hint": hint if hint in readable else None,
         "needs_key": hint if hint and hint not in readable else None,
+        "icon": chains.icon(chain, [hint] if hint in readable else []),
     }
 
 

@@ -316,6 +316,47 @@ def test_api_wallets_labels_and_auth(db, monkeypatch):
     assert client.get("/api/graph", auth=("any", "s3cret"), headers=remote).status_code == 200
 
 
+def test_one_good_password_keeps_a_phone_signed_in(db, monkeypatch, tmp_path):
+    """Home-screen apps and the Android app's WebView forget HTTP Basic between launches, so
+    one good password earns a cookie, which they keep."""
+    from tracker.app import app
+
+    monkeypatch.setenv("CT_PASSWORD", "s3cret")
+    phone = TestClient(app, base_url="http://localhost")
+    assert phone.get("/api/graph", auth=("any", "wrong")).status_code == 401
+    assert not phone.cookies  # a wrong password earns nothing
+    cookie = phone.get("/api/graph", auth=("any", "s3cret")).headers["set-cookie"]
+    assert "s3cret" not in cookie  # it proves the password without carrying it
+    for flag in ("HttpOnly", "Path=/", "SameSite=lax", "Max-Age=34560000"):
+        assert flag in cookie
+    assert "Secure" not in cookie  # over plain http a Secure cookie would never come back
+    assert phone.get("/api/graph").status_code == 200  # the next launch: the cookie alone
+    # Behind TLS, also when a reverse proxy ends it, the cookie only travels encrypted.
+    https = TestClient(app, base_url="https://localhost")
+    assert "Secure" in https.get("/", auth=("any", "s3cret")).headers["set-cookie"]
+    proxied = {"x-forwarded-proto": "https"}
+    assert (
+        "Secure"
+        in TestClient(app, base_url="http://localhost")
+        .get("/", auth=("any", "s3cret"), headers=proxied)
+        .headers["set-cookie"]
+    )
+    # A made-up cookie is refused, and a new password signs every device out.
+    forged = TestClient(app, base_url="http://localhost", cookies={"ct_session": "0" * 64})
+    assert forged.get("/api/graph").status_code == 401
+    # The cookie is keyed by a random secret of this install: it tells nothing about the
+    # password, outlives a restart, and is worth nothing at another install.
+    import tracker.app as server
+
+    server.SECRETS.clear()  # a restart
+    assert phone.get("/api/graph").status_code == 200
+    monkeypatch.setenv("CT_DB", str(tmp_path / "another-install.db"))
+    assert phone.get("/api/graph").status_code == 401
+    monkeypatch.setenv("CT_DB", str(tmp_path / "t.db"))
+    monkeypatch.setenv("CT_PASSWORD", "n3w")
+    assert phone.get("/api/graph").status_code == 401
+
+
 def test_sync_evm_address_reports_bad_chain_and_derives_token_balance(db, monkeypatch):
     import httpx
 

@@ -14,6 +14,7 @@ import android.os.Bundle;
 import android.os.Parcelable;
 import android.provider.MediaStore;
 import android.text.InputType;
+import android.webkit.CookieManager;
 import android.webkit.HttpAuthHandler;
 import android.webkit.PermissionRequest;
 import android.webkit.SslErrorHandler;
@@ -72,6 +73,14 @@ public class MainActivity extends Activity {
         if (prefs.getString(SetupActivity.CERT, null) == null) web.clearSslPreferences();
         PhotoProvider.file(this).delete(); // a QR photo from an earlier run
         if (state == null || web.restoreState(state) == null) web.loadUrl(base);
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        // The server signs the app in with a cookie after one good password: keep it on disk
+        // now, not at the WebView's next periodic write, in case the app is killed.
+        CookieManager.getInstance().flush();
     }
 
     @Override

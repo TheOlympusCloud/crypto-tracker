@@ -3,7 +3,7 @@
 // matte solid whose silhouette is its glyph in kinds.js.
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { KINDS, PAPER, PATH, drawGlyph, kindOf, linkColor, linkDash, pct, title, typeOf } from "./kinds.js";
+import { KINDS, PAPER, PATH, chainLabel, chainOf, drawChain, drawGlyph, kindOf, linkColor, linkDash, pct, title, typeOf } from "./kinds.js";
 
 const K = 14; // ideal distance between linked nodes, world units
 const FLATTEN = 0.12; // extra pull towards the plinth's plane, so the graph reads as a table of coins
@@ -19,16 +19,18 @@ const ease = (t) => 1 - (1 - Math.min(Math.max(t, 0), 1)) ** 3;
 
 // Lines of text on one sprite. `world` > 0 gives it that height in world units, so it shrinks
 // with distance; otherwise it keeps a constant size on screen, times `shrink` on narrow screens.
-function textSprite(lines, world = 0, shrink = 1) {
+// `chain` puts that chain's mark before the last line.
+function textSprite(lines, world = 0, shrink = 1, chain = "") {
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d");
   const pitch = 38;
+  const mark = chain ? pitch : 0;
   const widths = lines.map(([text, font, , spacing = 0]) => {
     ctx.font = font;
     ctx.letterSpacing = `${spacing}px`;
     return ctx.measureText(text).width;
   });
-  canvas.width = Math.ceil(Math.max(...widths)) + 16;
+  canvas.width = Math.ceil(Math.max(...widths)) + 16 + mark;
   canvas.height = pitch * lines.length + 6;
   ctx.textAlign = "center";
   ctx.lineJoin = "round";
@@ -37,10 +39,14 @@ function textSprite(lines, world = 0, shrink = 1) {
     ctx.letterSpacing = `${spacing}px`;
     ctx.lineWidth = 6;
     ctx.strokeStyle = PAPER.page;
-    ctx.strokeText(text, canvas.width / 2 + spacing / 2, pitch * i + 29);
+    ctx.strokeText(text, (canvas.width + mark) / 2 + spacing / 2, pitch * i + 29);
     ctx.fillStyle = color;
-    ctx.fillText(text, canvas.width / 2 + spacing / 2, pitch * i + 29);
+    ctx.fillText(text, (canvas.width + mark) / 2 + spacing / 2, pitch * i + 29);
   });
+  if (chain) {
+    ctx.translate(4, pitch * (lines.length - 1) + 4);
+    drawChain(ctx, chain, pitch - 6);
+  }
   return sprite(canvas, world || (lines.length > 1 ? 0.05 : 0.019) * shrink, world > 0);
 }
 
@@ -129,6 +135,7 @@ function solids() {
     pentagon: new THREE.CylinderGeometry(1.1, 1.1, 0.6, 5).rotateX(-Math.PI / 2),
     tag: slab([[-1.1, -0.75], [0.35, -0.75], [1.15, 0], [0.35, 0.75], [-1.1, 0.75]], 0.5),
     ring: new THREE.TorusGeometry(0.78, 0.2, 8, 24),
+    linked: new THREE.CylinderGeometry(1.1, 1.1, 0.6, 8).rotateX(-Math.PI / 2).rotateZ(Math.PI / 8),
   };
 }
 
@@ -385,6 +392,7 @@ export function create3d(el, { onSelect }) {
     const chosen = nodes[selected]?.n.address;
     nodes = graph.nodes.map((n) => {
       const [color, shape] = KINDS[kindOf(n)];
+      const more = n.folded ? ` · +${n.folded}` : ""; // counterparties folded into it
       return {
         n,
         color,
@@ -392,9 +400,9 @@ export function create3d(el, { onSelect }) {
         size: n.mine ? COIN : n.category ? 2.6 : 0.9,
         dim: !n.mine && !n.synced_at && !n.category ? 0.55 : 1, // not expanded yet
         label: n.mine
-          ? [[n.public ? "PUBLIC" : "PRIVATE", FONT.tag, n.public ? PUBLIC_INK : color, 3], [title(n).toUpperCase(), FONT.name, PAPER.ink, 0]]
-          : n.category
-            ? [[`${title(n)} · ${typeOf(n)}`, FONT.text, PAPER.quiet]]
+          ? [[n.public ? "PUBLIC" : "PRIVATE", FONT.tag, n.public ? PUBLIC_INK : color, 3], [title(n).toUpperCase() + more, FONT.name, PAPER.ink, 0]]
+          : n.category || n.folded != null
+            ? [[`${title(n)}${n.category ? ` · ${typeOf(n)}` : ""}${more}`, FONT.text, PAPER.quiet]]
             : null,
       };
     });
@@ -441,7 +449,8 @@ export function create3d(el, { onSelect }) {
       coin.userData = { kind: kindOf(node.n), shared: true };
       return [[coin, i]];
     });
-    world.add(...solidMeshes, ...coins.map((x) => x[0]));
+    // add() without arguments complains: a graph may have no solids, or no labels.
+    if (solidMeshes.length + coins.length) world.add(...solidMeshes, ...coins.map((x) => x[0]));
 
     const line = (pairs, colors, material) => {
       const geometry = new THREE.BufferGeometry();
@@ -491,8 +500,8 @@ export function create3d(el, { onSelect }) {
       .slice(0, 60)
       .map(([k, i]) => [textSprite([[`${k.kind} ${pct(k.confidence)}`, FONT.mono, linkColor(k.kind)]], 1.6), ...guessPairs[i]]);
     const shrink = Math.min(1, Math.max(0.6, el.clientWidth / 900));
-    nodeLabels = nodes.flatMap((node, i) => (node.label ? [[textSprite(node.label, 0, shrink), i]] : []));
-    world.add(...[...linkLabels, ...nodeLabels].map((x) => x[0]));
+    nodeLabels = nodes.flatMap((node, i) => (node.label ? [[textSprite(node.label, 0, shrink, chainOf(node.n)), i]] : []));
+    if (linkLabels.length + nodeLabels.length) world.add(...[...linkLabels, ...nodeLabels].map((x) => x[0]));
 
     if (grew) {
       heat = 6;
@@ -586,7 +595,7 @@ export function create3d(el, { onSelect }) {
     renderer.domElement.style.cursor = node ? "pointer" : "grab";
     tip.hidden = !node;
     if (node) {
-      tip.textContent = `${title(node.n)} · ${typeOf(node.n)}`;
+      tip.textContent = [title(node.n), typeOf(node.n), chainLabel(chainOf(node.n))].filter(Boolean).join(" · ");
       tip.style.left = `${e.clientX + 14}px`;
       tip.style.top = `${e.clientY + 14}px`;
     }

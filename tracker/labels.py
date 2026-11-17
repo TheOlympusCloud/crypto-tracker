@@ -54,6 +54,11 @@ CEX = [
 # match wins, so the specific comes before the general.
 TYPES = [
     ("mixer", "mixer", ["tornado-cash", "mixing_service", "mixer", "coinjoin"]),
+    # Scams, hacks and sanctions: never send money there.
+    ("scam, hack or sanctions", "flagged", ["phish-hack", "phishing", "scam", "heist", "exploit",
+                                            "hack", "ransomware", "sextortion", "fraud", "ponzi",
+                                            "take-action", "spam-token", "ofac-sanctions-lists",
+                                            "sanctions"]),
     ("bridge", "bridge", ["bridge", "cross-chain", "multichain", "hop-protocol"]),
     ("exchange", "cex", CEX),
     ("DEX aggregator", "dex", ["1inch", "paraswap", "0x-protocol", "aggregator"]),
@@ -79,12 +84,19 @@ CONTRACTS = [
 ]
 
 
+FLAGGED_NAMES = re.compile(r"phish|scam|exploiter|hacker|drainer|heist|sanction", re.IGNORECASE)
+
+
 def categorize(slugs, name=""):
     """(category, type) for a dataset entry, from its slugs or the first word of its name."""
     slugs = {s.lower() for s in slugs}
     first = re.split(r"[\s:.]", name.lower(), maxsplit=1)[0]
     for kind, category, keys in TYPES:
-        if slugs & set(keys) or (category == "cex" and first in CEX[:-1]):
+        if (
+            slugs & set(keys)
+            or (category == "cex" and first in CEX[:-1])
+            or (category == "flagged" and FLAGGED_NAMES.search(name))
+        ):
             return category, kind
     return "other", ""
 
