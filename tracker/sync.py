@@ -5,7 +5,20 @@ import time
 
 import httpx
 
-from . import alerts, chains, detect, graph, hd, heuristics, history, labels, prices, swaps, tokens
+from . import (
+    alerts,
+    chains,
+    deposits,
+    detect,
+    graph,
+    hd,
+    heuristics,
+    history,
+    labels,
+    prices,
+    swaps,
+    tokens,
+)
 from . import db as database
 
 EXPAND_PER_LEVEL = 40  # neighbours synced per depth level, most active first
@@ -231,9 +244,11 @@ def run(addresses=None, depth=0, import_labels=False, wallets=()):
             detect.contracts(db, client)
             status["current"] = "swaps"
             status["notes"] += swaps.sync(db, client)
+            deposits.read(db, client)  # after the labels: a named address is not read
             detect.behaviour(db)  # after the swaps, whose vault labels outrank a guess
             heuristics.match_bridges(db)
             heuristics.match_exchange_flows(db)
+            deposits.link(db)
             alerts.check(db)
             status["current"] = "prices"
             prices.snapshot(db, client)
@@ -298,6 +313,7 @@ def fill_in():
             detect.behaviour(db)
             heuristics.match_bridges(db)
             heuristics.match_exchange_flows(db)
+            deposits.link(db)
             alerts.check(db)
             tokens.mark(db, client)  # "arrived unasked" needs the whole history
     except Exception as e:  # noqa: BLE001 - a background thread must report, not die silently
