@@ -88,6 +88,13 @@ describe("PortfolioView", () => {
     expect(card("Empty HD").textContent).toContain("hd:empty");
   });
 
+  it("says nothing about my wallets before they have been read once", () => {
+    renderTracker(<PortfolioView />, { loaded: false, graph: { nodes: [], edges: [], links: [] }, analysis: { ...ANALYSIS, verdicts: [] } });
+    expect(screen.queryByText("Add your wallets under “Wallets & sync” to start.")).toBeNull();
+    expect(screen.queryByText("Nothing here yet.")).toBeNull();
+    expect(screen.getByText("Who can tell it’s yours?")).toBeTruthy();
+  });
+
   it("says what to do when there are no wallets or no balances yet", () => {
     renderTracker(<PortfolioView />, { graph: { nodes: [], edges: [], links: [] }, analysis: { ...ANALYSIS, verdicts: [] } });
     expect(screen.getByText("Add your wallets under “Wallets & sync” to start.")).toBeTruthy();

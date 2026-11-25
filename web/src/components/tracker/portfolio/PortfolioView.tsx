@@ -21,7 +21,7 @@ const pausedStore = createLocalStorageStore<boolean>("tracker-ticker", false, (r
 /** Everything I hold: fiat totals, the private and public vaults, the assets and a card per wallet. */
 export function PortfolioView() {
   const { t } = useTranslation();
-  const { graph, analysis } = useTracker();
+  const { graph, analysis, loaded } = useTracker();
   const mine = graph.nodes.filter((n) => n.mine);
   const fiat = readFiat(analysis.fiat);
   const { rows, fakes } = assetTotals(mine);
@@ -57,27 +57,32 @@ export function PortfolioView() {
         )}
       </div>
 
-      <Ticker rows={rows} />
+      {/* Until my wallets have been read once, nothing is said about them, not even "add one". */}
+      {loaded && (
+        <>
+          <Ticker rows={rows} />
 
-      <div className="grid gap-3 sm:grid-cols-2">
-        <Vault side="private" mine={mine} rows={rows} />
-        <Vault side="public" mine={mine} rows={rows} />
-      </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Vault side="private" mine={mine} rows={rows} />
+            <Vault side="public" mine={mine} rows={rows} />
+          </div>
 
-      <section>
-        <SectionHead kicker={t("tracker-portfolio:assets.kicker")} heading={t("tracker-portfolio:assets.heading")} />
-        <Assets rows={rows} fakes={fakes} wallets={mine.length} />
-      </section>
+          <section>
+            <SectionHead kicker={t("tracker-portfolio:assets.kicker")} heading={t("tracker-portfolio:assets.heading")} />
+            <Assets rows={rows} fakes={fakes} wallets={mine.length} />
+          </section>
 
-      <section>
-        <SectionHead kicker={t("tracker-portfolio:wallets.kicker")} heading={t("tracker-portfolio:wallets.heading")} />
-        <p className="mb-4 max-w-[70ch] text-sm text-muted">{t("tracker-portfolio:wallets.hint")}</p>
-        <ul className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-          {analysis.verdicts.map((v) => (
-            <WalletCard key={v.address} v={v} />
-          ))}
-        </ul>
-      </section>
+          <section>
+            <SectionHead kicker={t("tracker-portfolio:wallets.kicker")} heading={t("tracker-portfolio:wallets.heading")} />
+            <p className="mb-4 max-w-[70ch] text-sm text-muted">{t("tracker-portfolio:wallets.hint")}</p>
+            <ul className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              {analysis.verdicts.map((v) => (
+                <WalletCard key={v.address} v={v} />
+              ))}
+            </ul>
+          </section>
+        </>
+      )}
     </div>
   );
 }
