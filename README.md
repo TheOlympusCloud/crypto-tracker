@@ -88,7 +88,12 @@ in each wallet's verdict, and chains waiting for a key are listed as such instea
 failing.
 
 The privacy scan reads an address as deeply as a lookup does (the depths above), so a scan
-of a busy Solana or Tron address says "Partly checked".
+of a busy Solana or Tron address says "Partly checked". Its first funder comes from that read
+when it holds the whole history, else from one more call per chain that lists the address's
+oldest transactions; it is not found on BNB Chain through NodeReal, nor for a Solana address
+with more transactions than a lookup reads (25), since no single call reaches back that far
+there. Your own
+wallets are answered from their stored history once it is complete.
 
 ## Install
 
@@ -438,6 +443,10 @@ scanned yet.
 | Dealt with a flagged address | -15, high | Transfers with an address labelled as a scam, a hack or under sanctions. |
 | Dealt with a mixer | -10, medium | Transfers with a labelled mixer. |
 | The same address on several chains | -2, low | Transfers of the same EVM address on two or more of the chains read. |
+| First funded by your wallet | -10, medium | One of your wallets sent the address its first coins on a chain (on Tron: the TRX that activated it). |
+| First funded by the same address as your other wallets | -10, medium | A stranger sent the address, one of your wallets, its first coins and also sent coins to another of your wallets; it was read and is not busy. |
+| First funded by an exchange | -5, medium | An address an open label set or you label as an exchange sent it its first coins. Comes on top of "Dealt directly with an exchange": the withdrawal is the address's first transaction. |
+| First funded by a busy address | 0, low | As two rows up, but the stranger turned out busy or a known service, so it is stored as a very active address and links nobody. |
 
 The score is am-i-exposed's address score: 93, plus the impacts, kept within 0 to 100;
 A+ from 90, B from 75, C from 50, D from 25, F below (`tracker/exposure/`, tested against
@@ -447,13 +456,24 @@ explorer. Only labels from a source that states them count: a guessed label (beh
 contract name) makes no finding, and a token a stranger airdropped makes no counterparty.
 No finding is no clean bill: only labelled addresses can be recognised.
 
+The first funder is the sender of the earliest native coin the address received on each
+chain: gas on EVM, the transfer that activated a Tron account (read as its first TRX, so an
+account activated by a TRC-10 token or an explicit account creation may name no activator, or
+a later sender). On EVM, when only the oldest
+transactions are listed and the address sent one before any coin reached it in that list, its
+gas came by an internal transfer the list does not show, and no funder is named rather than a
+wrong one.
+
 A scan says **Partly checked**, and why, when the address has more history than is read,
 an indexer did not answer, or a check ran out of calls (each scan may make 60 calls beyond
 the address's own read).
 
 Like a lookup, a scan stores nothing about the address. Its read is kept in memory for 10
 minutes (200 reads at most), so a scan right after a lookup of the same address costs
-nothing; a lookup always reads anew.
+nothing; a lookup always reads anew. The one exception is the scan of a wallet of yours whose
+first funder is a stranger who also funded another of your wallets: that stranger is read
+first (one call on Solana and Tron, a sync elsewhere), and stored as a very active address
+when it is one.
 
 ## Privacy
 
@@ -465,7 +485,9 @@ this server; otherwise at mempool.space (or at the mempool instance set in its o
 and tor-check.copexit.workers.dev to see whether you use Tor. `CT_ESPLORA` and `CT_CHAINS` do
 not apply to it. The privacy scan of an EVM, Solana or Tron address is made by the tracker's
 server instead: like a lookup, it sends the address to the indexer of its chain, nowhere
-else, and stores nothing.
+else, and stores nothing. Finding its first funder can take one more call to the same indexer.
+On a wallet of yours, a stranger who first funded it and also funded another of your wallets
+is looked up there too, as a sync looks up a counterparty.
 
 Every address you sync is sent to the indexer that answers for it, so that indexer sees
 your wallets together, from one IP address. That is exactly the link this app helps you
@@ -552,7 +574,12 @@ Several transactions supporting the same guess combine as `1 - (1-c1)(1-c2)...`.
 
 The findings of the [privacy scan](#privacy-scan-of-evm-solana-and-tron-addresses) are
 facts: a transfer read from the chain, with a counterparty that an open label set or you
-name. They add no line to the graph.
+name. They add no line to the graph. A first funder is such a transfer, already a solid
+arrow; the finding only names it. A stranger who first funded one of your wallets and also
+funded another joins them through a stranger (0.7), as any shared counterparty does. The scan
+of such a wallet reads that stranger first: a busy one is stored as a very active address,
+which no path passes through, so an unlabelled exchange wallet is not taken for one person
+who funded both.
 
 A link between two wallets multiplies the confidences along its path (a transfer counts
 1.0) and then by 0.7 for every stranger it passes through. Links chain through your own
