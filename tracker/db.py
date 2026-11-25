@@ -22,8 +22,10 @@ CREATE TABLE IF NOT EXISTS price(
   key TEXT PRIMARY KEY, usd REAL, ts INT, symbol TEXT, confidence REAL);
 CREATE TABLE IF NOT EXISTS snapshot(ts INT PRIMARY KEY, private REAL, public REAL, currency TEXT);
 CREATE TABLE IF NOT EXISTS alert(
-  id INTEGER PRIMARY KEY, ts INT, wallet TEXT, other TEXT, text TEXT, seen INT NOT NULL DEFAULT 0);
+  id INTEGER PRIMARY KEY, ts INT, wallet TEXT, other TEXT, text TEXT, seen INT NOT NULL DEFAULT 0,
+  kind TEXT NOT NULL DEFAULT 'link', params TEXT);
 CREATE TABLE IF NOT EXISTS known_link(a TEXT, b TEXT, confidence REAL, PRIMARY KEY(a, b));
+CREATE TABLE IF NOT EXISTS known_grade(wallet TEXT PRIMARY KEY, grade TEXT);
 CREATE TABLE IF NOT EXISTS transfer(
   chain TEXT, txid TEXT, src TEXT, dst TEXT, asset TEXT, token TEXT, amount REAL, ts INT,
   PRIMARY KEY(chain, txid, src, dst, token));
@@ -79,6 +81,11 @@ def connect(path=None):
         db.execute("ALTER TABLE hdwallet ADD COLUMN error TEXT")
     if "type" not in [r["name"] for r in db.execute("PRAGMA table_info(label)")]:
         db.execute("ALTER TABLE label ADD COLUMN type TEXT NOT NULL DEFAULT ''")
+    if "kind" not in [r["name"] for r in db.execute("PRAGMA table_info(alert)")]:
+        db.execute("ALTER TABLE alert ADD COLUMN kind TEXT NOT NULL DEFAULT 'link'")
+        db.execute(
+            "ALTER TABLE alert ADD COLUMN params TEXT"
+        )  # a grade alert's, worded by the page
     if "cut" not in [r["name"] for r in db.execute("PRAGMA table_info(node)")]:
         db.execute("ALTER TABLE node ADD COLUMN cut INT NOT NULL DEFAULT 0")
     have = {r["name"] for r in db.execute("PRAGMA table_info(balance)")}
