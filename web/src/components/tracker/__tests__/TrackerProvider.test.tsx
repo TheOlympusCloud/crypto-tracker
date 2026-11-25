@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, afterEach } from "vitest";
+import { useState } from "react";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 vi.mock("react-i18next", async () => (await import("./i18n-mock")).i18nMock());
@@ -37,6 +38,19 @@ function Probe() {
       <button type="button" onClick={() => t.toggleFold("cex")}>fold</button>
       <button type="button" onClick={() => void openLookup("addr")}>look</button>
     </div>
+  );
+}
+/** Like a node panel's "Look up": the button that starts the lookup is gone once the busy panel opens. */
+function Vanishing() {
+  const [here, setHere] = useState(true);
+  return here ? <Starter onStart={() => setHere(false)} /> : null;
+}
+function Starter({ onStart }: { onStart: () => void }) {
+  const { openLookup } = useLookup();
+  return (
+    <button type="button" onClick={() => { void openLookup("addr"); onStart(); }}>
+      look and go
+    </button>
   );
 }
 const text = (id: string) => screen.getByTestId(id).textContent;
@@ -89,6 +103,19 @@ describe("TrackerProvider", () => {
     expect(text("panel")).toBe("lookup-busy");
     fireEvent.keyDown(document, { key: "Escape" });
     expect(text("panel")).toBe("none");
+    await act(async () => answer(FOUND));
+    expect(text("panel")).toBe("none");
+    expect(text("view")).toBe("portfolio");
+  });
+
+  it("drops it too when the button that started it is gone", async () => {
+    let answer: (v: LookupResult) => void = () => {};
+    serve(async () => IDLE, () => new Promise((done) => (answer = done)));
+    render(<TrackerProvider><Probe /><Vanishing /></TrackerProvider>);
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: "look and go" }));
+    expect(text("panel")).toBe("lookup-busy");
+    fireEvent.keyDown(document, { key: "Escape" });
     await act(async () => answer(FOUND));
     expect(text("panel")).toBe("none");
     expect(text("view")).toBe("portfolio");

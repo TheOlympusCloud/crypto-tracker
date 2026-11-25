@@ -151,6 +151,21 @@ describe("NodePanel", () => {
     expect(tracker.refresh).not.toHaveBeenCalled();
   });
 
+  it("does not bring a closed lookup back when its label is saved late", async () => {
+    let saved: (v: unknown) => void = () => {};
+    vi.mocked(api).mockImplementationOnce(() => new Promise((done) => (saved = done)));
+    const scope = { ...node(BINANCE), chains: ["ethereum"], watched: false, assets: [], value: null, currency: "USD", unvouched: 0,
+      risk: { level: "ok", headline: "", reason: "", reasons: [] }, connections: [], more: 0, truncated: false, errors: [], notes: [],
+      graph: { nodes: [node(BINANCE)], edges: [], links: [] } } as LookupResult;
+    const { tracker } = renderTracker(<NodePanel address={BINANCE} />, { scope });
+    fireEvent.change(screen.getByRole("textbox", { name: "Label" }), { target: { value: "Renamed" } });
+    fireEvent.click(button("Save label"));
+    tracker.closePanel(); // Escape, before the server answers
+    saved({});
+    await waitFor(() => expect(tracker.refresh).toHaveBeenCalled());
+    expect(tracker.setScope).not.toHaveBeenCalled();
+  });
+
   it("shows nothing for an address it does not know", () => {
     const { container } = renderTracker(<NodePanel address="nowhere" />);
     expect(container.textContent).toBe("");

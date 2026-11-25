@@ -1,6 +1,6 @@
 import { vi } from "vitest";
 import { render } from "@testing-library/react";
-import { useEffect, useState, type ReactElement, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { TrackerContext, type Tracker } from "../TrackerProvider";
 import type { Analysis, Graph, GraphNode } from "@/lib/tracker/types";
 import graphFixture from "./fixtures/graph.json";
@@ -52,6 +52,7 @@ export function fakeTracker(over: Partial<Tracker> = {}): Tracker {
     sync: null,
     startSync: vi.fn(),
     nameOf,
+    latest: () => ({ panel: null, scope: over.scope ?? null }),
     ...over,
   };
 }
@@ -59,11 +60,21 @@ export function fakeTracker(over: Partial<Tracker> = {}): Tracker {
 /** Provides `tracker`, with the panel following openPanel and closePanel as in the real page (calls are still recorded). */
 export function TrackerHarness({ tracker, children }: { tracker: Tracker; children: ReactNode }) {
   const [panel, setPanel] = useState(tracker.panel);
+  const now = useRef({ panel: tracker.panel, scope: tracker.scope });
   useEffect(() => {
-    vi.mocked(tracker.openPanel).mockImplementation(setPanel);
-    vi.mocked(tracker.closePanel).mockImplementation(() => setPanel(null));
+    const put = (p: typeof panel) => {
+      now.current.panel = p;
+      setPanel(p);
+    };
+    vi.mocked(tracker.openPanel).mockImplementation(put);
+    vi.mocked(tracker.setScope).mockImplementation((v) => void (now.current.scope = v));
+    vi.mocked(tracker.closePanel).mockImplementation(() => {
+      now.current.scope = null; // as the page does: leaving a lookup brings my graph back
+      put(null);
+    });
   }, [tracker]);
-  return <TrackerContext.Provider value={{ ...tracker, panel }}>{children}</TrackerContext.Provider>;
+  const latest = () => ({ ...now.current });
+  return <TrackerContext.Provider value={{ ...tracker, panel, latest }}>{children}</TrackerContext.Provider>;
 }
 
 export function renderTracker(ui: ReactElement, over: Partial<Tracker> = {}) {
