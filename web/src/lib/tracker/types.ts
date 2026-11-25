@@ -231,6 +231,11 @@ export interface Risk {
 /** A counterparty of a looked-up address. */
 export interface Connection extends GraphNode {
   count: number;
+  /** When the looked-up address first and last dealt with it. */
+  first: number;
+  last: number;
+  /** The likeliest guess that it shares an owner with the looked-up address. */
+  guess?: { kind: string; confidence: number };
   sent: { chain: string; asset: string; amount: number }[];
   received: { chain: string; asset: string; amount: number }[];
 }
