@@ -3,6 +3,7 @@
 import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { usePalette } from "@/hooks/usePalette";
+import { scanHref } from "@/lib/tracker/exposure";
 import { day, money, num } from "@/lib/tracker/format";
 import { HATCHED, kindColor, trustColor, trustLabelKey, trustShape, type VerdictLevel } from "@/lib/tracker/kinds";
 import type { Balance, Fiat, Verdict } from "@/lib/tracker/types";
@@ -153,12 +154,13 @@ export function HistoryNote({ verdict }: { verdict: Verdict }) {
   return null;
 }
 
-/** A link to am-i-exposed's analysis of one Bitcoin address, in the same app. */
+/** A link to the privacy scan of one address, in the same app: am-i-exposed's for Bitcoin, the tracker's for EVM, Solana and Tron. */
 export function PrivacyScoreLink({ address, chain }: { address: string; chain: string }) {
   const { t } = useTranslation();
-  if (chain !== "bitcoin") return null;
+  const href = scanHref(address, chain);
+  if (!href) return null;
   return (
-    <a href={`/#addr=${encodeURIComponent(address)}`} className={BUTTON}>
+    <a href={href} className={BUTTON}>
       {t("tracker:privacy_score")}
     </a>
   );

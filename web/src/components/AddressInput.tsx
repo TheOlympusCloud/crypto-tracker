@@ -6,6 +6,7 @@ import { motion, useMotionValue, useSpring } from "motion/react";
 import { ArrowRight } from "lucide-react";
 import { useNetwork } from "@/context/NetworkContext";
 import { detectInputType, cleanInput } from "@/lib/analysis/detect-input";
+import { accountChain } from "@/lib/tracker/exposure";
 import { useAddressAutocomplete } from "@/hooks/useAddressAutocomplete";
 import type { BitcoinNetwork } from "@/lib/bitcoin/networks";
 import { useTheme } from "@/hooks/useTheme";
@@ -89,7 +90,7 @@ export function AddressInput({ onSubmit, isLoading, inputRef: externalRef, place
       const cleaned = cleanInput(raw);
       if (!cleaned) return;
       const type = detectInputType(cleaned, network);
-      if (type === "invalid") {
+      if (type === "invalid" && !accountChain(cleaned)) { // crypto-tracker: the tracker scans these
         setError(
           t("input.errorInvalid", { defaultValue: "That doesn't look like an address, txid, xpub, PSBT or raw transaction. Check and try again." }),
         );
@@ -115,7 +116,7 @@ export function AddressInput({ onSubmit, isLoading, inputRef: externalRef, place
       const cleaned = cleanInput(pasted.trim());
       if (!cleaned) return;
       const type = detectInputType(cleaned, network);
-      if (type !== "invalid") {
+      if (type !== "invalid" || accountChain(cleaned)) {
         e.preventDefault();
         setValue(cleaned);
         closeSuggestions();

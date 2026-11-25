@@ -46,13 +46,13 @@ describe("WalletPanel", () => {
     expect(screen.getByRole("link", { name: "Privacy score" }).getAttribute("href")).toBe(`/#addr=${encodeURIComponent(COLD)}`);
   });
 
-  it("offers to make a public wallet private, and no privacy score off Bitcoin", () => {
+  it("offers to make a public wallet private, and the tracker's privacy scan off Bitcoin", () => {
     renderTracker(<WalletPanel address={PUBLIC} />);
     fireEvent.click(button("Make private"));
     expect(api).toHaveBeenCalledWith("wallets", { address: PUBLIC, name: "Exchange withdrawals", public: false });
     cleanup();
     renderTracker(<WalletPanel address={PHONE} />);
-    expect(screen.queryByRole("link", { name: "Privacy score" })).toBeNull();
+    expect(screen.getByRole("link", { name: "Privacy score" }).getAttribute("href")).toBe(`/tracker/scan/#addr=${PHONE}`);
   });
 
   it("renames the wallet, then closes the form", async () => {

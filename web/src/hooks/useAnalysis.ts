@@ -11,6 +11,7 @@ import { detectAddressNetwork, detectTxidNetwork, isMainnetAddress } from "@/lib
 import { mapApiErrorMessage } from "@/lib/api/error-message";
 import { NETWORK_CONFIG, type BitcoinNetwork } from "@/lib/bitcoin/networks";
 import { cleanInput, detectInputType } from "@/lib/analysis/detect-input";
+import { accountScanHref } from "@/lib/tracker/exposure";
 import { getTxHeuristicSteps, getAddressHeuristicSteps } from "@/lib/analysis/heuristic-steps";
 import { loadEngine } from "@/lib/analysis/load-engine";
 import { parseLocalTx, localTxLabel, type LocalTx } from "@/lib/input/local-tx";
@@ -88,6 +89,12 @@ export function useAnalysis() {
       if (inputType !== "psbt" && inputType !== "rawtx") localInputRef.current = null;
 
       if (inputType === "invalid") {
+        // crypto-tracker: an EVM, Solana or Tron address goes to the tracker's own privacy scan
+        const account = accountScanHref(cleanInput(input));
+        if (account) {
+          window.location.replace(account);
+          return;
+        }
         setState({
           ...INITIAL_STATE,
           phase: "error",

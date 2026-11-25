@@ -65,7 +65,7 @@ describe("NodePanel", () => {
     expect(row("Named by")).toBe("an open label set");
     expect(row("Label")).toBe("Binance 14");
     expect(row("Note")).toMatch(/^very active address/);
-    expect(screen.queryByRole("link", { name: "Privacy score" })).toBeNull(); // not Bitcoin
+    expect(screen.getByRole("link", { name: "Privacy score" }).getAttribute("href")).toMatch(/^\/tracker\/scan\/#addr=0x/); // the tracker's scan
 
     fireEvent.click(button("This is mine"));
     expect(tracker.act).toHaveBeenCalled();

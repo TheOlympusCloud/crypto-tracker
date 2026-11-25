@@ -3,6 +3,8 @@
  * Field names are the server's; see tracker/graph.py, lookup.py, prices.py, sync.py.
  */
 
+import type { Finding, Grade } from "@/lib/types";
+
 export type TrustLevel = "verified" | "unknown" | "scam";
 
 /** A token or coin held, as the graph and the lookup list it. */
@@ -270,4 +272,37 @@ export interface PortfolioAsset {
   value: number | null;
   private_value: number | null;
   public_value: number | null;
+}
+
+/** A transaction a finding rests on, with its page at the chain's explorer. */
+export interface Evidence {
+  chain: string;
+  txid: string;
+  url: string;
+}
+
+/** A finding as the server sends it (tracker/exposure): ids and parameters, never sentences. */
+export type ServerFinding = Omit<Finding, "title" | "description" | "recommendation" | "id"> & { id: string; evidence: Evidence[] };
+
+/** am-i-exposed's Finding, worded by the adapter, with the transactions it rests on (which upstream's components ignore). */
+export type TrackerFinding = Finding & { evidence: Evidence[] };
+
+/** Why a scan is partly checked: an indexer error, a read cut to the newest transactions, a check out of calls. */
+export interface Gap {
+  id: "error" | "truncated" | "skipped";
+  params?: { error?: string; check?: string };
+}
+
+/** The privacy scan of an EVM, Solana or Tron address (GET exposure/<address>), in ScoringResult's shape. */
+export interface Exposure {
+  address: string;
+  chain: string;
+  chains: string[];
+  icon: string;
+  score: number;
+  grade: Grade;
+  partial: boolean;
+  findings: ServerFinding[];
+  gaps: Gap[];
+  explorer_address: string;
 }
