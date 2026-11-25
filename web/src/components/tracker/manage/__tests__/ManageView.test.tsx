@@ -98,6 +98,12 @@ describe("ManageView", () => {
     expect(screen.getByText("None yet. Look an address up and press Watch.")).toBeTruthy();
   });
 
+  it("says nothing of the sort before the wallets have been read once", () => {
+    renderTracker(<ManageView />, { loaded: false, analysis: { ...ANALYSIS, verdicts: [], watched: [] } });
+    expect(screen.queryByText("None yet.")).toBeNull();
+    expect(screen.queryByText("None yet. Look an address up and press Watch.")).toBeNull();
+  });
+
   it("looks up a watched address and stops watching it", () => {
     renderTracker(<ManageView />);
     const row = rowOf(new RegExp(WATCHED.slice(0, 7)));
