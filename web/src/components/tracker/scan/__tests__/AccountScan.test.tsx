@@ -44,6 +44,27 @@ describe("the account scan", () => {
     expect(fetch).toHaveBeenCalledTimes(1); // the chains were given: no question
   });
 
+  it("shows the address's public name and the addresses it lists", async () => {
+    window.location.hash = `#addr=${EVM}&chains=ethereum`;
+    const named = { severity: "high", scoreImpact: -15, confidence: "deterministic", evidence: [], adversaryTiers: ["passive_observer"], temporality: "active_risk" } as const;
+    const btc = "bc1qjqg9slurvjukfl92wp58y94480fvh4uc2pwa6n";
+    stubApi({
+      [`exposure/${EVM}?chains=ethereum`]: scan({
+        score: 73,
+        grade: "C",
+        findings: [
+          { ...named, id: "x-name-record", params: { name: "brantly.eth" }, adversaryTiers: [...named.adversaryTiers], evidence: [] },
+          { ...named, id: "x-name-addresses", severity: "medium", scoreImpact: -5, params: { name: "brantly.eth", count: 1, chains: "Bitcoin", addresses: btc }, adversaryTiers: [...named.adversaryTiers], evidence: [] },
+        ],
+      }),
+    });
+    render(<AccountScan />);
+    expect((await screen.findAllByText("Has a public name: brantly.eth")).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("button", { name: /Its name lists addresses on other chains/ }));
+    expect(screen.getAllByText(`brantly.eth lists 1 address on Bitcoin: ${btc}. Anyone who looks the name up ties that address to this one.`).length).toBeGreaterThan(0);
+    expect(screen.queryByText("What the findings rest on")).toBeNull(); // a name rests on no transaction
+  });
+
   it("says partly checked, and why, when the read was partial", async () => {
     window.location.hash = `#addr=${SOL}`;
     stubApi({

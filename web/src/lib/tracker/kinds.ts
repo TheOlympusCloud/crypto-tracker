@@ -60,6 +60,7 @@ export const LINKS: Record<string, string> = {
   change: HUES.cyan500,
   bridge: HUES.blue500,
   "exchange-flow": HUES.pink500,
+  name: HUES.emerald600,
   swap: HUES.violet500,
 };
 const DASHES: Record<string, number[]> = {
@@ -67,6 +68,7 @@ const DASHES: Record<string, number[]> = {
   change: [2, 3],
   bridge: [10, 4],
   "exchange-flow": [10, 3, 2, 3],
+  name: [6, 2, 6, 6],
   swap: [5, 2, 1, 2, 1, 2],
 };
 /** The selected path, in both graphs: one fat orange line. */
