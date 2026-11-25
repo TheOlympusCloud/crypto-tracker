@@ -459,10 +459,12 @@ No finding is no clean bill: only labelled addresses can be recognised.
 The first funder is the sender of the earliest native coin the address received on each
 chain: gas on EVM, the transfer that activated a Tron account (read as its first TRX, so an
 account activated by a TRC-10 token or an explicit account creation may name no activator, or
-a later sender). On EVM, when only the oldest
-transactions are listed and the address sent one before any coin reached it in that list, its
-gas came by an internal transfer the list does not show, and no funder is named rather than a
-wrong one.
+a later sender). On EVM, when the scan's read was cut on any chain (a very active address) or
+a chain did not answer, the funder comes from one call per chain that lists the address's
+oldest transactions, without internal transfers (contract payouts, bridge fills). If the
+address sent one of them before any coin reached it, its gas came by such a transfer and no
+funder is named. If a normal transfer reached it first, its sender is named, even when an
+internal transfer brought the very first coins: the named funder can then be a later one.
 
 A scan says **Partly checked**, and why, when the address has more history than is read,
 an indexer did not answer, or a check ran out of calls (each scan may make 60 calls beyond
