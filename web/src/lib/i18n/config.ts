@@ -2,6 +2,7 @@ import i18n from "i18next";
 import { initReactI18next } from "react-i18next";
 import Backend from "i18next-http-backend";
 import enCommon from "../../../public/locales/en/common.json";
+import { TRACKER_EN, TRACKER_NS } from "./tracker";
 
 const SUPPORTED_LANGUAGES = ["en", "es", "pt", "de", "fr", "pl"] as const;
 export type SupportedLanguage = (typeof SUPPORTED_LANGUAGES)[number];
@@ -52,12 +53,12 @@ void i18n
     fallbackLng: "en",
     load: "languageOnly",
     defaultNS: "common",
-    ns: ["common"],
+    ns: ["common", ...TRACKER_NS],
     // Bundle English translations so t() returns correct values synchronously
     // during SSR and first render, preventing hydration mismatches.
     // Other languages are still loaded async via the HTTP backend.
     resources: {
-      en: { common: enCommon },
+      en: { common: enCommon, ...TRACKER_EN },
     },
     partialBundledLanguages: true,
     backend: {

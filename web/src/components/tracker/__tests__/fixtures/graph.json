@@ -1,0 +1,296 @@
+{
+ "nodes": [
+  {
+   "address": "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq",
+   "mine": 1,
+   "public": 0,
+   "name": "Cold storage",
+   "synced_at": 1795604750,
+   "hub": 0,
+   "error": null,
+   "wallet": null,
+   "cut": 0,
+   "chain": "bitcoin",
+   "explorer_address": "https://mempool.space/address/{}",
+   "explorer_tx": "https://mempool.space/tx/{}",
+   "balances": [
+    {
+     "chain": "bitcoin",
+     "asset": "BTC",
+     "amount": 0.49,
+     "token": ""
+    }
+   ]
+  },
+  {
+   "address": "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
+   "mine": 1,
+   "public": 1,
+   "name": "Exchange withdrawals",
+   "synced_at": 1795604750,
+   "hub": 0,
+   "error": null,
+   "wallet": null,
+   "cut": 0,
+   "chain": "bitcoin",
+   "explorer_address": "https://mempool.space/address/{}",
+   "explorer_tx": "https://mempool.space/tx/{}",
+   "balances": [
+    {
+     "chain": "bitcoin",
+     "asset": "BTC",
+     "amount": 0.12,
+     "token": ""
+    }
+   ]
+  },
+  {
+   "address": "0xd8da6bf26964af9d7eed9e03e53415d37aa96045",
+   "mine": 1,
+   "public": 0,
+   "name": "Hot wallet",
+   "synced_at": 1795604750,
+   "hub": 0,
+   "error": null,
+   "wallet": null,
+   "cut": 0,
+   "chain": "evm",
+   "explorer_address": "https://etherscan.io/address/{}",
+   "explorer_tx": "https://etherscan.io/tx/{}",
+   "balances": [
+    {
+     "chain": "ethereum",
+     "asset": "USDC",
+     "amount": 1200.0,
+     "token": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+     "name": "USD Coin",
+     "trust": {
+      "level": "verified",
+      "reason": "on Uniswap's token list"
+     }
+    },
+    {
+     "chain": "ethereum",
+     "asset": "ETH",
+     "amount": 0.3,
+     "token": ""
+    }
+   ]
+  },
+  {
+   "address": "0xab5801a7d398351b8be11c439e05c5b3259aec9b",
+   "mine": 1,
+   "public": 0,
+   "name": "Savings",
+   "synced_at": 1795604750,
+   "hub": 0,
+   "error": null,
+   "wallet": null,
+   "cut": 0,
+   "chain": "evm",
+   "explorer_address": "https://etherscan.io/address/{}",
+   "explorer_tx": "https://etherscan.io/tx/{}",
+   "balances": [
+    {
+     "chain": "ethereum",
+     "asset": "USDC",
+     "amount": 50000.0,
+     "token": "0x1111111111111111111111111111111111111111",
+     "name": "USD Coin",
+     "trust": {
+      "level": "scam",
+      "reason": "named like USDC without being it"
+     }
+    },
+    {
+     "chain": "ethereum",
+     "asset": "ETH",
+     "amount": 1.5,
+     "token": ""
+    }
+   ]
+  },
+  {
+   "address": "vines1vzrYbzLMRdu58ou5XTby4qAqVRLmqo36NKPTg",
+   "mine": 1,
+   "public": 0,
+   "name": "Phone",
+   "synced_at": 1795604750,
+   "hub": 0,
+   "error": null,
+   "wallet": null,
+   "cut": 0,
+   "chain": "solana",
+   "explorer_address": "https://solscan.io/account/{}",
+   "explorer_tx": "https://solscan.io/tx/{}",
+   "balances": [
+    {
+     "chain": "solana",
+     "asset": "SOL",
+     "amount": 12.5,
+     "token": ""
+    }
+   ]
+  },
+  {
+   "address": "3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy",
+   "mine": 0,
+   "public": 0,
+   "name": "",
+   "synced_at": 1795604750,
+   "hub": 0,
+   "error": null,
+   "wallet": null,
+   "cut": 0,
+   "chain": "bitcoin",
+   "explorer_address": "https://mempool.space/address/{}",
+   "explorer_tx": "https://mempool.space/tx/{}"
+  },
+  {
+   "address": "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
+   "mine": 0,
+   "public": 0,
+   "name": "",
+   "synced_at": 1795604750,
+   "hub": 0,
+   "error": null,
+   "wallet": null,
+   "cut": 0,
+   "chain": "bitcoin",
+   "explorer_address": "https://mempool.space/address/{}",
+   "explorer_tx": "https://mempool.space/tx/{}"
+  },
+  {
+   "address": "0x28c6c06298d514db089934071355e5743bf21d60",
+   "mine": 0,
+   "public": 0,
+   "name": "",
+   "synced_at": 1795604750,
+   "hub": 1,
+   "error": null,
+   "wallet": null,
+   "cut": 0,
+   "chain": "evm",
+   "explorer_address": "https://etherscan.io/address/{}",
+   "explorer_tx": "https://etherscan.io/tx/{}",
+   "label": "Binance 14",
+   "category": "cex",
+   "label_type": "exchange",
+   "label_source": "dataset",
+   "label_confidence": 1.0,
+   "label_guess": false
+  },
+  {
+   "address": "0x722122df12d4e14e13ac3b6895a86e84145b6967",
+   "mine": 0,
+   "public": 0,
+   "name": "",
+   "synced_at": 1795604750,
+   "hub": 0,
+   "error": null,
+   "wallet": null,
+   "cut": 0,
+   "chain": "evm",
+   "explorer_address": "https://etherscan.io/address/{}",
+   "explorer_tx": "https://etherscan.io/tx/{}",
+   "label": "Tornado Cash Router",
+   "category": "mixer",
+   "label_type": "mixer",
+   "label_source": "dataset",
+   "label_confidence": 1.0,
+   "label_guess": false
+  }
+ ],
+ "edges": [
+  {
+   "chain": "bitcoin",
+   "src": "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
+   "dst": "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq",
+   "asset": "BTC",
+   "token": "",
+   "count": 1,
+   "amount": 0.1,
+   "first": 1793016350,
+   "last": 1793016350,
+   "txid": "b3",
+   "coinjoin": 0
+  },
+  {
+   "chain": "bitcoin",
+   "src": "3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy",
+   "dst": "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq",
+   "asset": "BTC",
+   "token": "",
+   "count": 1,
+   "amount": 0.39,
+   "first": 1792238750,
+   "last": 1792238750,
+   "txid": "b2",
+   "coinjoin": 0
+  },
+  {
+   "chain": "bitcoin",
+   "src": "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
+   "dst": "3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy",
+   "asset": "BTC",
+   "token": "",
+   "count": 1,
+   "amount": 0.4,
+   "first": 1792152350,
+   "last": 1792152350,
+   "txid": "b1",
+   "coinjoin": 0
+  },
+  {
+   "chain": "ethereum",
+   "src": "0x28c6c06298d514db089934071355e5743bf21d60",
+   "dst": "0xd8da6bf26964af9d7eed9e03e53415d37aa96045",
+   "asset": "ETH",
+   "token": "",
+   "count": 1,
+   "amount": 2.0,
+   "first": 1793880350,
+   "last": 1793880350,
+   "txid": "e1",
+   "coinjoin": 0
+  },
+  {
+   "chain": "ethereum",
+   "src": "0xd8da6bf26964af9d7eed9e03e53415d37aa96045",
+   "dst": "0x722122df12d4e14e13ac3b6895a86e84145b6967",
+   "asset": "ETH",
+   "token": "",
+   "count": 1,
+   "amount": 0.2,
+   "first": 1794744350,
+   "last": 1794744350,
+   "txid": "e4",
+   "coinjoin": 0
+  },
+  {
+   "chain": "ethereum",
+   "src": "0xd8da6bf26964af9d7eed9e03e53415d37aa96045",
+   "dst": "0xab5801a7d398351b8be11c439e05c5b3259aec9b",
+   "asset": "ETH",
+   "token": "",
+   "count": 1,
+   "amount": 1.5,
+   "first": 1793966750,
+   "last": 1793966750,
+   "txid": "e2",
+   "coinjoin": 0
+  }
+ ],
+ "links": [
+  {
+   "a": "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq",
+   "b": "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
+   "kind": "common-input",
+   "confidence": 0.9,
+   "evidence": [
+    "b3"
+   ],
+   "count": 1
+  }
+ ]
+}

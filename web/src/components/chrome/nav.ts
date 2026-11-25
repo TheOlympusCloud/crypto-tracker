@@ -2,6 +2,7 @@ import { VIDEOS_ENABLED } from "@/lib/media/videos-enabled";
 
 /** Primary navigation. Guide stays active across the knowledge pages. */
 const BASE_NAV = [
+  { href: "/tracker/", key: "tracker:nav", label: "Wallets" },
   { href: "/graph/", key: "common.graphExplorer", label: "Graph" },
   { href: "/observatory/", key: "common.observatory", label: "Observatory" },
   { href: "/guide/", key: "common.guide", label: "Guide" },
