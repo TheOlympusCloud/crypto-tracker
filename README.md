@@ -87,6 +87,13 @@ The same EVM address is read on every EVM chain. Chains that are read less deepl
 in each wallet's verdict, and chains waiting for a key are listed as such instead of
 failing.
 
+Bridges: when one of your wallets pays into Circle's CCTP, Across, Wormhole's Token Bridge,
+the OP Stack bridges into Base and Optimism or Arbitrum's gateway router, the bridge's own
+event in that transaction's receipt names who gets the money on the other chain: any chain
+above that the bridge reaches, Solana included (CCTP and Wormhole). That recipient is linked
+to the wallet as a `bridge-record` ([below](#what-is-a-fact-and-what-is-a-guess)), whether
+you declared it or not.
+
 The privacy scan reads an address as deeply as a lookup does (the depths above), so a scan
 of a busy Solana or Tron address says "Partly checked".
 
@@ -303,11 +310,11 @@ only the proxy reaches the app.
 | `CT_BLOCKSCOUT_KEY` | unset | Free Blockscout API key (`proapi_…`, from [dev.blockscout.com](https://dev.blockscout.com)); turns on Base, Arbitrum, Optimism and Polygon, token balances included. Set it in the environment, never in a file you commit. |
 | `CT_NODEREAL_KEY` | unset | Free NodeReal API key (from [nodereal.io](https://nodereal.io), MegaNode); turns on BNB Chain. Calls are paced to the free plan's limit, about one every two seconds. |
 | `CT_ETHERSCAN_KEY` | unset | Free Etherscan API key; turns on Arbitrum and Polygon, the chains Etherscan's free plan still covers. Not needed with `CT_BLOCKSCOUT_KEY`. |
-| `CT_CHAINS` | unset | JSON file that adds EVM chains or points built-in ones at your own indexer, see `chains.example.json`. Keep the real file as `chains.json` (git-ignored). |
+| `CT_CHAINS` | unset | JSON file that adds EVM chains or points built-in ones at your own indexer, see `chains.example.json`. Keep the real file as `chains.json` (git-ignored). A chain's `"rpc"`, the JSON-RPC URL of a node of your own, is where its bridge receipts are read. |
 | `CT_LITECOIN`, `CT_BITCOINCASH`, `CT_DOGECOIN`, `CT_TRON`, `CT_SOLANA` | public APIs | Base URL of the indexer for that chain (Esplora, Haskoin, BlockCypher, TronGrid, Solana RPC). |
 | `CT_DELAY` | `0.25` | Seconds between API calls. |
 | `CT_SYNC_EVERY` | unset | Sync all wallets every this many minutes while the server runs. |
-| `CT_SWAPS` | `on` | `off` never asks THORChain or Maya about your addresses. `CT_THORCHAIN` and `CT_MAYA` set their Midgard URLs. |
+| `CT_SWAPS` | `on` | `off` never asks THORChain or Maya about your addresses. `CT_THORCHAIN` and `CT_MAYA` set their Midgard URLs. Bridge records come from your indexers and stay on. |
 | `CT_CURRENCY` | `USD` | Currency of the values, e.g. `EUR` (ECB reference rate). |
 | `CT_PRICES` | `on` | `off` never asks for prices. |
 | `CT_LABELS` | `on` | `off` never downloads label sets or asks an explorer for contract names. |
@@ -481,6 +488,13 @@ as private as that indexer is discreet.
 Swaps: each of your addresses is also looked up at the THORChain and Maya Midgard APIs.
 `CT_SWAPS=off` turns that off.
 
+Bridges: the receipt of each transaction in which your wallet paid a bridge is read once,
+from the indexer that already reads that wallet (or from the `"rpc"` of that chain in
+`CT_CHAINS`, your own node). When it names a Solana token account, the account's owner is
+read from the Solana RPC that reads your Solana wallets (`CT_SOLANA`). Neither learns
+anything new, so `CT_SWAPS` does not apply. A recipient that is not yours is read once,
+like a counterparty, to tell a stranger from a service.
+
 Prices: only asset identifiers (coin names, token contracts) go to the price API, never
 addresses or amounts.
 
@@ -547,6 +561,7 @@ in `tracker/heuristics.py` and `tracker/graph.py`.
 | bridge | 0.5 to 0.95 | Money leaves one of your wallets on chain X and the same asset reaches another of your wallets on chain Y within 6 hours, 0 to 3% smaller. +0.25 if a labelled bridge is involved, +0.15 if within 0.5%, +0.1 if within 10 minutes; divided by the number of equally plausible matches. |
 | exchange-flow | 0.09 to 0.8 | Money leaves one wallet into an exchange and the same asset, 0 to 2% less, comes out of an exchange into another wallet within 48 hours. Starts at 0.5 (same exchange), 0.3 (two exchanges) or 0.15 (the deposit went to an address that was never expanded); +0.15 within 0.5%, +0.1 within an hour; x0.6 for round amounts; divided by the number of equally plausible matches. Repeated matches between the same two wallets are not independent proof: they lift the best single match at most halfway to 0.8, never past it. |
 | swap | 0.95 | THORChain or Maya Protocol recorded a swap from one address to the other (for example ETH in, BTC out). The record is public and names the destination, so this is close to a fact. Several swaps between the same two addresses stay at 0.95. |
+| bridge-record | 0.95 | A bridge's own event, in the receipt of a transaction in which your wallet paid it, names the recipient on the other chain: Circle CCTP (`DepositForBurn`), Across (`FundsDeposited`), Wormhole's Token Bridge (a plain transfer), the OP Stack bridges into Base and Optimism (`ETHDepositInitiated`, `ERC20DepositInitiated`), Arbitrum's gateway router (`TransferRouted`). On Solana the token account it names is replaced by the account's owner; a token account closed since links nobody, and the verdict says so. A recipient that is not yours is read first: a busy address or a service links nobody, a quiet one is listed in the wallet's verdict. Several deposits to the same address stay at 0.95. |
 
 Several transactions supporting the same guess combine as `1 - (1-c1)(1-c2)...`.
 
@@ -570,7 +585,12 @@ or at the hop limit, and says which.
 
 - Swaps that change the asset are matched only through THORChain and Maya Protocol,
   whose records are public. Other swap services and instant exchangers are not.
-- A bridge or exchange flow is only matched when both ends are wallets you declared.
+- A bridge or exchange flow is only matched by amount and time when both ends are wallets
+  you declared. Bridge records also find a recipient you did not declare, but only for a
+  deposit your wallet makes straight into the bridge, or through a contract a label set
+  calls a bridge; through another contract (a DEX aggregator) it is matched by amount and
+  time only. Wormhole transfers with a payload, wrapped tokens burned on their way back
+  through Wormhole, Across to Solana and transfers out of Solana are not read as records.
 - Mixers are not correlated by amount: their fixed denominations make it meaningless.
 - HD wallets are Bitcoin only (no Ltub, dgub or EVM account keys yet). A plain xpub is scanned as four address types (legacy,
   wrapped segwit, segwit, taproot), about 160 lookups when empty; a zpub, ypub or
@@ -593,7 +613,8 @@ or at the hop limit, and says which.
   its 50 largest and every wallet of yours; the wallet's verdict says how many were cut,
   and amounts for those transactions are lower than on a block explorer.
 - If THORChain or Maya does not answer during a sync, every wallet reads "Partly checked"
-  until it answers again (or until `CT_SWAPS=off`): a swap may have gone unseen.
+  until it answers again (or until `CT_SWAPS=off`): a swap may have gone unseen. The same
+  holds while an indexer does not answer for a bridge receipt, until a later sync reads it.
 - Alerts are raised for links of 50% confidence or more; weaker guesses are listed in
   the verdict only.
 - On a mempool with an Electrum server (the `mempool` profile's, Umbrel's), the scanner reads
