@@ -13,8 +13,9 @@ Status: proposal, for review before any implementation issue is created.
   in am-i-exposed's engine in the browser, which gets a chain profile instead of Bitcoin
   constants. Account chains (the EVM chains, Solana, Tron) are analysed by the tracker's
   Python server, which already reads them, holds the label sets and the API keys. Both
-  produce am-i-exposed's `Finding` type, are scored by its `score.ts` and shown by its result
-  components, so a score means the same thing on every chain.
+  produce am-i-exposed's `Finding` type, are scored by its `score.ts` formula (on the server
+  a Python port of it, tested against the original) and shown by its result components, so a
+  score means the same thing on every chain.
 - **Cross-chain through the tracker's link graph.** New kinds of link (exchange deposit
   address, bridge record, name record, Solana fee payer and co-signer) join the existing
   ones, so the verdicts, alerts and graph pick them up unchanged. On top: funds origin that
