@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { pickVideoLang, promoSource, tutorialSource, subtitleTracks } from "../video-sources";
 import { TUTORIAL_CHAPTERS, formatTime } from "../tutorial-chapters";
@@ -59,7 +59,8 @@ describe("build wiring", () => {
   it(".dockerignore excludes public/media", () => {
     expect(read(".dockerignore").split("\n")).toContain("public/media");
   });
-  it("deploy.yml enables videos", () => {
+  // crypto-tracker leaves upstream's CI workflows out of its copy.
+  it.skipIf(!existsSync(join(process.cwd(), ".github")))("deploy.yml enables videos", () => {
     expect(read(".github/workflows/deploy.yml")).toContain('NEXT_PUBLIC_VIDEOS: "1"');
   });
 });

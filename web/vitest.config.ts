@@ -12,6 +12,8 @@ export default defineConfig({
       "workers/**/*.test.js",
       "umbrel/**/*.test.js",
     ],
+    // crypto-tracker leaves the tutorial videos out of its copy (the build turns them off).
+    exclude: ["**/node_modules/**", "src/lib/media/__tests__/media-assets.test.ts"],
     coverage: {
       provider: "v8",
       include: ["src/lib/**", "src/hooks/**"],
