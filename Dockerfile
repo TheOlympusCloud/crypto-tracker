@@ -1,6 +1,10 @@
 # The web app (web/, am-i-exposed with the wallet tracker in it), built as am-i-exposed's own
 # Dockerfile.umbrel does: a static export, nothing of Node in the result.
 FROM node:22-alpine AS web
+# Next would start a build worker per CPU the host shows (52 on a big Proxmox host), about
+# 115 MB each: more than a small container has. With 2 the build peaks at about 2.5 GB.
+ARG NEXT_BUILD_CPUS=2
+ENV NEXT_TELEMETRY_DISABLED=1
 RUN corepack enable
 WORKDIR /src/web
 COPY web/package.json web/pnpm-lock.yaml ./
