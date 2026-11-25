@@ -104,6 +104,8 @@ JUPITER = {
 def indexers(request):
     """One fake internet: Esplora, an Etherscan-style API, the Solana RPC and the prices."""
     host, path = request.url.host, request.url.path
+    if host in ("ethereum-rpc.publicnode.com", "base-rpc.publicnode.com"):
+        return httpx.Response(200, json={"result": "0x"})  # names: none (test_names.py has some)
     if host == "coins.llama.fi":
         asked = path.rsplit("/", 1)[1].split(",")
         return httpx.Response(200, json={"coins": {k: PRICES[k] for k in asked if k in PRICES}})
@@ -179,6 +181,7 @@ def indexers(request):
             TOKEN_2022: [{"mint": MSTRX, "tokenAmount": {"uiAmount": 0.5}}],
         }
         result = {
+            "getMultipleAccounts": {"value": [None] * len(params[0])},  # no .sol name
             "getBalance": {"value": 1_000_000_000},
             "getTokenAccountsByOwner": {
                 "value": [

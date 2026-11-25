@@ -7,6 +7,7 @@ import httpx
 
 from . import alerts, chains, detect, graph, hd, heuristics, history, labels, prices, swaps, tokens
 from . import db as database
+from .exposure import names
 
 EXPAND_PER_LEVEL = 40  # neighbours synced per depth level, most active first
 
@@ -229,6 +230,7 @@ def run(addresses=None, depth=0, import_labels=False, wallets=()):
                         break
             status["current"] = "labels"
             detect.contracts(db, client)
+            status["notes"] += names.sync(db, client)
             status["current"] = "swaps"
             status["notes"] += swaps.sync(db, client)
             detect.behaviour(db)  # after the swaps, whose vault labels outrank a guess
