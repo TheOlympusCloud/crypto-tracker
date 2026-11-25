@@ -328,6 +328,12 @@ by the bundled [jsQR](https://github.com/cozmo/jsQR) (Apache-2.0), which is what
 
 The database says which wallets are yours. Keep it on your machine.
 
+**Privacy score** hands the address to am-i-exposed, which looks it up from your browser at
+mempool.space (or at the mempool instance set in its own settings), and tor-check.copexit.workers.dev
+to see whether you use Tor. `CT_ESPLORA` and `CT_CHAINS` do not apply to it. If you run
+your own indexers to keep your wallets private, set your mempool instance in am-i-exposed's
+settings before pressing it.
+
 Every address you sync is sent to the indexer that answers for it, so that indexer sees
 your wallets together, from one IP address. That is exactly the link this app helps you
 avoid. For real privacy point `CT_ESPLORA` and `CT_CHAINS` at indexers you run
@@ -475,11 +481,18 @@ as it is, so its updates keep coming:
   behind the same password (`CT_EXPOSED`).
 - The two apps meet in their links: **Wallets** in am-i-exposed's menu, and
   **Privacy score** on any Bitcoin address in the tracker (a wallet, a graph node, a
-  lookup), which opens am-i-exposed's analysis of it.
+  lookup), which opens am-i-exposed's analysis of it. **Wallets** is in English in every
+  language of am-i-exposed: none of its translation files has it.
 
 Each part does what it is best at: am-i-exposed the depth on one Bitcoin address or
 transaction; the tracker the breadth across your own wallets on every chain, what ties them
-together, where their funds came from and what they are worth.
+together, where their funds came from and what they are worth. They are two apps side by
+side, joined by those links: the tracker keeps its own pages and look.
+
+Both apps share one origin (address and port), so am-i-exposed's code runs with the same
+session as the tracker and could read and change your wallets through its API. A bad
+am-i-exposed release, or a script injected into it, would reach them. That is why it is
+pinned to a release: read upstream's changes before taking a new one.
 
 To take a new am-i-exposed release:
 
@@ -490,6 +503,17 @@ git commit -am "build: update am-i-exposed to v0.44.0"
 ```
 
 `git submodule update --remote am-i-exposed` takes its newest `main` instead of a release.
+
+To change or refresh the patch, edit in `am-i-exposed/` and save it before any build:
+`pnpm build` rewrites `public/sitemap.xml`, which must never be part of a patch, since the
+next release would no longer apply it.
+
+```sh
+cd am-i-exposed
+git checkout public/sitemap.xml          # undo what a build left there
+git diff >../patches/am-i-exposed/0001-link-the-wallet-tracker.patch
+git checkout .                           # back to upstream as it is
+```
 
 ## Develop
 
