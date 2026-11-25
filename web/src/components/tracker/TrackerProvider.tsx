@@ -118,7 +118,8 @@ export function TrackerProvider({ children }: { children: ReactNode }) {
   const [scope, setScope] = useState<LookupResult | null>(null);
   const [shownPath, setShownPath] = useState<string[]>([]);
   const folded = useSyncExternalStore(foldedStore.subscribe, foldedStore.getSnapshot, foldedStore.getServerSnapshot);
-  const collapsed = useMemo(() => new Set(folded), [folded]);
+  const [foldedHere, setFoldedHere] = useState<readonly string[] | null>(null); // this visit's folds, also where nothing is kept
+  const collapsed = useMemo(() => new Set(foldedHere ?? folded), [foldedHere, folded]);
   const [minConf, setMinConf] = useState(0);
   const [spam, setSpam] = useState(false);
   const [focus, setFocus] = useState<{ address: string; n: number } | null>(null);
@@ -165,9 +166,23 @@ export function TrackerProvider({ children }: { children: ReactNode }) {
     let filled = false; // the background fill-in was seen reading: read the data again once it is done
     const wait = (ms: number) => new Promise((done) => setTimeout(done, ms));
     void (async () => {
+      let failed = false;
       while (!stop) {
-        const s = await api<SyncStatus>("sync");
+        let s: SyncStatus;
+        try {
+          s = await api<SyncStatus>("sync");
+        } catch (e) {
+          // The server did not answer: say so (not "Syncing" any more), and ask again.
+          if (stop) return;
+          failed = true;
+          setSync(null);
+          fail(e);
+          await wait(5000);
+          continue;
+        }
         if (stop) return;
+        if (failed) setNote(null); // it answers again: the error is over
+        failed = false;
         setSync(s);
         if (s.running) await wait(1500);
         else if (s.filling) await wait(10000);
@@ -224,7 +239,8 @@ export function TrackerProvider({ children }: { children: ReactNode }) {
   const toggleFold = useCallback((address: string) => {
     const next = new Set(collapsed);
     if (!next.delete(address)) next.add(address);
-    foldedStore.set([...next]); // private browsing: not kept, the graph is still drawn unfolded
+    setFoldedHere([...next]);
+    foldedStore.set([...next]); // where the browser keeps nothing, the folds last for this visit
     requestFocus(address); // frame what is left around it
   }, [collapsed, requestFocus]);
 
