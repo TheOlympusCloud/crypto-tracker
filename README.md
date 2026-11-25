@@ -67,8 +67,8 @@ own menu and look.
 | Ethereum, Avalanche C | yes | Native coin and ERC-20 transfers, every ERC-20 token held, counterparties expanded. |
 | Base, Arbitrum, Optimism, Polygon | **needs `CT_BLOCKSCOUT_KEY`** | Same as Ethereum once the key is set. One free [Blockscout key](https://dev.blockscout.com) covers all four. Arbitrum and Polygon can also use a free `CT_ETHERSCAN_KEY`. |
 | BNB Chain | **needs `CT_NODEREAL_KEY`** | Read through [NodeReal](https://nodereal.io)'s MegaNode with a free key: BNB, internal and BEP-20 transfers, the balance and the tokens held. Addresses that are not yours: about the last day only. Etherscan's free plan no longer covers BNB Chain; a paid Etherscan key can be set instead in a `CT_CHAINS` file (`"bsc": {"url": "https://api.etherscan.io/v2/api", "params": {"chainid": "56"}, "apikey": "…", "symbol": "BNB", "llama": "bsc"}`). |
-| Tron | yes | TRX and TRC-20 transfers, the 200 newest; counterparties not expanded automatically. |
-| Solana | yes | SOL and SPL tokens (Token-2022 too, e.g. xStocks), the 25 newest transactions, read as net balance changes; counterparties not expanded automatically. |
+| Tron | yes | TRX and TRC-20 transfers, the 200 newest; counterparties not expanded automatically, except [shared ones](#shared-counterparties). |
+| Solana | yes | SOL and SPL tokens (Token-2022 too, e.g. xStocks), the 25 newest transactions, read as net balance changes; counterparties not expanded automatically, except [shared ones](#shared-counterparties). |
 
 The depths above are for other addresses (counterparties, lookups). Your own wallets are
 read in full on every chain: each sync reads what is new, then continues further back
@@ -89,6 +89,18 @@ failing.
 
 The privacy scan reads an address as deeply as a lookup does (the depths above), so a scan
 of a busy Solana or Tron address says "Partly checked".
+
+### Shared counterparties
+
+Each sync also reads up to 10 addresses that two or more of your wallets dealt with and
+that were never read, busiest first: in full, as a lookup reads them (Tron: three TronGrid
+calls), or on Solana with one call that only tells whether the address is busy (1,000
+transactions or more). Dogecoin's are left out: its free indexer allows too few lookups.
+The others wait for the next sync. A busy address (an exchange's hot wallet, a payment
+processor) then ends every link through it, as a labelled service does. A quiet one that
+sends everything to one exchange is that exchange's deposit address, and two of your
+wallets that paid it get a `deposit-address` link (see
+[What is a fact and what is a guess](#what-is-a-fact-and-what-is-a-guess)).
 
 ## Install
 
@@ -438,6 +450,7 @@ scanned yet.
 | Dealt with a flagged address | -15, high | Transfers with an address labelled as a scam, a hack or under sanctions. |
 | Dealt with a mixer | -10, medium | Transfers with a labelled mixer. |
 | The same address on several chains | -2, low | Transfers of the same EVM address on two or more of the chains read. |
+| Shares an exchange deposit address | -10, high | One of your own wallets only: it and another wallet of yours paid the same exchange deposit address (the `deposit-address` guess, 85%). |
 
 The score is am-i-exposed's address score: 93, plus the impacts, kept within 0 to 100;
 A+ from 90, B from 75, C from 50, D from 25, F below (`tracker/exposure/`, tested against
@@ -445,6 +458,7 @@ A+ from 90, B from 75, C from 50, D from 25, F below (`tracker/exposure/`, teste
 real wallets. Each finding lists the transactions it rests on, with links to the chain's
 explorer. Only labels from a source that states them count: a guessed label (behaviour, a
 contract name) makes no finding, and a token a stranger airdropped makes no counterparty.
+The one guess among the findings, a shared deposit address, says it is one and how sure.
 No finding is no clean bill: only labelled addresses can be recognised.
 
 A scan says **Partly checked**, and why, when the address has more history than is read,
@@ -481,6 +495,10 @@ as private as that indexer is discreet.
 Swaps: each of your addresses is also looked up at the THORChain and Maya Midgard APIs.
 `CT_SWAPS=off` turns that off.
 
+Shared counterparties: up to 10 addresses per sync that two of your wallets dealt with are
+looked up at the indexer of their chain (the Solana RPC for Solana ones). That indexer
+already served the histories they appear in; it now also sees them asked for from your IP.
+
 Prices: only asset identifiers (coin names, token contracts) go to the price API, never
 addresses or amounts.
 
@@ -515,7 +533,7 @@ shown wherever the address appears, together with where the name comes from:
 | the protocol | THORChain and Maya vaults, from the protocols' own swap records. | Fact. |
 | an open label set | [etherscan-labels](https://github.com/brianleect/etherscan-labels) for Ethereum, BNB Chain, Polygon, Arbitrum, Optimism, Avalanche and Fantom (a 2023 snapshot), [GraphSense TagPacks](https://github.com/graphsense/graphsense-tagpacks) for Bitcoin, Ethereum, Litecoin and Tron, and the program names of the [Solana explorer](https://github.com/solana-labs/explorer). All MIT. | Fact. |
 | the explorer | The verified contract name of an EVM address ("UniswapV2Router02"). The name is a fact; the type read from it is a guess. | Guess, 80%. |
-| behaviour | An address that forwards everything to an exchange (a deposit address); one that takes one asset from you and returns another in the same transaction (a pool or router); one with too much history to read (some service). | Guess, 60%. |
+| behaviour | An address that was read in full, sends everything to one exchange and was paid by 3 senders at most (a deposit address); one that takes one asset from you and returns another in the same transaction (a pool or router); one with too much history to read (some service). | Guess, 60%. |
 
 The label sets are downloaded whole (about 540,000 labels) on the first sync and again
 every 30 days, and looked up locally, so naming an address tells nobody which addresses
@@ -547,12 +565,14 @@ in `tracker/heuristics.py` and `tracker/graph.py`.
 | bridge | 0.5 to 0.95 | Money leaves one of your wallets on chain X and the same asset reaches another of your wallets on chain Y within 6 hours, 0 to 3% smaller. +0.25 if a labelled bridge is involved, +0.15 if within 0.5%, +0.1 if within 10 minutes; divided by the number of equally plausible matches. |
 | exchange-flow | 0.09 to 0.8 | Money leaves one wallet into an exchange and the same asset, 0 to 2% less, comes out of an exchange into another wallet within 48 hours. Starts at 0.5 (same exchange), 0.3 (two exchanges) or 0.15 (the deposit went to an address that was never expanded); +0.15 within 0.5%, +0.1 within an hour; x0.6 for round amounts; divided by the number of equally plausible matches. Repeated matches between the same two wallets are not independent proof: they lift the best single match at most halfway to 0.8, never past it. |
 | swap | 0.95 | THORChain or Maya Protocol recorded a swap from one address to the other (for example ETH in, BTC out). The record is public and names the destination, so this is close to a fact. Several swaps between the same two addresses stay at 0.95. |
+| deposit-address | 0.85 | Two of your wallets paid the same address, which was read in full without an error, is not a very active address, has no label but the tracker's own guess, sends everything to one labelled exchange, and was paid by 3 senders at most (two addresses of one wallet count once; the exchange topping up gas is one). A deposit address belongs to one exchange account. One row per deposit address: paying it again adds nothing, a second shared deposit address combines. EVM, Tron, Bitcoin, Litecoin and Bitcoin Cash. |
 
 Several transactions supporting the same guess combine as `1 - (1-c1)(1-c2)...`.
 
 The findings of the [privacy scan](#privacy-scan-of-evm-solana-and-tron-addresses) are
 facts: a transfer read from the chain, with a counterparty that an open label set or you
-name. They add no line to the graph.
+name. They add no line to the graph. The exception is a shared deposit address, which is
+the `deposit-address` guess above, shown as one.
 
 A link between two wallets multiplies the confidences along its path (a transfer counts
 1.0) and then by 0.7 for every stranger it passes through. Links chain through your own
@@ -604,8 +624,11 @@ or at the hop limit, and says which.
   call (`"tokenlist": true`), so rebasing tokens are off.
 - Address checksums are verified, except the mixed-case form of EVM addresses and
   Bitcoin Cash's cashaddr.
-- An unlabelled exchange wallet looks like a stranger and can produce a false link;
-  label it in the UI and the link disappears.
+- An unlabelled exchange wallet looks like a stranger until it is read; each sync reads
+  10 of those that two of your wallets dealt with (none on Dogecoin), and a busy one ends
+  the link. One that looks quiet in what is read can still produce a false link; label it
+  in the UI and the link disappears.
+- A Solana address found quiet is not asked again, even if it gets busy later.
 
 ## Built on am-i-exposed
 
