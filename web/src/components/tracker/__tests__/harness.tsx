@@ -1,6 +1,6 @@
 import { vi } from "vitest";
 import { render } from "@testing-library/react";
-import type { ReactElement } from "react";
+import { useEffect, useState, type ReactElement, type ReactNode } from "react";
 import { TrackerContext, type Tracker } from "../TrackerProvider";
 import type { Analysis, Graph, GraphNode } from "@/lib/tracker/types";
 import graphFixture from "./fixtures/graph.json";
@@ -56,7 +56,17 @@ export function fakeTracker(over: Partial<Tracker> = {}): Tracker {
   };
 }
 
+/** Provides `tracker`, with the panel following openPanel and closePanel as in the real page (calls are still recorded). */
+export function TrackerHarness({ tracker, children }: { tracker: Tracker; children: ReactNode }) {
+  const [panel, setPanel] = useState(tracker.panel);
+  useEffect(() => {
+    vi.mocked(tracker.openPanel).mockImplementation(setPanel);
+    vi.mocked(tracker.closePanel).mockImplementation(() => setPanel(null));
+  }, [tracker]);
+  return <TrackerContext.Provider value={{ ...tracker, panel }}>{children}</TrackerContext.Provider>;
+}
+
 export function renderTracker(ui: ReactElement, over: Partial<Tracker> = {}) {
   const tracker = fakeTracker(over);
-  return { tracker, ...render(<TrackerContext.Provider value={tracker}>{ui}</TrackerContext.Provider>) };
+  return { tracker, ...render(<TrackerHarness tracker={tracker}>{ui}</TrackerHarness>) };
 }

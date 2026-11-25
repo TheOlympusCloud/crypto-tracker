@@ -18,8 +18,7 @@ vi.mock("@/components/QrScanner", () => ({
   ),
 }));
 
-import { fakeTracker, renderTracker } from "@/components/tracker/__tests__/harness";
-import { TrackerContext } from "@/components/tracker/TrackerProvider";
+import { TrackerHarness, fakeTracker, renderTracker } from "@/components/tracker/__tests__/harness";
 import { LookupBox } from "../LookupBox";
 import { lookupBox, useLookup } from "../useLookup";
 import { LOOKUP, stubApi } from "./fixture";
@@ -91,7 +90,7 @@ describe("the lookup box", () => {
 describe("useLookup", () => {
   const hook = () => {
     const tracker = fakeTracker();
-    const wrapper = ({ children }: { children: ReactNode }) => <TrackerContext.Provider value={tracker}>{children}</TrackerContext.Provider>;
+    const wrapper = ({ children }: { children: ReactNode }) => <TrackerHarness tracker={tracker}>{children}</TrackerHarness>;
     return { tracker, ...renderHook(() => useLookup(), { wrapper }) };
   };
 

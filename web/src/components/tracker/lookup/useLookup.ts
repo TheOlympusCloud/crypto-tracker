@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { api } from "@/lib/tracker/api";
 import type { LookupResult, Resolved } from "@/lib/tracker/types";
 import { useTracker } from "@/components/tracker/TrackerProvider";
@@ -34,21 +34,29 @@ let asked = 0; // only the newest lookup may fill the panel
  * Either ends with the address's view in the panel and its connections in the graph.
  */
 export function useLookup(): { lookUp: (text: string) => Promise<void>; openLookup: (address: string, chains?: string[]) => Promise<void> } {
-  const { setStatus, openPanel, setScope, show, requestFocus } = useTracker();
+  const { panel, setStatus, openPanel, setScope, show, requestFocus } = useTracker();
+  const shown = useRef(panel);
+  useEffect(() => {
+    shown.current = panel;
+  });
+  // Only the newest lookup may fill the panel, and only while its busy panel is still open.
+  const wanted = (mine: number, address: string) =>
+    mine === asked && shown.current?.kind === "lookup-busy" && shown.current.address === address;
 
   const openLookup = useCallback(async (address: string, chains: string[] = []) => {
     const mine = ++asked;
     openPanel({ kind: "lookup-busy", address });
+    shown.current = { kind: "lookup-busy", address }; // before the page has drawn it
     try {
       const v = await api<LookupResult>(lookupPath(address, chains));
-      if (mine !== asked) return;
+      if (!wanted(mine, address)) return;
       if (box.text === address && v.icon) lookupBox.set({ mark: { q: address, icon: v.icon } }); // an EVM address now has its chain
       setScope(v);
       show("graph");
       requestFocus(address);
       openPanel({ kind: "lookup" });
     } catch (e) {
-      if (mine !== asked) return;
+      if (!wanted(mine, address)) return;
       openPanel({ kind: "lookup-error", address, chains, message: e instanceof Error ? e.message : String(e) });
     }
   }, [openPanel, setScope, show, requestFocus]);
