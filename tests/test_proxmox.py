@@ -67,6 +67,9 @@ def test_one_command_makes_a_container_running_both_apps(tmp_path):
 def test_it_refuses_to_run_off_the_host_or_over_a_container(tmp_path):
     refused = run(tmp_path, FAKE_UID="1000").stderr
     assert "as root" in refused and "pct destroy" not in refused
+    small = run(tmp_path, LXC_MEMORY="2048")
+    assert small.returncode == 1 and "at least 3072" in small.stderr  # the build needs ~2.5 GB
+    assert "pct destroy" not in small.stderr
     STUBS["pct"] = STUBS["pct"].replace("status) exit 2", "status) exit 0")
     try:
         taken = run(tmp_path, LXC_ID="200")
