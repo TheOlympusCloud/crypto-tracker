@@ -18,6 +18,7 @@ esac""",
     "pct": """case "$1" in
   status) exit 2 ;;  # no such container
   exec) shift 3
+    [ "$1" = "${FAKE_FAIL:-}" ] && exit 1
     case "$1" in
       curl) printf 401 ;;
       hostname) echo "192.168.1.50 fd00::50" ;;
@@ -61,16 +62,25 @@ def test_one_command_makes_a_container_running_both_apps(tmp_path):
     assert (tmp_path / "env").read_text() == f"CT_PASSWORD={password}\n"
     assert not any(password in c for c in calls)  # never on a command line
     assert "http://192.168.1.50:8000/tracker/" in done.stdout and password in done.stdout
+    assert "pct destroy" not in done.stderr
 
 
 def test_it_refuses_to_run_off_the_host_or_over_a_container(tmp_path):
-    assert "as root" in run(tmp_path, FAKE_UID="1000").stderr
+    refused = run(tmp_path, FAKE_UID="1000").stderr
+    assert "as root" in refused and "pct destroy" not in refused
     STUBS["pct"] = STUBS["pct"].replace("status) exit 2", "status) exit 0")
     try:
         taken = run(tmp_path, LXC_ID="200")
     finally:
         STUBS["pct"] = STUBS["pct"].replace("status) exit 0", "status) exit 2")
     assert taken.returncode == 1 and "container 200 exists already" in taken.stderr
+    assert "pct destroy" not in taken.stderr  # not ours to remove
     assert not any(
         c.startswith("pct create") for c in (tmp_path / "calls").read_text().splitlines()
     )
+
+
+def test_a_failure_after_the_container_exists_says_how_to_remove_it(tmp_path):
+    failed = run(tmp_path, FAKE_FAIL="git")  # the clone fails, under set -e
+    assert failed.returncode != 0
+    assert "pct destroy 105 --force" in failed.stderr

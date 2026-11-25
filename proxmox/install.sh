@@ -48,6 +48,8 @@ if ! pveam list "$LXC_TEMPLATE_STORAGE" | grep -F "/$template" >/dev/null; then
 fi
 
 echo "==> Container $LXC_ID ($LXC_HOSTNAME) on $LXC_STORAGE"
+# From here on a failure leaves a container behind: say how to remove it before a retry.
+trap '[ $? = 0 ] || echo "install.sh: to start over, remove container $LXC_ID: pct destroy $LXC_ID --force" >&2' EXIT
 # nesting and keyctl let Docker run in an unprivileged container.
 pct create "$LXC_ID" "$LXC_TEMPLATE_STORAGE:vztmpl/$template" \
     --hostname "$LXC_HOSTNAME" --ostype debian --unprivileged 1 \
