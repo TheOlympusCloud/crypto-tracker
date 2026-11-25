@@ -3,11 +3,13 @@
 import { useState, type FormEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { api } from "@/lib/tracker/api";
+import { scanHref } from "@/lib/tracker/exposure";
 import { chainOf, pct, title } from "@/lib/tracker/kinds";
 import type { Verdict, VerdictLink } from "@/lib/tracker/types";
 import { Amount, Badge, BUTTON, fake, FakeList, held, HistoryNote, PRIMARY, PrivacyScoreLink, readFiat, ROW, TrustBadge, VerdictBox, Worth } from "../bits";
 import { ChainMark, Coin } from "../Glyph";
 import { useTracker } from "../TrackerProvider";
+import { WalletGrade } from "./Grade";
 import { OriginRows } from "./Origins";
 import { caveats, judge } from "./verdict";
 
@@ -111,7 +113,11 @@ function Wallet({ address }: { address: string }) {
           <ul className="divide-y divide-card-border">
             {owned.map((a) => (
               <li key={a.address} className="py-2">
-                <span className="block break-all font-mono text-xs text-foreground">{a.address}</span>
+                <span className="flex items-start justify-between gap-2">
+                  <span className="min-w-0 break-all font-mono text-xs text-foreground">{a.address}</span>
+                  {/* Its deep scan runs in the browser and is not part of the wallet's grade. */}
+                  <DeepScanLink address={a.address} chain={chainOf(n)} />
+                </span>
                 <span className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1">
                   {(a.balances ?? []).map((b) =>
                     fake(b) ? (
@@ -129,6 +135,9 @@ function Wallet({ address }: { address: string }) {
           </ul>
         </>
       )}
+
+      <h3 className={H3}>{t("tracker-exposure:wallet.title")}</h3>
+      <WalletGrade address={address} chain={chainOf(n)} />
 
       <h3 className={H3}>{t("tracker-portfolio:wallet.tied")}</h3>
       <VerdictBox level={level} headline={headline} />
@@ -176,4 +185,15 @@ function Evidence({ address, v, k }: { address: string; v: Verdict; k: VerdictLi
       </button>
     </li>
   );
+}
+
+/** am-i-exposed's scan of one address of an HD wallet. */
+function DeepScanLink({ address, chain }: { address: string; chain: string }) {
+  const { t } = useTranslation();
+  const href = scanHref(address, chain);
+  return href ? (
+    <a href={href} className="shrink-0 text-xs text-bitcoin hover:underline underline-offset-4">
+      {t("tracker-exposure:wallet.deep_scan")}
+    </a>
+  ) : null;
 }

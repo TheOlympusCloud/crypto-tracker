@@ -1,7 +1,7 @@
 import { base58 } from "@scure/base";
 import type { FindingId } from "@/lib/analysis/finding-metadata";
 import type { ScoringResult } from "@/lib/types";
-import type { Exposure, Gap, TrackerFinding } from "./types";
+import type { Exposure, Gap, ServerFinding, TrackerFinding } from "./types";
 
 type T = (key: string, o?: Record<string, unknown>) => string;
 
@@ -51,13 +51,15 @@ export function readScanHash(hash: string): { address: string; chains: string[] 
 export const exposurePath = (address: string, chains: string[]) =>
   `exposure/${encodeURIComponent(address)}${chains.length ? `?chains=${chains.join(",")}` : ""}`;
 
+/** A server finding as upstream's Finding: worded from the tracker-exposure namespace. */
+export function word(f: ServerFinding, t: T): TrackerFinding {
+  const say = (field: string) => t(`tracker-exposure:finding.${f.id}.${field}`, f.params);
+  return { ...f, id: f.id as FindingId, title: say("title"), description: say("description"), recommendation: say("recommendation") };
+}
+
 /** The scan as upstream's components take it: each finding worded from the tracker-exposure namespace. */
 export function toResult(e: Exposure, t: T): ScoringResult & { findings: TrackerFinding[] } {
-  const findings = e.findings.map((f) => {
-    const say = (field: string) => t(`tracker-exposure:finding.${f.id}.${field}`, f.params);
-    return { ...f, id: f.id as FindingId, title: say("title"), description: say("description"), recommendation: say("recommendation") };
-  });
-  return { score: e.score, grade: e.grade, findings, partial: e.partial };
+  return { score: e.score, grade: e.grade, findings: e.findings.map((f) => word(f, t)), partial: e.partial };
 }
 
 /** Why a scan is partly checked, in words. */

@@ -92,6 +92,48 @@ describe("WalletPanel", () => {
     expect(screen.getByRole("heading", { name: "What this check may still have missed" })).toBeTruthy();
   });
 
+  it("shows the wallet's privacy grade and its findings by chain", () => {
+    renderTracker(<WalletPanel address={COLD} />);
+    expect(screen.getByRole("heading", { name: "Privacy grade" })).toBeTruthy();
+    expect(screen.getByText("D")).toBeTruthy();
+    expect(screen.getByText("34 of 100")).toBeTruthy();
+    // A Bitcoin wallet's grade leaves out the deep scan of its addresses, and says so.
+    expect(screen.getByText("Wallet checks; addresses not deep-scanned")).toBeTruthy();
+    const own = screen.getByRole("heading", { level: 4, name: "This wallet, across its chains" });
+    const bitcoin = screen.getByRole("heading", { level: 4, name: "Bitcoin" });
+    expect(own.compareDocumentPosition(bitcoin) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy(); // the wallet's own first
+    const tied = screen.getByText("Tied to your public wallet Exchange withdrawals (70%)").closest("details")!;
+    expect(within(tied).getByText("-49")).toBeTruthy();
+    expect(tied.textContent).toContain("with 70% confidence");
+    const reuse = screen.getByText("Reused addresses: 1").closest("details")!;
+    expect(within(reuse).getAllByRole("link").map((a) => a.getAttribute("href"))).toEqual(["https://mempool.space/tx/b1", "https://mempool.space/tx/b3"]);
+    expect(screen.queryByText("Partly checked")).toBeNull();
+  });
+
+  it("shows an account wallet's findings under the chain they were found on, with no deep-scan note", () => {
+    renderTracker(<WalletPanel address={HOT} />);
+    expect(screen.getByText("C")).toBeTruthy();
+    expect(screen.getByRole("heading", { level: 4, name: "Ethereum" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { level: 4, name: "This wallet, across its chains" })).toBeNull();
+    expect(screen.getByText("Dealt directly with an exchange: Binance")).toBeTruthy();
+    expect(screen.getByText("Dealt with a mixer: Tornado Cash Router")).toBeTruthy();
+    expect(screen.queryByText("Wallet checks; addresses not deep-scanned")).toBeNull();
+  });
+
+  it("says a grade is partly checked, why, and that no finding is no proof", () => {
+    const partial = { ...ANALYSIS.exposure![PHONE]!, partial: true, gaps: [{ id: "skipped" as const, params: { check: "funder" } }] };
+    renderTracker(<WalletPanel address={PHONE} />, { analysis: { ...ANALYSIS, exposure: { ...ANALYSIS.exposure, [PHONE]: partial } } });
+    expect(screen.getByText("Partly checked")).toBeTruthy();
+    expect(screen.getByText("A check ran out of calls and did not run: funder.")).toBeTruthy();
+    expect(screen.getByText("No finding among the checks made here. That is no proof of privacy.")).toBeTruthy();
+  });
+
+  it("gives no grade to a wallet never read", () => {
+    renderTracker(<WalletPanel address={PHONE} />, { analysis: { ...ANALYSIS, exposure: { ...ANALYSIS.exposure, [PHONE]: null } } });
+    expect(screen.getByText("No grade yet: sync this wallet")).toBeTruthy();
+    expect(screen.queryByText("A+")).toBeNull();
+  });
+
   it("names the wallets a link runs through", () => {
     const verdicts = ANALYSIS.verdicts.map((v) => (v.address === HOT ? { ...v, links: [{ ...v.links[0]!, via: [PHONE] }] } : v));
     renderTracker(<WalletPanel address={HOT} />, { analysis: { ...ANALYSIS, verdicts } });
@@ -142,7 +184,7 @@ describe("WalletPanel", () => {
     expect(screen.getByText("20% from smaller sources not listed (the empty end of the bar)")).toBeTruthy();
   });
 
-  it("lists an HD wallet's addresses, with no privacy score", () => {
+  it("lists an HD wallet's addresses, each with its deep scan", () => {
     const cold = GRAPH.nodes.find((n) => n.address === COLD)!;
     const fakeBalance = { chain: "bitcoin", asset: "XYZ", amount: 9, token: "x", trust: { level: "scam" as const, reason: "airdrop" } };
     const hd: GraphNode = {
@@ -155,6 +197,8 @@ describe("WalletPanel", () => {
     expect(screen.getByText("bc1qsecond")).toBeTruthy();
     expect(screen.getAllByText("fake · worth 0")).toHaveLength(1);
     expect(screen.queryByRole("link", { name: "Privacy score" })).toBeNull();
+    // Each address keeps its deep scan one click away.
+    expect(screen.getAllByRole("link", { name: "Deep scan" }).map((a) => a.getAttribute("href"))).toEqual([`/#addr=${encodeURIComponent(COLD)}`, "/#addr=bc1qsecond"]);
     fireEvent.click(button("Re-sync"));
     expect(tracker.startSync).toHaveBeenCalledWith(["hd:abc"]);
     fireEvent.click(button("Make public"));

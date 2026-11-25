@@ -180,9 +180,12 @@ export interface Fiat {
 
 export interface Alert {
   time: number;
+  /** A link alert's text; empty for a grade alert, which the page words from `params`. */
   text: string;
   address: string;
   seen: boolean;
+  kind?: "link" | "grade";
+  params?: { from: Grade; to: Grade; score: number } | null;
 }
 
 export interface Alerts {
@@ -206,6 +209,8 @@ export interface Analysis {
   watched: Watched[];
   verdicts: Verdict[];
   origins: Record<string, OriginAsset[]>;
+  /** Each wallet's privacy score, by its first address; null for a wallet never read. */
+  exposure?: Record<string, WalletExposure | null>;
 }
 
 export interface SyncStatus {
@@ -317,4 +322,17 @@ export interface Exposure {
   findings: ServerFinding[];
   gaps: Gap[];
   explorer_address: string;
+}
+
+/**
+ * One privacy score per wallet of mine (tracker/exposure/wallets.py), in ScoringResult's shape: the
+ * findings counted once each, and every finding by the chain it was found on ("" for the wallet's own).
+ */
+export interface WalletExposure {
+  score: number;
+  grade: Grade;
+  partial: boolean;
+  findings: ServerFinding[];
+  by_chain: Record<string, ServerFinding[]>;
+  gaps: Gap[];
 }

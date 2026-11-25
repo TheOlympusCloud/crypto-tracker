@@ -12,7 +12,7 @@ import { BUTTON, ROW } from "../bits";
 /** The alerts: shown once the API reports any. Opening the list marks the unread ones seen. */
 export function AlertsBell() {
   const { t } = useTranslation();
-  const { analysis, byAddress, openWallet, refresh, fail } = useTracker();
+  const { analysis, byAddress, openWallet, refresh, fail, nameOf } = useTracker();
   const [open, setOpen] = useState(false);
   const list = useId();
   const { unread, items } = analysis.alerts;
@@ -51,7 +51,7 @@ export function AlertsBell() {
               <button type="button" className={`${ROW} items-start disabled:opacity-60 disabled:hover:bg-transparent`} disabled={!byAddress.has(a.address)} onClick={() => openWallet(a.address)}>
                 <VerdictIcon level="bad" size={16} />
                 <span className="min-w-0 text-sm text-foreground">
-                  {a.text}
+                  {a.kind === "grade" && a.params ? t("tracker-manage:alerts.grade", { name: nameOf(a.address), ...a.params }) : a.text}
                   <small className="block font-mono text-xs text-muted">{day(a.time)}</small>
                 </span>
               </button>

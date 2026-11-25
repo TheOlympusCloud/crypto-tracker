@@ -33,6 +33,7 @@
   "chains.read": "lue",
   "chains.needs_key": "clé requise",
   "alerts.title": "Alertes",
+  "alerts.grade": "{{name}} : note de confidentialité passée de {{from}} à {{to}} ({{score}} sur 100)",
   "alerts.label_one": "Alertes, {{count}} non lue",
   "alerts.label_other": "Alertes, {{count}} non lues"
 }

@@ -12,6 +12,7 @@ import { useTracker } from "../TrackerProvider";
 import { useLookup } from "../lookup/useLookup";
 import { ChainMark, Coin, KindIcon } from "../Glyph";
 import { BUTTON, Badge, PRIMARY, PrivacyScoreLink, TrustBadge, fake } from "../bits";
+import { WalletGrade } from "../portfolio/Grade";
 import { explorerUrl, namedBy } from "./text";
 
 const CATEGORIES = ["cex", "dex", "bridge", "mixer", "flagged", "defi", "service", "other"];
@@ -23,11 +24,13 @@ type Node = Omit<GraphNode, "balances"> & { balances?: Balance[] };
 /** Any address of the graph on show: what is known about it, and what can be done with it. */
 export function NodePanel({ address }: { address: string }) {
   const { t, i18n } = useTranslation();
-  const { graph, byAddress, scope, setScope, latest, collapsed, shownPath, minConf, act, fail, refresh, openWallet, openPanel, startSync, toggleFold } = useTracker();
+  const { graph, analysis, byAddress, scope, setScope, latest, collapsed, shownPath, minConf, act, fail, refresh, openWallet, openPanel, startSync, toggleFold } = useTracker();
   const { lookUp } = useLookup();
   const n: Node | undefined = scope ? [...scope.graph.nodes, scope, ...scope.connections].find((x) => x.address === address) : byAddress.get(address);
   if (!n) return null;
 
+  // The wallet this address of mine belongs to, by its first address: where its score is kept.
+  const wallet = n.mine ? analysis.verdicts.find((v) => v.wallet === (n.wallet || n.address))?.address : undefined;
   const folded = collapsed.has(n.address);
   // How many counterparties folding this address hides now.
   const hides = folded ? (fold(scope ? scope.graph : graph, collapsed, shownPath, minConf).nodes.find((x) => x.address === n.address)?.folded ?? 0) : 0;
@@ -136,6 +139,12 @@ export function NodePanel({ address }: { address: string }) {
           </a>
         ) : null}
       </div>
+      {wallet && (
+        <section className="border-t border-card-border pt-4">
+          <h3 className="mb-2 text-sm font-semibold text-foreground">{t("tracker-exposure:wallet.title")}</h3>
+          <WalletGrade address={wallet} chain={chainOf(n)} />
+        </section>
+      )}
       {n.mine ? null : (
         <form key={n.address} onSubmit={saveLabel} className="space-y-3 border-t border-card-border pt-4">
           <label className="block space-y-1 text-sm text-muted">
