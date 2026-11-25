@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS sent(address TEXT, txid TEXT, PRIMARY KEY(address, tx
 CREATE TABLE IF NOT EXISTS wide(address TEXT, txid TEXT, PRIMARY KEY(address, txid));
 CREATE TABLE IF NOT EXISTS swap(
   protocol TEXT, sender TEXT, recipient TEXT, tx_in TEXT, tx_out TEXT,
+  chain TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '',
   PRIMARY KEY(protocol, tx_in, recipient));
 CREATE TABLE IF NOT EXISTS history(
   address TEXT, source TEXT, oldest TEXT, newest INT, oldest_ts INT, total INT,
@@ -52,6 +53,7 @@ CREATE TABLE IF NOT EXISTS history(
 CREATE TABLE IF NOT EXISTS watch(address TEXT PRIMARY KEY, ts INT);
 CREATE TABLE IF NOT EXISTS coinjoin(chain TEXT, txid TEXT, PRIMARY KEY(chain, txid));
 CREATE TABLE IF NOT EXISTS failure(source TEXT PRIMARY KEY, error TEXT, ts INT);
+CREATE TABLE IF NOT EXISTS receipt(chain TEXT, txid TEXT, PRIMARY KEY(chain, txid));
 """
 
 EVM_RE = re.compile(r"0x[0-9a-fA-F]{40}")
@@ -80,6 +82,10 @@ def connect(path=None):
     for column in ("name", "trust", "reason"):  # databases from before the token check
         if column not in have:
             db.execute(f"ALTER TABLE balance ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
+    have = {r["name"] for r in db.execute("PRAGMA table_info(swap)")}
+    for column in ("chain", "note"):  # databases from before bridge records
+        if column not in have:
+            db.execute(f"ALTER TABLE swap ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
     if "symbol" not in [r["name"] for r in db.execute("PRAGMA table_info(price)")]:
         db.execute("DROP TABLE price")  # only a cache; rebuilt with the new columns
         db.executescript(SCHEMA)

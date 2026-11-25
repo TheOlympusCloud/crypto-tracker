@@ -6,7 +6,7 @@ import re
 from collections import defaultdict
 from itertools import combinations
 
-from . import chains, swaps
+from . import bridges, chains, swaps
 from . import db as database
 from .heuristics import COMMON_INPUT_COINJOIN, EXCHANGE_CAP, SERVICE, TRUSTED
 from .labels import CONFIDENCE, describe
@@ -30,7 +30,7 @@ MIXED = (
 )
 # How several rows of one kind of guess between the same pair combine. Independent evidence
 # compounds (`combine`); the same observation made again does not.
-COMBINE = {"exchange-flow": lambda c: repeated(c), "swap": max}
+COMBINE = {"exchange-flow": lambda c: repeated(c), "swap": max, "bridge-record": max}
 
 
 def repeated(confidences, cap=EXCHANGE_CAP):
@@ -282,7 +282,7 @@ def verdicts(db, max_hops=4):
         {  # an HD wallet no address of which was found: say so, never show it as clean
             "address": w, "wallet": w, "addresses": [], "name": r["name"], "checked": "none",
             "public": bool(r["public"]), "links": [], "services": [], "shared_services": [],
-            "coverage": {
+            "bridged": [], "coverage": {
                 "synced": False, "truncated": False, "error": r["error"], "counterparties": 0,
                 "expanded": 0, "notes": chains.notes("bitcoin"),
             },
@@ -359,6 +359,9 @@ def verdicts(db, max_hops=4):
                     {"wallet": first[v], "services": sorted(names)}
                     for v, names in sorted(shared[w].items())
                 ],
+                # Bridged to an address that is not a wallet of mine: the bridge's record ties
+                # it to this wallet for anyone who reads it.
+                "bridged": bridges.strangers(db, members[w]),
                 "coverage": {
                     "synced": all(a in synced for a in members[w]),
                     "truncated": any(r["hub"] for r in rows),
