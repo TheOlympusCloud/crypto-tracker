@@ -15,9 +15,14 @@ import httpx
 from embit import base58
 
 from . import db as database
+from . import node
 from .heuristics import btc_inputs, btc_links, looks_like_coinjoin
 
-ESPLORA = os.environ.get("CT_ESPLORA", "https://blockstream.info/api").rstrip("/")
+# Your own mempool when there is one (node.MEMPOOL), else a public Esplora.
+ESPLORA = (
+    os.environ.get("CT_ESPLORA") or (node.MEMPOOL and f"{node.MEMPOOL}/api")
+    or "https://blockstream.info/api"
+).rstrip("/")  # fmt: skip
 # chain -> asset, API flavour, base URL, and what a reader of a verdict must know about it.
 UTXO = {
     "bitcoin": ("BTC", "esplora", ESPLORA, ""),
@@ -171,16 +176,23 @@ EXPLORER = {
 
 
 def explorer(chain):
-    """Link templates for a chain; an EVM address without a chain opens on Ethereum's."""
+    """Link templates for a chain; an EVM address without a chain opens on Ethereum's. With a
+    mempool of your own, Bitcoin opens there: a click tells mempool.space nothing."""
     address, tx = EXPLORER.get("ethereum" if chain == "evm" else chain, ("", ""))
+    if chain == "bitcoin" and node.SITE:
+        address, tx = f"{node.SITE}/address/{{}}", f"{node.SITE}/tx/{{}}"
     return {"explorer_address": address, "explorer_tx": tx}
+
+
+OWN = "Read from your own node."
 
 
 def coverage():
     """What is read on each chain, for the UI and for honest verdicts."""
+    own = node.MEMPOOL and f"{node.MEMPOOL}/api"
     out = [
-        {"chain": chain, "asset": asset, "status": "ok", "note": note}
-        for chain, (asset, _, _, note) in UTXO.items()
+        {"chain": chain, "asset": asset, "status": "ok", "note": OWN if url == own else note}
+        for chain, (asset, _, url, note) in UTXO.items()
     ]
     for chain, cfg in evm_chains().items():
         needs = cfg.get("needs_key")
@@ -242,6 +254,8 @@ def describe(error):
         return f"HTTP {error.response.status_code}"
     if isinstance(error, httpx.HTTPError):
         return type(error).__name__
+    if isinstance(error, node.NotReady):
+        return str(error)  # ours, whole: it says why Bitcoin waits
     return str(error).splitlines()[0][:160] if str(error) else type(error).__name__
 
 
@@ -281,16 +295,35 @@ def wide(address, tx):
 btc_transfers = utxo_transfers
 
 
+ELECTRUM = set()  # Esplora URLs that turned out to be a mempool on an Electrum server
+
+
+def _esplora_page(client, url, address, after=None):
+    """One page of an address's confirmed transactions after txid `after` (None: the newest),
+    newest first: (transactions, next cursor, last page). Esplora pages /txs/chain/<last>, 25
+    at a time. A mempool on an Electrum server (Umbrel's, this app's own) has no such path: it
+    pages /txs?after_txid=<last>, 10 at a time, pending transactions first."""
+    if url not in ELECTRUM:
+        try:
+            tail = f"/{after}" if after else ""
+            txs = get(client, f"{url}/address/{address}/txs/chain{tail}").json()
+            return txs, (txs[-1]["txid"] if txs else after), len(txs) < 25
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code != 404:
+                raise
+            ELECTRUM.add(url)
+    params = {"after_txid": after} if after else None
+    txs = get(client, f"{url}/address/{address}/txs", params).json()
+    done = [t for t in txs if t["status"].get("confirmed")]
+    return done, (txs[-1]["txid"] if txs else after), len(txs) < 10
+
+
 def _esplora(client, url, address):
     stats = get(client, f"{url}/address/{address}").json()["chain_stats"]
-    txs, last = [], None
-    for _ in range(BTC_PAGES):
-        page = get(client, f"{url}/address/{address}/txs/chain" + (f"/{last}" if last else ""))
-        page = page.json()
+    txs, cursor, last = [], None, False
+    while not last and len(txs) < BTC_PAGES * 25:
+        page, cursor, last = _esplora_page(client, url, address, cursor)
         txs += page
-        if len(page) < 25:
-            break
-        last = page[-1]["txid"]
     return txs, stats["funded_txo_sum"] - stats["spent_txo_sum"], stats["tx_count"]
 
 
@@ -368,6 +401,7 @@ def _haskoin_tx(t):
 
 def fetch_utxo(client, address, chain="bitcoin", keep=()):
     asset, api, url, _ = UTXO[chain]
+    node.guard(url)
     txs, balance, count = {"esplora": _esplora, "blockcypher": _blockcypher, "haskoin": _haskoin}[
         api
     ](client, url, address)
@@ -395,10 +429,9 @@ Page = namedtuple("Page", "items positions next last span", defaults=[None])
 def page_utxo(client, chain, address, cursor=None):
     """One page of a UTXO address's history from `cursor` back (None: the newest)."""
     _, api, url, _ = UTXO[chain]
+    node.guard(url)
     if api == "esplora":
-        tail = f"/{cursor}" if cursor else ""
-        txs = get(client, f"{url}/address/{address}/txs/chain{tail}").json()
-        size, nxt = 25, (txs[-1]["txid"] if txs else cursor)
+        txs, nxt, last = _esplora_page(client, url, address, cursor)
     elif api == "haskoin":
         offset = int(cursor or 0)
         bare = address.removeprefix("bitcoincash:")
@@ -407,7 +440,7 @@ def page_utxo(client, chain, address, cursor=None):
             _haskoin_tx(t)
             for t in get(client, f"{url}/address/{bare}/transactions/full", params).json()
         ]
-        size, nxt = 100, str(offset + len(txs))
+        nxt, last = str(offset + len(txs)), len(txs) < 100
     else:  # blockcypher: by block height, and within the hourly quota
         if COOLDOWN.get(url, 0) > time.time():
             raise RateLimited("the indexer's hourly limit is used up; the rest follows later")
@@ -423,9 +456,9 @@ def page_utxo(client, chain, address, cursor=None):
         # `before` leaves out its own block: start again inside the last one, unless a single
         # block filled the page, where that would read the same page forever.
         nxt = cursor if low is None else str(low + 1 if str(low + 1) != cursor else low)
-        size = 50
+        last = len(txs) < 50
     positions = [t["status"].get("block_height") or 0 for t in txs]
-    return Page(txs, positions, nxt, len(txs) < size)
+    return Page(txs, positions, nxt, last)
 
 
 def fetch_btc(client, address):
