@@ -9,7 +9,7 @@ set -euo pipefail
 
 MEMPOOL=${MEMPOOL:-0}                       # 1: a Bitcoin node of your own too (README)
 MEMPOOL_DISK=${MEMPOOL_DISK:-1200}          # GB added for it; node and index take ~950 today
-MEMPOOL_MIN_DISK=1000                       # GB: refused below, there is no room to sync
+MEMPOOL_MIN_DISK=1100                       # GB: today's ~950 and a year of growth
 LXC_ID=${LXC_ID:-}                          # default: the next free id
 LXC_HOSTNAME=${LXC_HOSTNAME:-crypto-tracker}
 LXC_STORAGE=${LXC_STORAGE:-}                # default: the first storage that holds containers

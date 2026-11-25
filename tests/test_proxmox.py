@@ -115,7 +115,7 @@ def test_no_room_for_a_node_is_refused_before_anything_is_made(tmp_path):
     assert "has 500 GB free" in small.stderr and "needs 1216 GB" in small.stderr
     assert "pct destroy" not in small.stderr
     for given, said in (
-        ({"MEMPOOL_DISK": "900"}, "MEMPOOL_DISK must be at least 1000"),
+        ({"MEMPOOL_DISK": "1000"}, "MEMPOOL_DISK must be at least 1100"),
         ({"MEMPOOL": "yes"}, "MEMPOOL must be 0 or 1"),
     ):
         refused = run(tmp_path, **{"MEMPOOL": "1", **given})

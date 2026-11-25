@@ -138,7 +138,7 @@ LXC_IP=192.168.1.50/24,gw=192.168.1.1 bash -c "$(curl -fsSL https://raw.githubus
 | `LXC_TEMPLATE_STORAGE` | `local` |
 | `LXC_BRIDGE`, `LXC_IP` | `vmbr0`, `dhcp` |
 | `LXC_DISK`, `LXC_MEMORY`, `LXC_CORES` | `16` GB, `4096` MB (at least `3072`), `2` (at least `2`); with `MEMPOOL=1`: `8192` MB, `4` |
-| `MEMPOOL`, `MEMPOOL_DISK` | `0` (`1`: a Bitcoin node of your own), `1200` GB on top of `LXC_DISK` (at least `1000`) |
+| `MEMPOOL`, `MEMPOOL_DISK` | `0` (`1`: a Bitcoin node of your own), `1200` GB on top of `LXC_DISK` (at least `1100`) |
 | `REPO_URL`, `REPO_REF` | this repository, `main` (a branch or a tag) |
 
 With a [Bitcoin node of its own](#a-bitcoin-node-of-your-own) too:
@@ -149,8 +149,8 @@ MEMPOOL=1 bash -c "$(curl -fsSL https://raw.githubusercontent.com/TheOlympusClou
 
 That adds `MEMPOOL_DISK` (1200 GB) to the container's disk and gives it 8 GB and 4 cores, and
 puts `COMPOSE_PROFILES=mempool` in its `.env`. It refuses, before making anything, when the
-storage has less free space than the whole disk, or when `MEMPOOL_DISK` is under 1000 GB: the
-node and its index take about 950 GB today (see [Sizing](#sizing)). Thin storage (`local-lvm`,
+storage has less free space than the whole disk, or when `MEMPOOL_DISK` is under 1100 GB: the
+node and its index take about 950 GB today and grow about 90 GB a year (see [Sizing](#sizing)). Thin storage (`local-lvm`,
 ZFS) is counted by what it really has free, since the node really fills its disk.
 
 Back the container up with Proxmox's own backups (`vzdump`): the volume is inside it. With a
@@ -184,7 +184,9 @@ From then on:
 
 - the **wallet tracker** reads Bitcoin from your node (`CT_ESPLORA` defaults to it). Its Chains
   list, under Wallets & sync, says "Read from your own node", and Bitcoin links open your own
-  explorer instead of mempool.space;
+  explorer instead of mempool.space. Your Bitcoin addresses are no longer sent to the THORChain
+  and Maya swap APIs either: a swap between a Bitcoin wallet and another wallet of yours is still
+  found from that other wallet's side, and each Bitcoin wallet's verdict says so;
 - the **privacy scanner** (am-i-exposed) asks this server's `/api/`, which passes its requests on
   to your node: its badge at the top right says **Local**, as on Umbrel. Its other services (the
   Chainalysis check, the observatory) are reached as before, and it does not claim they go
