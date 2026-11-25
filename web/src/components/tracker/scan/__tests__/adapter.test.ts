@@ -31,6 +31,22 @@ describe("the adapter", () => {
     expect(f!.severity).toBe("high");
   });
 
+  it("names the first funder the way the server sends it", () => {
+    const funded = (id: string, params: Record<string, string>) =>
+      toResult({ ...scan, findings: [{ ...scan.findings[0]!, id, params }] }, t).findings[0]!;
+    const wallets = { funder: "0xfeed", wallets: "Trading", chains: "Solana" };
+    expect(funded("x-funder-mine", { funder: "Main", chains: "Ethereum, Base" }).title).toBe("First funded by your wallet Main");
+    const cex = funded("x-funder-exchange", { exchange: "Binance", chains: "Ethereum" });
+    expect(cex.title).toBe("First funded by an exchange: Binance");
+    expect(cex.description).toMatch(/^Binance sent this address its first coins on Ethereum.*one of its customers/);
+    expect(funded("x-funder-shared", wallets).description).toMatch(/^0xfeed sent .* also sent coins to Trading, which you track as yours/);
+    expect(funded("x-funder-hub", wallets).title).toBe("First funded by a busy address that also funded Trading");
+    for (const id of ["x-funder-mine", "x-funder-exchange", "x-funder-shared", "x-funder-hub"]) {
+      const f = funded(id, { ...wallets, exchange: "Binance" });
+      expect([f.title, f.description, f.recommendation].join(" ")).not.toMatch(/\{\{|tracker-exposure:/);
+    }
+  });
+
   it("says why a scan is partly checked", () => {
     expect(scan.gaps.map((g) => gapText(g, t))).toEqual([
       "The address is very active: only its newest transactions were read.",
