@@ -4,7 +4,7 @@ import { renderHook, act, cleanup } from "@testing-library/react";
 import { useCoordinatorsStatus, usePolled } from "../useWabisator";
 import { getCoordinatorsStatus } from "@/lib/observatory/wabisator-client";
 
-const network = vi.hoisted(() => ({ isUmbrel: false, routeReady: true }));
+const network = vi.hoisted(() => ({ isUmbrel: false, torProxy: false, routeReady: true }));
 vi.mock("@/context/NetworkContext", () => ({ useNetwork: () => network }));
 vi.mock("@/lib/observatory/wabisator-client", async (orig) => ({
   ...(await orig<typeof import("@/lib/observatory/wabisator-client")>()),
@@ -88,14 +88,14 @@ describe("Wabisator hooks", () => {
     const { rerender } = renderHook(() => useCoordinatorsStatus());
     await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
     expect(getCoordinatorsStatus).not.toHaveBeenCalled();
-    Object.assign(network, { isUmbrel: true, routeReady: true });
+    Object.assign(network, { isUmbrel: true, torProxy: true, routeReady: true });
     rerender();
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     expect(vi.mocked(getCoordinatorsStatus).mock.calls[0]?.[0]).toMatchObject({ isUmbrel: true });
   });
   it("fetches on clearnet as soon as the route is known, without waiting for Tor detection (apiReady)", async () => {
     vi.mocked(getCoordinatorsStatus).mockClear();
-    Object.assign(network, { isUmbrel: false, routeReady: true, apiReady: false });
+    Object.assign(network, { isUmbrel: false, torProxy: false, routeReady: true, apiReady: false });
     renderHook(() => useCoordinatorsStatus());
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     expect(vi.mocked(getCoordinatorsStatus).mock.calls[0]?.[0]).toMatchObject({ isUmbrel: false });

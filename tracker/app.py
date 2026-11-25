@@ -6,12 +6,13 @@ from base64 import b64decode
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, field_validator
+from starlette.concurrency import run_in_threadpool
 from starlette.routing import Mount
 
-from . import alerts, chains, graph, hd, lookup, prices, sync, uri
+from . import alerts, chains, graph, hd, lookup, node, prices, sync, uri
 from . import db as database
 
 app = FastAPI(title="Crypto tracker", docs_url=None, redoc_url=None)
@@ -337,15 +338,70 @@ def post_sync(req: Sync):
 
 @app.get("/sync")
 def get_sync():
-    return sync.status
+    # A node of your own that is not ready yet is said with the sync's notes, on every view.
+    return {**sync.status, "notes": sync.status["notes"] + node.notes()}
+
+
+@app.get("/mempool/{kind}/{ref}")
+def to_mempool(kind: str, ref: str, request: Request):
+    """An explorer link to the profile's mempool site, on its own port of this host."""
+    if kind not in ("address", "tx") or not node.PORT or not ref.isalnum():
+        raise HTTPException(404)
+    host = request.url.hostname or "localhost"
+    host = f"[{host}]" if ":" in host else host
+    return RedirectResponse(f"http://{host}:{node.PORT}/{kind}/{ref}")
 
 
 if os.environ.get("CT_SYNC_EVERY"):  # minutes
     sync.every(float(os.environ["CT_SYNC_EVERY"]))
 
+
+async def local_info():
+    """am-i-exposed asks here whether a mempool of the host's own is behind /api (Umbrel's
+    answer, from its web server). Ours has no Tor sidecar: am-i-exposed keeps reaching its
+    other services as on its public site, and never says they went through Tor."""
+    site = os.environ.get("CT_MEMPOOL", "")
+    return {
+        "mempoolPort": "" if site else node.PORT,  # the profile's site, on this host
+        "mempoolExternalUrl": site if site.startswith(("http://", "https://")) else "",
+        "mempoolOnion": "",
+        "bitcoinNetwork": "",
+        "torProxy": False,
+    }
+
+
+async def mempool_api(path: str, request: Request):
+    """am-i-exposed's Bitcoin requests, passed on to the mempool of your own. While it is not
+    ready they get the notice and a 503, never an answer from a public server: am-i-exposed
+    then says the local mempool is unreachable and to wait for it to finish syncing."""
+    parts = path.split("/")
+    # mempool's own web server would hand v1/services to mempool.space; and no way out of /api/
+    if parts[:2] == ["v1", "services"] or {"", ".", ".."} & set(parts):
+        raise HTTPException(404)
+    found = await run_in_threadpool(node.status)
+    if found["state"] != "ready":
+        return PlainTextResponse(node.notice(found), status_code=503)
+    # Only what the request is: no cookie or password of this app goes to the mempool.
+    headers = {k: v for k, v in request.headers.items() if k in ("accept", "content-type")}
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            r = await client.request(
+                request.method, f"{node.MEMPOOL}/api/{path}", params=request.query_params,
+                content=await request.body(), headers=headers,
+            )  # fmt: skip
+    except httpx.HTTPError as e:
+        return PlainTextResponse(f"your mempool did not answer: {chains.describe(e)}", 502)
+    kind = r.headers.get("content-type")
+    return Response(r.content, r.status_code, media_type=kind)
+
+
 # The API answers under /api/tracker/; /api/ itself is the web app's, which looks for a
-# self-hosted mempool there. CT_WEB is the web app's static build, served on everything else
-# behind the same password.
+# self-hosted mempool there: with one of your own (node.MEMPOOL) this server passes /api/ on
+# to it. CT_WEB is the web app's static build, served on everything else behind the same
+# password.
 app.router.routes = [Mount("/api/tracker", routes=list(app.routes))]
+if node.MEMPOOL:
+    app.add_api_route("/api/local-info", local_info)
+    app.add_api_route("/api/{path:path}", mempool_api, methods=["GET", "HEAD", "POST"])
 if web := os.environ.get("CT_WEB"):
     app.mount("/", StaticFiles(directory=web, html=True))

@@ -9,6 +9,12 @@ export type LocalApiStatus = "checking" | "available" | "unavailable";
 interface LocalApiResult {
   /** Whether the app is running on the Umbrel Docker backend (detected via /api/local-info) */
   isUmbrel: boolean;
+  /**
+   * The host routes the other services through its Tor sidecar (/tor-proxy/), as Umbrel and
+   * StartOS do. false when local-info says `torProxy: false`: a host with its own mempool but
+   * no sidecar (crypto-tracker), where those services keep the public site's routes.
+   */
+  torProxy: boolean;
   /** Mempool API health: "checking" while probing, "available" if responsive, "unavailable" if down */
   status: LocalApiStatus;
   mempoolPort: string | null;
@@ -46,6 +52,7 @@ async function probeLocalInfo(
   mempoolOnion: string | null;
   mempoolExternalUrl: string | null;
   hint: BackendChain | null;
+  torProxy: boolean;
 } | null> {
   try {
     const res = await fetch("/api/local-info", {
@@ -69,6 +76,7 @@ async function probeLocalInfo(
           : null,
       mempoolExternalUrl: externalUrl,
       hint: chainFromHint(typeof info.bitcoinNetwork === "string" ? info.bitcoinNetwork : null),
+      torProxy: info.torProxy !== false,
     };
   } catch {
     return null;
@@ -109,12 +117,13 @@ async function probe(
 
   if (!info) {
     // Not on Umbrel - skip Phase 2 entirely
-    return { isUmbrel: false, status: "unavailable", mempoolPort: null, mempoolOnion: null, mempoolExternalUrl: null, chain: null };
+    return { isUmbrel: false, torProxy: false, status: "unavailable", mempoolPort: null, mempoolOnion: null, mempoolExternalUrl: null, chain: null };
   }
 
   // Umbrel detected! Push early state so badge shows "Local" immediately
   const earlyResult: LocalApiResult = {
     isUmbrel: true,
+    torProxy: info.torProxy,
     status: "checking",
     mempoolPort: info.mempoolPort,
     mempoolOnion: info.mempoolOnion,
@@ -134,6 +143,7 @@ async function probe(
 
   return {
     isUmbrel: true,
+    torProxy: info.torProxy,
     status: healthy || genesis ? "available" : "unavailable",
     mempoolPort: info.mempoolPort,
     mempoolOnion: info.mempoolOnion,
@@ -154,7 +164,7 @@ async function probe(
  */
 export function useLocalApi(): LocalApiResult {
   const [result, setResult] = useState<LocalApiResult>(
-    () => cachedResult ?? { isUmbrel: false, status: "checking", mempoolPort: null, mempoolOnion: null, mempoolExternalUrl: null, chain: null },
+    () => cachedResult ?? { isUmbrel: false, torProxy: false, status: "checking", mempoolPort: null, mempoolOnion: null, mempoolExternalUrl: null, chain: null },
   );
 
   useEffect(() => {

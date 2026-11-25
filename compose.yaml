@@ -4,6 +4,9 @@
 # The first start makes a password: docker compose logs, or
 #   docker compose exec crypto-tracker cat /data/password
 # Settings of the README's table go in an optional .env next to this file.
+#
+# Optional, a Bitcoin node of your own next to it (README, "A Bitcoin node of your own"):
+# COMPOSE_PROFILES=mempool in .env, then docker compose up -d. About 1.1 TB of disk.
 services:
   crypto-tracker:
     build:
@@ -18,8 +21,101 @@ services:
     env_file:
       - path: .env
         required: false
+    environment:
+      # The stacks below that run: the app then reads Bitcoin from them (tracker/node.py).
+      CT_PROFILES: ${COMPOSE_PROFILES:-}
+      CT_MEMPOOL_PORT: ${MEMPOOL_PORT:-8080}
     volumes:
       - data:/data
 
+  # ---- profile "mempool": bitcoind, its address index (Fulcrum) and mempool on top ----
+  bitcoind:
+    profiles: [mempool]
+    image: bitcoin/bitcoin:31.3@sha256:bb5098778c3cb2fb27fc53669db68157877df5cbe9a04b210b0b702c5fc422fc
+    <<: &node
+      restart: unless-stopped
+      logging:
+        options: { max-size: 10m, max-file: "3" } # a node logs every block, for years
+    command:
+      - -server=1
+      - -txindex=1 # Fulcrum and mempool read any transaction by id
+      - -disablewallet=1
+      - -rpcbind=0.0.0.0 # reachable on the compose network only: no port is published
+      - -rpcallowip=10.0.0.0/8
+      - -rpcallowip=172.16.0.0/12
+      - -rpcallowip=192.168.0.0/16
+      # The RPC password is the cookie bitcoind makes at each start, shared read-only below.
+      - -rpccookiefile=/home/bitcoin/rpc/.cookie
+      - -rpccookieperms=all
+    volumes:
+      - bitcoind:/home/bitcoin/.bitcoin
+      - bitcoind-rpc:/home/bitcoin/rpc
+    stop_grace_period: 5m # it writes its UTXO cache out on the way down
+
+  fulcrum:
+    profiles: [mempool]
+    image: cculianu/fulcrum:v2.1.4@sha256:3de5dc10d6fd331a61adf54bc238bc01d1fc9618f2f763e2454e21b4e6d888b1
+    <<: *node
+    command: [Fulcrum, /etc/fulcrum.conf]
+    volumes:
+      - fulcrum:/data
+      - bitcoind-rpc:/rpc:ro
+      - ./mempool/fulcrum.conf:/etc/fulcrum.conf:ro
+    depends_on: [bitcoind]
+    stop_grace_period: 5m
+
+  mempool-db:
+    profiles: [mempool]
+    image: mariadb:10.11.19@sha256:e5fe75b2b9de0eb9f6f9a4d9c97272fb3a7480e389ccd487a786bab2a12cc0d7
+    <<: *node
+    environment:
+      # Only mempool's statistics, on the compose network: no secret worth keeping.
+      MARIADB_DATABASE: mempool
+      MARIADB_USER: mempool
+      MARIADB_PASSWORD: mempool
+      MARIADB_RANDOM_ROOT_PASSWORD: "1"
+      MARIADB_AUTO_UPGRADE: "1"
+    volumes:
+      - mempool-db:/var/lib/mysql
+
+  mempool-api:
+    profiles: [mempool]
+    image: mempool/backend:v3.3.2@sha256:c358a20591285f77fb11e6f2502441e6b15bc7dd8282433e09bfd948b8ab0aa8
+    <<: *node
+    command: ["./wait-for-it.sh", "mempool-db:3306", "--timeout=720", "--strict", "--", "./start.sh"]
+    environment:
+      MEMPOOL_BACKEND: electrum
+      ELECTRUM_HOST: fulcrum
+      ELECTRUM_PORT: "50001"
+      ELECTRUM_TLS_ENABLED: "false"
+      CORE_RPC_HOST: bitcoind
+      CORE_RPC_PORT: "8332"
+      CORE_RPC_COOKIE: "true"
+      CORE_RPC_COOKIE_PATH: /rpc/.cookie
+      DATABASE_ENABLED: "true"
+      DATABASE_HOST: mempool-db
+      DATABASE_DATABASE: mempool
+      DATABASE_USERNAME: mempool
+      DATABASE_PASSWORD: mempool
+    volumes:
+      - bitcoind-rpc:/rpc:ro
+    depends_on: [mempool-db, bitcoind, fulcrum]
+    stop_grace_period: 1m
+
+  mempool-web:
+    profiles: [mempool]
+    image: mempool/frontend:v3.3.2@sha256:83c5d1e20cd4fad358584f5921ca547d69ab80162d0e2f3138c2d142a91dbadd
+    <<: *node
+    environment:
+      FRONTEND_HTTP_PORT: "8080"
+      BACKEND_MAINNET_HTTP_HOST: mempool-api
+    ports:
+      - "${MEMPOOL_PORT:-8080}:8080" # mempool's own site, a block explorer on your network
+    depends_on: [mempool-api]
+
 volumes:
   data:
+  bitcoind:
+  bitcoind-rpc:
+  fulcrum:
+  mempool-db:

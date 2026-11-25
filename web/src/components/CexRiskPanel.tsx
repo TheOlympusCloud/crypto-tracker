@@ -25,7 +25,7 @@ interface CexRiskPanelProps {
 
 export function CexRiskPanel({ query, inputType, txData, isCoinJoin }: CexRiskPanelProps) {
   const { t } = useTranslation();
-  const { isUmbrel } = useNetwork();
+  const { torProxy: isUmbrel } = useNetwork();
   const [open, setOpen] = useState(true);
 
   // Derive addresses to check

@@ -30,7 +30,7 @@ const btnCls =
 /** Opt-in Wabisator lookup: which WabiSabi coordinator ran a round, where coins came from or went. */
 export function ServiceCheck({ txids, mode, totalAvailable, isLocalCoinJoin, onScan }: ServiceCheckProps) {
   const { t } = useTranslation();
-  const { isUmbrel, network } = useNetwork();
+  const { torProxy: isUmbrel, network } = useNetwork();
   const { phase, done, total, results, summary, start, retryFailed } = useServiceCheck(txids, isLocalCoinJoin);
   // Wabisator only indexes mainnet rounds.
   if (network !== "mainnet") return null;

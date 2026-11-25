@@ -2,7 +2,6 @@
 
 import heapq
 import math
-import os
 import re
 from collections import defaultdict
 from itertools import combinations
@@ -380,7 +379,7 @@ def verdicts(db, max_hops=4):
                     # Where this wallet's chains are read less thoroughly than Bitcoin or EVM.
                     "notes": sorted(
                         {n for a in members[w] for n in chains.notes(database.chain_of(a))}
-                        | ({swaps.NOTE} if os.environ.get("CT_SWAPS", "on") != "off" else set())
+                        | set(swaps.notes({database.chain_of(a) for a in members[w]}))
                         | ({CUT.format(n=cut)} if (cut := sum(r["cut"] for r in rows)) else set())
                     ),
                 },

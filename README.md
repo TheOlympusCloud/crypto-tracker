@@ -137,10 +137,133 @@ LXC_IP=192.168.1.50/24,gw=192.168.1.1 bash -c "$(curl -fsSL https://raw.githubus
 | `LXC_STORAGE` | the first storage that holds containers (`local-lvm`, `local-zfs`...) |
 | `LXC_TEMPLATE_STORAGE` | `local` |
 | `LXC_BRIDGE`, `LXC_IP` | `vmbr0`, `dhcp` |
-| `LXC_DISK`, `LXC_MEMORY`, `LXC_CORES` | `16` GB, `4096` MB (at least `3072`), `2` (at least `2`) |
+| `LXC_DISK`, `LXC_MEMORY`, `LXC_CORES` | `16` GB, `4096` MB (at least `3072`), `2` (at least `2`); with `MEMPOOL=1`: `8192` MB, `4` |
+| `MEMPOOL`, `MEMPOOL_DISK` | `0` (`1`: a Bitcoin node of your own), `1200` GB on top of `LXC_DISK` (at least `1100`) |
 | `REPO_URL`, `REPO_REF` | this repository, `main` (a branch or a tag) |
 
-Back the container up with Proxmox's own backups (`vzdump`): the volume is inside it.
+With a [Bitcoin node of its own](#a-bitcoin-node-of-your-own) too:
+
+```sh
+MEMPOOL=1 bash -c "$(curl -fsSL https://raw.githubusercontent.com/TheOlympusCloud/crypto-tracker/main/proxmox/install.sh)"
+```
+
+That adds `MEMPOOL_DISK` (1200 GB) to the container's disk and gives it 8 GB and 4 cores, and
+puts `COMPOSE_PROFILES=mempool` in its `.env`. It refuses, before making anything, when the
+storage has less free space than the whole disk, or when `MEMPOOL_DISK` is under 1100 GB: the
+node and its index take about 950 GB today and grow about 90 GB a year (see [Sizing](#sizing)). Thin storage (`local-lvm`,
+ZFS) is counted by what it really has free, since the node really fills its disk.
+
+Back the container up with Proxmox's own backups (`vzdump`): the volume is inside it. With a
+Bitcoin node, leave its volumes out or back up only the app's: the node can sync again.
+
+### A Bitcoin node of your own
+
+Every Bitcoin address the app looks up goes to an indexer: blockstream.info for the wallet
+tracker, mempool.space for the privacy scanner. They see your addresses together, from your IP
+address. Instead the app can run a Bitcoin node next to it and read Bitcoin only from there:
+
+```sh
+echo COMPOSE_PROFILES=mempool >> .env   # next to compose.yaml
+docker compose up -d
+```
+
+This starts Compose's `mempool` profile next to the app, every image pinned by version and
+digest:
+
+| Service | Image | What it is |
+|---|---|---|
+| `bitcoind` | `bitcoin/bitcoin` 31.3 | Bitcoin Core with its transaction index, no wallet. Its RPC is not published; the others sign in with the cookie it writes at each start. |
+| `fulcrum` | `cculianu/fulcrum` v2.1.4 | The address index: which transactions touch an address. It talks to no other Electrum server. |
+| `mempool-api`, `mempool-web`, `mempool-db` | `mempool/backend` and `mempool/frontend` v3.3.2, `mariadb` 10.11.19 | mempool's API on both, and its own site: a block explorer on port 8080 (`MEMPOOL_PORT`). |
+
+`COMPOSE_PROFILES` in `.env` keeps the node in every later `docker compose up -d`, updates
+included, and it is how the app learns that the node is there: `docker compose --profile
+mempool up -d` would start the node without the app using it.
+
+From then on:
+
+- the **wallet tracker** reads Bitcoin from your node (`CT_ESPLORA` defaults to it). Its Chains
+  list, under Wallets & sync, says "Read from your own node", and Bitcoin links open your own
+  explorer instead of mempool.space. Your Bitcoin addresses are no longer sent to the THORChain
+  and Maya swap APIs either: a swap between a Bitcoin wallet and another wallet of yours is still
+  found from that other wallet's side, and each Bitcoin wallet's verdict says so;
+- the **privacy scanner** (am-i-exposed) asks this server's `/api/`, which passes its requests on
+  to your node: its badge at the top right says **Local**, as on Umbrel. Its other services (the
+  Chainalysis check, the observatory) are reached as before, and it does not claim they go
+  through Tor.
+
+**Why Fulcrum.** mempool reads addresses from an Electrum server: electrs or Fulcrum. Fulcrum
+has an official image from its author, and answers addresses with long histories quickly. That
+matters here: a sync expands counterparties, which are often exchanges and other busy addresses,
+where electrs is slow or gives up. The price is disk: about 150 GB for Fulcrum against about
+45 GB for electrs, on a total around a terabyte.
+
+#### Sizing
+
+As of late 2026:
+
+| Part | Disk |
+|---|---|
+| Bitcoin Core: blocks and chain state | about 710 GB |
+| its transaction index | about 66 GB |
+| Fulcrum's index | 130 to 180 GB |
+| mempool's database, images and logs | about 15 GB |
+| **The node** | **about 950 GB**, growing about 90 GB a year |
+| The app | 16 GB |
+
+Use an SSD: on a hard disk the first sync takes many days (Fulcrum's author says so of his own).
+Memory: 8 GB for all of it together, the app's build included; 4 cores. The first sync downloads
+the whole chain, about 700 GB: bitcoind takes from a day to several, depending on disk, CPU and
+bandwidth, then Fulcrum builds its index, from 4 to over 20 hours.
+
+#### While it syncs
+
+Until the node has the whole chain and Fulcrum its index, the app reads Bitcoin from nowhere.
+It does not stand in a public server meanwhile: that server would see your addresses exactly
+when you set up a node so that none does, and what it has seen cannot be taken back. The rest
+keeps working: other chains sync, your Bitcoin wallets keep what was read before, and their
+history fills in once the node is ready.
+
+The app says where the node stands, read from the node itself every 30 seconds (a newest block
+more than 6 hours old: still syncing; an address the index cannot answer: index still building):
+
+- the tracker, in its status line on every view: "Bitcoin: your own node is still syncing; it has
+  the chain up to 19 Mar 2021 (block 676,000). Bitcoin addresses are read once it is ready, never
+  from a public server meanwhile." Then "its address index (Fulcrum) is still being built".
+  Each Bitcoin wallet's sync error says the same;
+- the scanner, in its "Mempool Unreachable" window, shown over every page until dismissed:
+  wait for it to finish syncing, then reload. Its badge shows a warning. It does not fall back
+  to mempool.space either.
+
+To have answers before the end of the sync anyway, knowing who sees them: set `CT_ESPLORA` (the
+tracker) or a custom API in the scanner's settings to a public server, and remove it once your
+node is ready.
+
+#### A node you already run
+
+For a mempool already running on your network (Umbrel, Start9, RaspiBlitz, myNode...), leave the
+profile off and give its address, as your browser opens it, in `.env`:
+
+```sh
+CT_MEMPOOL=http://umbrel.local:3006
+```
+
+The tracker and the scanner then use it as above, waiting the same way while it syncs, and
+Bitcoin links open it. Anything serving the Esplora API under `/api/` will do (mempool, Esplora).
+Bitcoin Core alone will not: it has no address index.
+
+#### Check it in your browser
+
+1. Open the app, then the browser's developer tools (F12), tab **Network**. Tick "Preserve log"
+   (Firefox: "Persist Logs") and reload the page.
+2. Scan a Bitcoin address in the scanner.
+3. Type `mempool.space` in the filter of the Network tab: nothing. Type `/api/`: the requests go
+   to the app's own address (`/api/local-info`, `/api/blocks/tip/height`, `/api/address/...`),
+   and `/api/local-info` answers `"torProxy": false`.
+4. The badge at the top right says **Local**.
+
+The tracker's requests leave from the server, not from the browser: its Chains list says "Read
+from your own node".
 
 ### HTTPS
 
@@ -167,7 +290,10 @@ only the proxy reaches the app.
 | `CT_DB` | `tracker.db` | SQLite file. |
 | `CT_WEB` | unset (the image: its build) | Directory of the web app's static build, served on every path but `/api/tracker/`. Unset: only the API answers. |
 | `CT_PASSWORD_FILE` | unset (the image: `/data/password`) | Without `CT_PASSWORD`, the password kept in this file, made and printed on the first start. |
-| `CT_ESPLORA` | `https://blockstream.info/api` | Bitcoin indexer (Esplora API: Blockstream, mempool.space, your own). |
+| `CT_ESPLORA` | your own node when there is one, else `https://blockstream.info/api` | Bitcoin indexer of the tracker (Esplora API: Blockstream, mempool.space, your own). |
+| `COMPOSE_PROFILES` | unset | `mempool`: run [a Bitcoin node of your own](#a-bitcoin-node-of-your-own) next to the app. |
+| `CT_MEMPOOL` | unset; with the `mempool` profile, its own | Address of a mempool of your own, as your browser opens it, e.g. `http://umbrel.local:3006`: the tracker and the scanner read Bitcoin from it. |
+| `MEMPOOL_PORT` | `8080` | Port of the `mempool` profile's own site, a block explorer. |
 | `CT_BLOCKSCOUT_KEY` | unset | Free Blockscout API key (`proapi_…`, from [dev.blockscout.com](https://dev.blockscout.com)); turns on Base, Arbitrum, Optimism and Polygon, token balances included. Set it in the environment, never in a file you commit. |
 | `CT_NODEREAL_KEY` | unset | Free NodeReal API key (from [nodereal.io](https://nodereal.io), MegaNode); turns on BNB Chain. Calls are paced to the free plan's limit, about one every two seconds. |
 | `CT_ETHERSCAN_KEY` | unset | Free Etherscan API key; turns on Arbitrum and Polygon, the chains Etherscan's free plan still covers. Not needed with `CT_BLOCKSCOUT_KEY`. |
@@ -294,16 +420,16 @@ the app itself.
 
 The database says which wallets are yours. Keep it on your machine.
 
-**Privacy score** hands the address to am-i-exposed, which looks it up from your browser at
-mempool.space (or at the mempool instance set in its own settings), and tor-check.copexit.workers.dev
-to see whether you use Tor. `CT_ESPLORA` and `CT_CHAINS` do not apply to it. If you run
-your own indexers to keep your wallets private, set your mempool instance in am-i-exposed's
-settings before pressing it.
+**Privacy score** hands the address to am-i-exposed, which looks it up from your browser:
+with [a Bitcoin node of your own](#a-bitcoin-node-of-your-own), at that node through this
+server; otherwise at mempool.space (or at the mempool instance set in its own settings), and
+tor-check.copexit.workers.dev to see whether you use Tor. `CT_ESPLORA` and `CT_CHAINS` do not
+apply to it.
 
 Every address you sync is sent to the indexer that answers for it, so that indexer sees
 your wallets together, from one IP address. That is exactly the link this app helps you
-avoid. For real privacy point `CT_ESPLORA` and `CT_CHAINS` at indexers you run
-(electrs/mempool for Bitcoin, Blockscout for EVM), or at least reach the public ones
+avoid. For real privacy run [a Bitcoin node of your own](#a-bitcoin-node-of-your-own) and
+point `CT_CHAINS` at indexers you run (Blockscout for EVM), or at least reach the public ones
 through Tor or a VPN.
 
 HD wallets: the xpub or descriptor is stored in the database and never sent anywhere,
@@ -425,6 +551,10 @@ or at the hop limit, and says which.
   until it answers again (or until `CT_SWAPS=off`): a swap may have gone unseen.
 - Alerts are raised for links of 50% confidence or more; weaker guesses are listed in
   the verdict only.
+- On a mempool with an Electrum server (the `mempool` profile's, Umbrel's), the scanner reads
+  the 10 newest transactions of an address: am-i-exposed pages by 25, which such a mempool does
+  not. The tracker reads them all.
+- The notices about your own node are in English, like the tracker's other server messages.
 - Token balances come from the transfer history unless the indexer has a token-balance
   call (`"tokenlist": true`), so rebasing tokens are off.
 - Address checksums are verified, except the mixed-case form of EVM addresses and
@@ -448,8 +578,11 @@ its look, its two themes and its six languages.
 - The tracker's own code is apart from upstream's, so that its changes merge cleanly:
   `web/src/app/tracker/`, `web/src/components/tracker/`, `web/src/lib/tracker/`,
   `web/src/lib/i18n/tracker.ts` and the `tracker*.json` files in `web/public/locales/`. In
-  upstream's own files the changes are a few lines: the menu item, the i18n set-up, and the
-  `three` and `cytoscape` packages.
+  upstream's own files the changes are a few lines: the menu item, the i18n set-up, the
+  `three` and `cytoscape` packages, and `torProxy` in `/api/local-info`: a host with its own
+  mempool but no Tor sidecar (this server) is used like Umbrel for mempool, while the services
+  Umbrel sends through its sidecar keep the public site's routes (`useLocalApi`,
+  `NetworkContext`, and the hooks and panels of those services).
 - The tracker's server (`tracker/`, Python) stays behind the app: it keeps the database,
   syncs, and answers under `/api/tracker/`. `/api/` itself is left to am-i-exposed, which
   looks there for a self-hosted mempool.
@@ -484,6 +617,10 @@ uv run pytest
 uv run ruff check . && uv run ruff format --check .
 shellcheck proxmox/install.sh scripts/*.sh
 ```
+
+A local node for another chain follows the Bitcoin one: a Compose profile in `compose.yaml`,
+the chain's default URL as `os.environ.get("CT_<CHAIN>") or node.local("<profile>", "<its
+service>") or "<public URL>"` (`tracker/node.py`), and its disk in `proxmox/install.sh`.
 
 The web app, in `web/` (Node 22 or newer, pnpm through corepack):
 

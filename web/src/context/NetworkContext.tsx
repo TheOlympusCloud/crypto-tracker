@@ -95,6 +95,8 @@ interface NetworkContextValue {
   localApiStatus: LocalApiStatus;
   /** Whether the app is running on the Umbrel Docker backend */
   isUmbrel: boolean;
+  /** Services go through the host's Tor sidecar: Umbrel and StartOS, not a host without one. */
+  torProxy: boolean;
   /**
    * The backend is a self-hosted mempool (a user-set custom URL, or Umbrel's),
    * not mempool.space. The Tor onion endpoint is mempool.space, so it is not custom.
@@ -135,6 +137,7 @@ const NetworkContext = createContext<NetworkContextValue>({
   torStatus: "checking",
   localApiStatus: "checking",
   isUmbrel: false,
+  torProxy: false,
   isCustomApi: false,
   apiReady: false,
   routeReady: false,
@@ -260,6 +263,7 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
       torStatus,
       localApiStatus,
       isUmbrel,
+      torProxy: isUmbrel && localApi.torProxy,
       isCustomApi: !!customUrl || isUmbrel,
       // On Umbrel the node's chain is known once its probe settles; a custom URL waits for its re-check
       apiReady: localApiStatus !== "checking" && torStatus !== "checking" && (isUmbrel || custom.verified),
@@ -269,7 +273,7 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
       unsupportedChain,
       networkUnverified,
     }),
-    [network, setNetwork, config, configFor, customUrl, setCustomUrl, torStatus, localApiStatus, isUmbrel, pinned, backendChain, unsupportedChain, networkUnverified, custom.verified],
+    [network, setNetwork, config, configFor, customUrl, setCustomUrl, torStatus, localApiStatus, isUmbrel, localApi.torProxy, pinned, backendChain, unsupportedChain, networkUnverified, custom.verified],
   );
 
   return (

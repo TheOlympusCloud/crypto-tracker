@@ -16,7 +16,7 @@ export function ObservatoryAttribution({
   locale,
 }: ObservatoryAttributionProps) {
   const { t } = useTranslation();
-  const { isUmbrel } = useNetwork();
+  const { torProxy: isUmbrel } = useNetwork();
 
   // The setter is only used to trigger a re-render every 15s so the
   // formatTimeAgo() output stays current.
