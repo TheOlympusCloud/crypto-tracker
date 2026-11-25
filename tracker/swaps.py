@@ -115,12 +115,13 @@ def notes(chains_of_wallet):
 
 
 def unchecked(db):
-    """Swap sources that did not answer at the last sync, as text for a verdict."""
-    if os.environ.get("CT_SWAPS", "on") == "off":
-        return []
+    """Swap sources, and bridge receipts (bridges.py), that did not answer at the last sync,
+    as text for a verdict. With CT_SWAPS=off a swap source's old failure no longer counts."""
+    off = os.environ.get("CT_SWAPS", "on") == "off"
     return [
         f"{r['source']} did not answer ({r['error']}), so swaps through it were not checked"
         for r in db.execute("SELECT * FROM failure ORDER BY source")
+        if not (off and r["source"] in SOURCES)
     ]
 
 
@@ -160,7 +161,8 @@ def sync(db, client):
                         (*pair(a, b), CONFIDENCE, evidence),
                     )
                     db.execute(
-                        "INSERT OR IGNORE INTO swap VALUES (?, ?, ?, ?, ?)",
+                        "INSERT OR IGNORE INTO swap(protocol, sender, recipient, tx_in, tx_out) "
+                        "VALUES (?, ?, ?, ?, ?)",
                         (protocol, a, b, tx_in, tx_out),
                     )
             # From every swap stored, not only this sync's: an old vault keeps its label.

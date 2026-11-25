@@ -5,7 +5,20 @@ import time
 
 import httpx
 
-from . import alerts, chains, detect, graph, hd, heuristics, history, labels, prices, swaps, tokens
+from . import (
+    alerts,
+    bridges,
+    chains,
+    detect,
+    graph,
+    hd,
+    heuristics,
+    history,
+    labels,
+    prices,
+    swaps,
+    tokens,
+)
 from . import db as database
 from .exposure import names
 
@@ -233,6 +246,7 @@ def run(addresses=None, depth=0, import_labels=False, wallets=()):
             status["notes"] += names.sync(db, client)
             status["current"] = "swaps"
             status["notes"] += swaps.sync(db, client)
+            status["notes"] += bridges.sync(db, client)
             detect.behaviour(db)  # after the swaps, whose vault labels outrank a guess
             heuristics.match_bridges(db)
             heuristics.match_exchange_flows(db)
@@ -296,6 +310,7 @@ def fill_in():
                 return
             if swapping:
                 swaps.sync(db, client)
+            bridges.sync(db, client)  # bridges paid in older transactions
             # What follows from the older transfers, as at the end of a sync.
             detect.behaviour(db)
             heuristics.match_bridges(db)
