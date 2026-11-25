@@ -41,7 +41,9 @@ def test_an_exchange_funded_address_shows_the_exchange_with_evidence_links(db, c
     r = client.get(f"{SCAN}{A}?chains=ethereum,polygon").json()
 
     by = {f["id"]: f for f in r["findings"]}
-    assert set(by) == {"x-exchange-exposure", "x-mixer-counterparty", "x-multi-chain"}
+    assert set(by) == {
+        "x-exchange-exposure", "x-funder-exchange", "x-mixer-counterparty", "x-multi-chain"
+    }  # fmt: skip
     cex = by["x-exchange-exposure"]
     assert (cex["severity"], cex["scoreImpact"], cex["confidence"]) == (
         "high",
@@ -56,9 +58,19 @@ def test_an_exchange_funded_address_shows_the_exchange_with_evidence_links(db, c
     ]
     assert by["x-mixer-counterparty"]["params"]["name"] == "Tornado.Cash"
     assert by["x-multi-chain"]["params"] == {"count": 2, "chains": "Ethereum, Polygon"}
+    # D also sent A its first coins on both chains: Binance knows A from its first transaction.
+    assert by["x-funder-exchange"]["params"] == {
+        "exchange": "Binance",
+        "chains": "Ethereum, Polygon",
+    }
     # The server sends ids and parameters, never sentences: the page words them.
     assert all("title" not in f and "description" not in f for f in r["findings"])
-    assert (r["score"], r["grade"], r["partial"], r["gaps"]) == (93 - 15 - 10 - 2, "C", False, [])
+    assert (r["score"], r["grade"], r["partial"], r["gaps"]) == (
+        93 - 15 - 10 - 5 - 2,
+        "C",
+        False,
+        [],
+    )
     assert (r["chain"], r["chains"], r["icon"]) == ("evm", ["ethereum", "polygon"], "evm")
     assert r["findings"][0]["id"] == "x-exchange-exposure"  # the worst first
     # A stranger's airdrop is no dealing with a flagged address.
