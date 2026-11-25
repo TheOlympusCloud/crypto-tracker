@@ -1,4 +1,5 @@
 import importlib
+import os
 
 import pytest
 from fastapi.testclient import TestClient
@@ -55,3 +56,25 @@ def test_without_a_build_only_the_api_answers(db):
     client = TestClient(app, base_url="http://localhost")
     assert client.get("/api/tracker/graph").is_success
     assert client.get("/").status_code == 404
+
+
+def test_a_container_makes_its_password_once_and_keeps_it(tmp_path, monkeypatch, capsys):
+    from tracker.__main__ import password_from_file
+
+    file = tmp_path / "data" / "password"
+    monkeypatch.delenv("CT_PASSWORD", raising=False)
+    monkeypatch.setenv("CT_PASSWORD_FILE", str(file))
+    password_from_file()
+    made = file.read_text().strip()
+    assert len(made) >= 20 and oct(file.stat().st_mode & 0o777) == "0o600"
+    assert made in capsys.readouterr().out  # shown once, on the first start
+    monkeypatch.delenv("CT_PASSWORD")
+    password_from_file()
+    assert (
+        os.environ["CT_PASSWORD"] == made and not capsys.readouterr().out
+    )  # kept, not shown again
+    # A password that is set wins, and no file is made for it.
+    monkeypatch.setenv("CT_PASSWORD", "mine")
+    monkeypatch.setenv("CT_PASSWORD_FILE", str(tmp_path / "other"))
+    password_from_file()
+    assert os.environ["CT_PASSWORD"] == "mine" and not (tmp_path / "other").exists()
