@@ -12,7 +12,7 @@ from pydantic import BaseModel, field_validator
 from starlette.concurrency import run_in_threadpool
 from starlette.routing import Mount
 
-from . import alerts, chains, graph, hd, lookup, node, prices, sync, uri
+from . import alerts, chains, exposure, graph, hd, lookup, node, prices, sync, uri
 from . import db as database
 
 app = FastAPI(title="Crypto tracker", docs_url=None, redoc_url=None)
@@ -247,22 +247,42 @@ def resolve(pasted: Pasted):
     }
 
 
-@app.get("/lookup/{raw}")
-def get_lookup(raw: str, only: str = Query("", alias="chains")):
-    """Read-only view of any address: assets, counterparties and links to my wallets."""
-    one = address(raw)
+def readable(only):
+    """The EVM chains a ?chains= list names, each one this server reads."""
     picked = [c for c in only.split(",") if c]
     for c in picked:
         if chains.evm_chains().get(c, {"needs_key": True}).get("needs_key"):
             raise HTTPException(422, f"{c} is not a chain this server can read")
+    return picked
+
+
+def live(read, *args):
+    """`read(db, client, *args)`, answered from the indexers."""
     db = database.connect()
     try:
         with httpx.Client(timeout=30, headers={"User-Agent": "crypto-tracker"}) as client:
-            return lookup.view(db, client, one, picked)
+            return read(db, client, *args)
     except (httpx.HTTPError, RuntimeError, ValueError, KeyError, TypeError) as e:
         raise HTTPException(502, f"the indexer did not answer: {chains.describe(e)}") from None
     finally:
         db.close()
+
+
+@app.get("/lookup/{raw}")
+def get_lookup(raw: str, only: str = Query("", alias="chains")):
+    """Read-only view of any address: assets, counterparties and links to my wallets."""
+    one = address(raw)
+    return live(lookup.view, one, readable(only))
+
+
+@app.get("/exposure/{raw}")
+def get_exposure(raw: str, only: str = Query("", alias="chains")):
+    """Privacy scan of any EVM, Solana or Tron address: findings, score and grade. Like a
+    lookup it stores nothing. Bitcoin addresses are scanned by am-i-exposed in the browser."""
+    one = address(raw)
+    if database.chain_of(one) not in exposure.FAMILIES:
+        raise HTTPException(422, "only EVM, Solana and Tron addresses are scanned here")
+    return live(exposure.run, one, readable(only))
 
 
 @app.post("/watch")
