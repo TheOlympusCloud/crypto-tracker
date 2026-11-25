@@ -3,14 +3,13 @@ import os
 import secrets
 import time
 from base64 import b64decode
-from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query, Request, Response
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, field_validator
-from starlette.routing import Mount, Route
+from starlette.routing import Mount
 
 from . import alerts, chains, graph, hd, lookup, prices, sync, uri
 from . import db as database
@@ -120,7 +119,7 @@ def address(raw):
         raise HTTPException(422, str(e)) from None
 
 
-@app.get("/api/graph")
+@app.get("/graph")
 def get_graph(spam: bool = False):
     db = database.connect()
     try:
@@ -130,7 +129,7 @@ def get_graph(spam: bool = False):
         db.close()
 
 
-@app.get("/api/analysis")
+@app.get("/analysis")
 def get_analysis(max_hops: int = 4):
     max_hops = max(1, min(max_hops, 6))
     db = database.connect()
@@ -138,7 +137,6 @@ def get_analysis(max_hops: int = 4):
         return {
             "max_hops": max_hops,
             "hop_decay": graph.HOP_DECAY,
-            "exposed": bool(os.environ.get("CT_EXPOSED")),  # am-i-exposed is at ../
             "chains": chains.coverage(),
             "fiat": prices.summary(db),
             "alerts": alerts.recent(db),
@@ -165,7 +163,7 @@ def write(sql, params):
         db.close()
 
 
-@app.post("/api/wallets")
+@app.post("/wallets")
 def put_wallet(w: Wallet):
     """Add or update a wallet: a single address, or an xpub/ypub/zpub/descriptor whose
     addresses are discovered on the next sync."""
@@ -214,7 +212,7 @@ def put_wallet(w: Wallet):
     return {"ok": True, "wallet": one}
 
 
-@app.delete("/api/wallets/{raw}")
+@app.delete("/wallets/{raw}")
 def delete_wallet(raw: str):
     """Stop treating the wallet as mine. Its transfers stay: they are public facts."""
     # hub too: a wallet still filling in its history must not be taken for a busy service.
@@ -227,7 +225,7 @@ def delete_wallet(raw: str):
     return {"ok": True}
 
 
-@app.post("/api/resolve")
+@app.post("/resolve")
 def resolve(pasted: Pasted):
     """What a pasted line or a scanned QR code names. A POST, so that a secret scanned by
     mistake does not end up in an access log."""
@@ -248,7 +246,7 @@ def resolve(pasted: Pasted):
     }
 
 
-@app.get("/api/lookup/{raw}")
+@app.get("/lookup/{raw}")
 def get_lookup(raw: str, only: str = Query("", alias="chains")):
     """Read-only view of any address: assets, counterparties and links to my wallets."""
     one = address(raw)
@@ -266,20 +264,20 @@ def get_lookup(raw: str, only: str = Query("", alias="chains")):
         db.close()
 
 
-@app.post("/api/watch")
+@app.post("/watch")
 def put_watch(w: Wallet):
     """Keep an address at hand without calling it mine: it stays out of every verdict."""
     write("INSERT OR IGNORE INTO watch VALUES (?, ?)", (address(w.address), int(time.time())))
     return {"ok": True}
 
 
-@app.delete("/api/watch/{raw}")
+@app.delete("/watch/{raw}")
 def delete_watch(raw: str):
     write("DELETE FROM watch WHERE address = ?", (address(raw),))
     return {"ok": True}
 
 
-@app.get("/api/portfolio")
+@app.get("/portfolio")
 def get_portfolio():
     db = database.connect()
     try:
@@ -290,7 +288,7 @@ def get_portfolio():
         db.close()
 
 
-@app.get("/api/alerts")
+@app.get("/alerts")
 def get_alerts():
     db = database.connect()
     try:
@@ -299,13 +297,13 @@ def get_alerts():
         db.close()
 
 
-@app.post("/api/alerts/seen")
+@app.post("/alerts/seen")
 def seen_alerts():
     write("UPDATE alert SET seen = 1 WHERE NOT seen", ())
     return {"ok": True}
 
 
-@app.post("/api/labels")
+@app.post("/labels")
 def put_label(label: Label):
     if label.category not in CATEGORIES:
         raise HTTPException(422, f"category must be one of {sorted(CATEGORIES)}")
@@ -319,7 +317,7 @@ def put_label(label: Label):
     return {"ok": True}
 
 
-@app.post("/api/sync")
+@app.post("/sync")
 def post_sync(req: Sync):
     # An "hd:" id rescans that HD wallet; anything else must be an address.
     wallets = [a for a in req.addresses if a.startswith("hd:")]
@@ -337,7 +335,7 @@ def post_sync(req: Sync):
     return sync.status
 
 
-@app.get("/api/sync")
+@app.get("/sync")
 def get_sync():
     return sync.status
 
@@ -345,15 +343,9 @@ def get_sync():
 if os.environ.get("CT_SYNC_EVERY"):  # minutes
     sync.every(float(os.environ["CT_SYNC_EVERY"]))
 
-pages = StaticFiles(directory=Path(__file__).parent / "static", html=True)
-if exposed := os.environ.get("CT_EXPOSED"):
-    # am-i-exposed's static build is the front page and this app moves to /tracker/, where
-    # its pages find api/ next to themselves; /api/ is left to am-i-exposed, which looks for
-    # a self-hosted mempool there. The password above guards both.
-    app.router.routes = [
-        Route("/tracker", lambda _: RedirectResponse("tracker/")),
-        Mount("/tracker", routes=[*app.routes, Mount("/", pages)]),
-        Mount("/", StaticFiles(directory=exposed, html=True)),
-    ]
-else:
-    app.mount("/", pages)
+# The API answers under /api/tracker/; /api/ itself is the web app's, which looks for a
+# self-hosted mempool there. CT_WEB is the web app's static build, served on everything else
+# behind the same password.
+app.router.routes = [Mount("/api/tracker", routes=list(app.routes))]
+if web := os.environ.get("CT_WEB"):
+    app.mount("/", StaticFiles(directory=web, html=True))

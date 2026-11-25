@@ -430,7 +430,9 @@ def test_a_removed_wallet_is_not_taken_for_a_service(db):
     mine(db, A)
     db.execute("UPDATE node SET hub = 1 WHERE address = ?", (A,))  # it was still filling in
     db.commit()
-    assert TestClient(app, base_url="http://localhost").delete(f"/api/wallets/{A}").is_success
+    assert (
+        TestClient(app, base_url="http://localhost").delete(f"/api/tracker/wallets/{A}").is_success
+    )
     assert db.execute("SELECT hub FROM node WHERE address = ?", (A,)).fetchone()[0] == 0
 
 
@@ -494,7 +496,9 @@ def test_a_user_sync_goes_first(db, background):
     filler = threading.Thread(target=sync.fill_in, name="fill-in")
     filler.start()
     assert background.entered.wait(5)  # the fill-in is reading its first address
-    r = TestClient(app, base_url="http://localhost").post("/api/sync", json={"addresses": []})
+    r = TestClient(app, base_url="http://localhost").post(
+        "/api/tracker/sync", json={"addresses": []}
+    )
     assert r.status_code == 200 and r.json()["running"]  # not a 409: it waits its turn
     background.gate.set()
     filler.join(5)
