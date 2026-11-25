@@ -64,7 +64,7 @@ function Shell() {
           </p>
         </header>
         <div className={panel ? "lg:grid lg:grid-cols-[minmax(0,1fr)_26rem] lg:gap-6" : ""}>
-          <main className="min-w-0">
+          <div className="min-w-0">
             {/* Every view stays mounted, so the graph keeps its scene and forms keep what was typed. */}
             <section aria-label={t("tracker:view.portfolio")} hidden={view !== "portfolio"}>
               <PortfolioView />
@@ -75,7 +75,7 @@ function Shell() {
             <section aria-label={t("tracker:view.manage")} hidden={view !== "manage"}>
               <ManageView />
             </section>
-          </main>
+          </div>
           {panel && (
             <aside
               aria-label={t("tracker:panel.label")}
