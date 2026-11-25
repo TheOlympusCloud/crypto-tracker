@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Create a Debian 13 container on this Proxmox VE host running am-i-exposed and the wallet
-# tracker (Docker Compose inside the container). Run it as root on the host:
+# Create a Debian 13 container on this Proxmox VE host and start the app in it with
+# `docker compose up -d`, as from any fresh clone. Run it as root on the host:
 #
 #   bash -c "$(curl -fsSL https://raw.githubusercontent.com/TheOlympusCloud/crypto-tracker/main/proxmox/install.sh)"
 #
@@ -66,11 +66,7 @@ echo "==> Docker and the code"
 in_ct sh -c 'export DEBIAN_FRONTEND=noninteractive && apt-get update -q &&
     apt-get install -y -q --no-install-recommends ca-certificates curl git \
         docker.io docker-cli docker-compose docker-buildx'
-in_ct git clone -q --depth 1 --branch "$REPO_REF" --recurse-submodules --shallow-submodules \
-    "$REPO_URL" "$APP"
-password=$(openssl rand -hex 16)
-# Through stdin, so that the password shows in no process list.
-printf 'CT_PASSWORD=%s\n' "$password" | in_ct sh -c "umask 077 && cat >$APP/.env"
+in_ct git clone -q --depth 1 --branch "$REPO_REF" "$REPO_URL" "$APP"
 
 echo "==> Building and starting (several minutes the first time)"
 in_ct sh -c "cd $APP && docker compose up -d --build"
@@ -85,21 +81,23 @@ if [ "$code" != 401 ]; then
     in_ct sh -c "cd $APP && docker compose logs --tail 30" >&2 || true
     die "the app did not come up, see the log above"
 fi
+# The first start made a password and keeps it in the data volume.
+password=$(in_ct sh -c "cd $APP && docker compose exec -T crypto-tracker cat /data/password")
 ip=$(in_ct hostname -I | awk '{ print $1 }')
 
 cat <<EOF
 
 Running in container $LXC_ID ($LXC_HOSTNAME), started with the host.
 
-  Open       http://${ip:-<container ip>}:8000/           am-i-exposed
-             http://${ip:-<container ip>}:8000/tracker/   your wallets
+  Open       http://${ip:-<container ip>}:8000/            the privacy scanner
+             http://${ip:-<container ip>}:8000/tracker/    your wallets
   User name  anything
   Password   $password
-             Shown only this once; it is kept in $APP/.env inside the container.
+             Kept in the container's data volume: pct exec $LXC_ID -- sh -c 'cd $APP && docker compose exec crypto-tracker cat /data/password'
              It crosses the network unencrypted until HTTPS is set up (README).
 
   Logs       pct exec $LXC_ID -- docker compose --project-directory $APP logs -f
-  Settings   pct exec $LXC_ID -- nano $APP/.env      then run the Update line
-  Update     pct exec $LXC_ID -- sh -c 'cd $APP && git pull -q --ff-only && git submodule update --init --depth 1 && docker compose up -d --build'
+  Settings   pct exec $LXC_ID -- nano $APP/.env      (the README's table), then run the Update line
+  Update     pct exec $LXC_ID -- sh -c 'cd $APP && git pull -q --ff-only && docker compose up -d --build'
   Uninstall  pct stop $LXC_ID && pct destroy $LXC_ID      (deletes your wallets too)
 EOF

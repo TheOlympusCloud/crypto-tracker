@@ -8,7 +8,6 @@ SCRIPT = Path(__file__).parent.parent / "proxmox" / "install.sh"
 
 STUBS = {
     "id": 'echo "${FAKE_UID:-0}"',
-    "openssl": "echo 0123456789abcdef0123456789abcdef",
     "pvesh": "echo 105",
     "pvesm": 'printf "Name Type Status\\nlocal-lvm lvmthin active\\n"',
     "pveam": """case "$1" in
@@ -22,7 +21,7 @@ esac""",
     case "$1" in
       curl) printf 401 ;;
       hostname) echo "192.168.1.50 fd00::50" ;;
-      sh) case "$3" in *".env"*) cat >"$FAKE_DIR/env" ;; esac ;;
+      sh) case "$3" in *"cat /data/password"*) echo s3cret-made-on-first-start ;; esac ;;
     esac ;;
 esac""",
 }
@@ -58,10 +57,10 @@ def test_one_command_makes_a_container_running_both_apps(tmp_path):
     order = [c.split()[4] if c.startswith("pct exec") else c.split()[1] for c in calls]
     assert order.index("create") < order.index("git") < order.index("curl")
     assert any("docker compose up -d --build" in c for c in calls)
-    password = "0123456789abcdef0123456789abcdef"
-    assert (tmp_path / "env").read_text() == f"CT_PASSWORD={password}\n"
-    assert not any(password in c for c in calls)  # never on a command line
-    assert "http://192.168.1.50:8000/tracker/" in done.stdout and password in done.stdout
+    clone = next(c for c in calls if " git clone " in c)
+    assert "--recurse-submodules" not in clone  # a plain clone: nothing to build by hand
+    assert "http://192.168.1.50:8000/tracker/" in done.stdout
+    assert "s3cret-made-on-first-start" in done.stdout  # the container's own password
     assert "pct destroy" not in done.stderr
 
 
