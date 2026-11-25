@@ -435,7 +435,7 @@ its look, its two themes and its six languages.
 
 - `web/UPSTREAM` records the upstream commit the snapshot came from.
 - Left out of the snapshot: its CI workflows, the tutorial videos (the build turns them
-  off), the source data of its entity index, archived PDFs and its assistant notes.
+  off), the source data of its entity index, archived PDFs and a notes file.
 - The entity index (about 100 MB of generated data its repository keeps) is fetched at
   build time from that same commit by `scripts/entity-data.sh`, and checked against
   `web/public/data/entity-data.sha256`.
