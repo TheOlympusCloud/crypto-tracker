@@ -336,8 +336,10 @@ or a hub ends a path, a guessed one weakens it, and several pieces of evidence c
 
 **Precondition for every new kind.** A link is stored only between two of my wallets, or
 between one of mine and a stranger that has been read and is neither busy nor labelled. A
-busy stranger is stored as a hub (`node.hub`), which `graph.trace` already treats as the end
-of a path. This matters because `hub` is only ever set by reading an address, and a sync reads
+busy stranger, or one labelled as a service by a sure source (the rule `graph.trace` applies:
+a guessed label weakens a path and does not cut it), is stored as a hub (`node.hub`), which
+`graph.trace` already treats as the end of a path. A guessed label or a person's name is
+read like any stranger. This matters because `hub` is only ever set by reading an address, and a sync reads
 strangers only on the deep chains (`chains.DEEP`) and only when asked for depth: a Solana fee
 payer or a Tron delegator that nobody read would otherwise join two strangers' wallets (two
 links of 0.9 through one relayer give 0.9 × 0.9 × 0.7 = 0.57, above the alert threshold).
@@ -473,8 +475,9 @@ interface ChainProfile {
 
 - **Scan page.** The input box takes any address the tracker reads. Bitcoin works as today;
   Litecoin, Dogecoin and Bitcoin Cash run the engine with their profile; an EVM, Solana or
-  Tron address opens the account scan, rendered with upstream's `VerdictBand`, `GradeDial`,
-  `FindingsList` and `ScoreBreakdown`, with the chain's mark. An EVM address asks for its
+  Tron address opens the account scan, rendered with upstream's `GradeDial`, `FindingsList`
+  and `ScoreBreakdown`, with the chain's mark. (Not `VerdictBand`: its top recommendation
+  is Bitcoin advice, from `selectRecommendations`; M1 gives the scan a header of its own.) An EVM address asks for its
   chains, as the lookup does. Upstream's routing changes by a few lines (send what it calls
   invalid to the tracker's detector first); the account scan lives in
   `web/src/app/tracker/` and `web/src/components/tracker/`.
@@ -535,7 +538,8 @@ Privacy, the fact-and-guess table) and a review before it is merged.
   `GET /api/tracker/exposure/<address>`, the adapter, the `tracker-exposure` namespace, the
   in-memory cache, the scan budget, and the busy check of a stranger (3.5) that M3, M4, M9
   and M14 use: one Solana `getSignaturesForAddress` (limit 1000), one TronGrid page, or
-  `sync.sync_address` elsewhere; a busy or labelled stranger is stored as a hub.
+  `sync.sync_address` elsewhere; a busy stranger, or a service labelled by a sure source,
+  is stored as a hub.
 - Done when: a known exchange-funded test address shows the exchange finding with evidence
   links; a partial read says "partly checked"; nothing is stored for a scanned address
   (test); the busy check stores a Solana address with 1000 signatures as a hub and one with

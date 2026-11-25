@@ -7,6 +7,7 @@ ids and parameters, never sentences: the page words them (the `tracker-exposure`
 Like a lookup, a scan stores nothing about the address (lookup.py).
 """
 
+import re
 from urllib.parse import quote
 
 import httpx
@@ -85,10 +86,8 @@ class Context:
 
     @staticmethod
     def names(parties):
-        """Their names, once per entity: "Binance 14" and "Binance 7" are Binance."""
-        return ", ".join(
-            sorted({p["label"].rstrip("0123456789 #:") or p["label"] for p in parties})
-        )
+        """Their names, once per entity: "Binance 14" and "Binance #7" are Binance."""
+        return ", ".join(sorted({re.sub(r"[ #:]+\d+$", "", p["label"]) for p in parties}))
 
     @staticmethod
     def evidence(parties):

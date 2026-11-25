@@ -169,6 +169,27 @@ def test_a_full_tron_page_or_a_label_makes_a_hub(db, quick):
     assert db.execute("SELECT hub FROM node WHERE address = ?", (D,)).fetchone()["hub"] == 1
 
 
+@pytest.mark.parametrize(
+    ("name", "category", "source"),
+    [
+        ("Binance deposit address", "cex", "heuristic"),  # the tracker's own guess
+        ("UniswapV2Router02", "dex", "explorer"),  # a contract name: the type is a guess
+        ("Bob", "other", "user"),  # a person, named by the user: no service
+    ],
+)
+def test_a_guessed_or_personal_label_is_no_hub(db, quick, name, category, source):
+    """As in graph.trace: only a service known for sure ends a path; a guess must not hide a link."""
+    db.execute(
+        "INSERT INTO label(address, name, category, source) VALUES (?, ?, ?, ?)",
+        (SOL, name, category, source),
+    )
+    db.commit()
+    http, calls = rpc(10)
+    before = stored(db)
+    assert busy.check(db, http, SOL) is False and len(calls) == 1  # read like any stranger
+    assert stored(db) == before
+
+
 def test_my_own_wallet_is_never_a_hub(db, quick):
     mine(db, SOL)
     http, calls = rpc(1000)
