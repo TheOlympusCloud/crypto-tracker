@@ -98,7 +98,9 @@ docker compose logs | grep password   # made on the first start, kept in the vol
 ```
 
 Any user name and that password open it; `docker compose exec crypto-tracker cat
-/data/password` shows the password again. Settings of the table below go in an optional
+/data/password` shows the password again. The generated password also stays in the
+container's log (`docker compose logs`) for as long as the container exists; to keep it out
+of any log, put your own `CT_PASSWORD` in `.env` before the first start. Settings of the table below go in an optional
 `.env` next to `compose.yaml` (`CT_PASSWORD` there replaces the generated one), then
 `docker compose up -d` again. To update: `git pull && docker compose up -d --build`. Your
 wallets, labels and history stay in the volume `data`.
