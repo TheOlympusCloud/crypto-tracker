@@ -17,6 +17,9 @@ list the wallets that are yours and mark as **public** the ones tied to your ide
   or through strangers, bridges, common inputs or a chain of your own wallets, with hop
   count and confidence; or "no link found", next to the list of what that check cannot
   rule out. It never says "safe".
+- **A privacy grade per wallet**, across all its chains: am-i-exposed's score and grade,
+  with the findings behind it by chain. See
+  [Privacy grade of your wallets](#privacy-grade-of-your-wallets).
 - **Funds origin**: where each wallet's money came from, followed back to a labelled
   source (exchange, bridge, mixer...), one of your wallets, or the edge of what is known.
 - **A 3D graph** of your wallets, their counterparties (labelled by type) and the links
@@ -28,7 +31,8 @@ list the wallets that are yours and mark as **public** the ones tied to your ide
 
 - **Fiat values** for the whole portfolio, each wallet and each asset, and a value history
   that grows with every sync.
-- **Alerts** when a verdict gets worse: a new link between two wallets, or a stronger one.
+- **Alerts** when a verdict gets worse: a new link between two wallets, a stronger one, or
+  a wallet's privacy grade that drops.
 
 - **Lookup of any address**, yours or not: paste, type or scan it in the box at the top of
   every view. See [Look up an address](#look-up-an-address).
@@ -102,8 +106,9 @@ of a busy Solana or Tron address says "Partly checked". Its first funder comes f
 when it holds the whole history, else from one more call per chain that lists the address's
 oldest transactions; it is not found on BNB Chain through NodeReal, nor for a Solana address
 with more transactions than a lookup reads (25), since no single call reaches back that far
-there. Your own
-wallets are answered from their stored history once it is complete.
+there. Your own wallets are answered from their stored history once it is complete. The
+[privacy grade of your wallets](#privacy-grade-of-your-wallets) covers every chain above,
+from the full history synced.
 
 Names: an EVM address is looked up in ENS (on Ethereum) and Basenames (on Base), a Solana
 address in SNS (.sol). Base needs no key for this: names are asked of Base's own contracts,
@@ -510,6 +515,35 @@ first funder is a stranger who also funded another of your wallets: that strange
 first (one call on Solana and Tron, a sync elsewhere), and stored as a very active address
 when it is one.
 
+### Privacy grade of your wallets
+
+Each wallet of yours gets one score and grade, on every chain, on its card in the
+portfolio, in its panel and in its node's panel in the graph. The server makes it from what
+syncs stored, so opening the page makes no call, every device shows the same grade, and an
+alert is raised when the grade drops, naming the grade the page shows. It is the scan's
+score (93 plus the impacts, the same grades) over:
+
+| Finding | Impact | What it rests on |
+|---|---|---|
+| Tied to your public wallet | -70 x the link's confidence (-49 at 70%); critical from 50% | The strongest link of the wallet's verdict to a wallet you marked public (`tracker/exposure/wallets.py`). A public wallet does not get it: it is tied to you anyway. |
+| Reused addresses | -10 per address, at most -40; medium | A Bitcoin, Litecoin, Dogecoin or Bitcoin Cash address of the wallet paid in two or more transactions. |
+| The scan's findings | as above | Exchanges, flagged addresses and mixers, per chain, from the stored transfers of each address of the wallet (the trusted ones, as the verdict reads them); the same address on several EVM chains. |
+
+Each finding counts once, at its worst over the wallet's addresses and chains: one
+exchange is enough to be exposed. Reuse is the exception, counted per address, so one slip
+in an HD wallet costs 10 points instead of the F am-i-exposed gives that one address. The
+panel lists the findings by chain, the wallet's own first. A wallet never read has no
+grade, and one whose verdict says "Partly checked" (history still filling in, a source
+that failed) is graded "Partly checked" too.
+
+am-i-exposed's deep scan of a Bitcoin address (its 30-odd heuristics, run in the browser) is
+not part of the grade: the server cannot see it. A Bitcoin wallet's grade therefore says
+"Wallet checks; addresses not deep-scanned", and each address of an HD wallet has its
+**Deep scan** one click away.
+
+The grades always follow the default 4 hops, whatever `max_hops` a request to `/analysis`
+asks for, so the grade shown is the one alerted on.
+
 ## Privacy
 
 The database says which wallets are yours. Keep it on your machine.
@@ -523,6 +557,8 @@ server instead: like a lookup, it sends the address to the indexer of its chain,
 name services below (Names); it stores nothing. Finding its first funder can take one more
 call to the same indexer. On a wallet of yours, a stranger who first funded it and also
 funded another of your wallets is looked up there too, as a sync looks up a counterparty.
+The privacy grade of your wallets is made from what is already stored and sends nothing
+anywhere.
 
 Every address you sync is sent to the indexer that answers for it, so that indexer sees
 your wallets together, from one IP address. That is exactly the link this app helps you
@@ -657,6 +693,9 @@ another joins them through a stranger (0.7), as any shared counterparty does. Th
 such a wallet reads that stranger first: a busy one is stored as a very active address, which
 no path passes through, so an unlabelled exchange wallet is not taken for one person who
 funded both.
+So is reuse in a
+[wallet's grade](#privacy-grade-of-your-wallets); "tied to your public wallet" is as sure as
+the link it rests on, and costs in proportion.
 The exception is a shared deposit address, which is the `deposit-address` guess above,
 shown as a finding.
 

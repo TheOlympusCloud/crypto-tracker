@@ -299,8 +299,10 @@ lines of Python; one shared fixture of findings is scored by both versions in th
 It scores:
 
 - the wallet's own findings: linked to a public wallet (impact scaled by the link's
-  confidence), in a group with a public wallet (3.2), exchange exposure, deposit address
-  shared;
+  confidence), exchange exposure, deposit address shared. A wallet in a group with a public
+  wallet (3.2) is always linked to it through the verdict's chained links, so that finding
+  already scores it, at the chained confidence; a second finding for the group would count
+  the same link twice;
 - the server-side findings of each of its addresses, on every chain: the account-chain
   checks, and for UTXO addresses their reuse, read from stored transfers;
 - each finding id once, with its worst impact across the wallet's addresses: one exchange
