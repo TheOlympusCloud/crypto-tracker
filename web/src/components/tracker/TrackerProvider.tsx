@@ -207,6 +207,10 @@ export function TrackerProvider({ children }: { children: ReactNode }) {
     setPanel({ kind: "wallet", address });
   }, []);
   const selectNode = useCallback((address: string) => setPanel({ kind: "node", address }), []);
+  const lookAt = useCallback((v: LookupResult | null) => {
+    setScope(v);
+    if (v) setShownPath([]); // a looked-up address shows its own connections, no path of mine
+  }, []);
   const showPath = useCallback((path: string[], heading: string, back: string) => {
     setScope(null);
     setShownPath(path);
@@ -235,7 +239,7 @@ export function TrackerProvider({ children }: { children: ReactNode }) {
   const value: Tracker = {
     graph, analysis, byAddress, loaded, status, setStatus: setNote, fail, refresh, act,
     view, show, panel, openPanel: setPanel, closePanel, openWallet, selectNode,
-    scope, setScope, shownPath, showPath, collapsed, toggleFold,
+    scope, setScope: lookAt, shownPath, showPath, collapsed, toggleFold,
     minConf, setMinConf, spam, setSpam, focus, requestFocus, sync, startSync, nameOf,
   };
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
