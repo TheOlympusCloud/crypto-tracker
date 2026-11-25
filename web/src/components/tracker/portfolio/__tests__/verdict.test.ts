@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { t } from "../../__tests__/i18n-mock";
-import type { Coverage, GraphNode, Verdict, VerdictLink } from "@/lib/tracker/types";
+import type { BridgedTo, Coverage, GraphNode, Verdict, VerdictLink } from "@/lib/tracker/types";
 import { caveats, judge } from "../verdict";
 import { assetTotals } from "../totals";
 
@@ -70,6 +70,16 @@ describe("caveats", () => {
     "Paths longer than 4 hops are not searched.",
     "Swaps outside THORChain and Maya, chains that are not read, unlabelled exchange wallets and anything off-chain (same IP address, same exchange account) are invisible to this check.",
   ];
+
+  it("names where the wallet bridged to an address that is not one of yours", () => {
+    const to = (over: Partial<BridgedTo>): BridgedTo => ({ protocol: "Across", address: "0x0f7ae28de1c8532170ad4ee566b5801485c13a0e", chain: "base", linked: true, closed: false, ...over });
+    const bridged = [to({}), to({ protocol: "Wormhole", chain: "solana", address: "BnUBX6LJjoYtx5vwKnyFQKKBpkiZvqo4k7p9PPVAC83p", linked: false }), to({ protocol: "Circle CCTP", chain: "solana", address: "Zmceyp93fsocmJy96FRMUqrBMe5rPg24TxkeRpTerpB", linked: false, closed: true })];
+    expect(caveats(verdict({ bridged }), nameOf, 4, t).slice(0, 3)).toEqual([
+      "It bridged to 0x0f7ae…13a0e on Base through Across. The bridge's public record ties that address to this wallet: if it is yours, add it as a wallet.",
+      "It bridged to BnUBX6L…AC83p on Solana through Wormhole. That address is very active or a service, so it links no other wallet here, but the bridge's public record still shows the transfer.",
+      "It bridged to a Solana token account through Circle CCTP (Zmceyp9…TerpB). That account has been closed since, so its owner can no longer be read and it links no wallet here.",
+    ]);
+  });
 
   it("always names the search depth and what is invisible", () => {
     expect(caveats(verdict(), nameOf, 4, t)).toEqual(ALWAYS);

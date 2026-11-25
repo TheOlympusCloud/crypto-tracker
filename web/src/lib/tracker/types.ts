@@ -117,7 +117,19 @@ export interface Verdict {
   links: VerdictLink[];
   services: { name: string; category: string; guess: boolean }[];
   shared_services: { wallet: string; services: string[] }[];
+  /** Bridged to an address that is not a wallet of mine (tracker/bridges.py). */
+  bridged?: BridgedTo[];
   coverage: Coverage;
+}
+
+export interface BridgedTo {
+  protocol: string;
+  address: string;
+  chain: string;
+  /** Linked to the wallet: read first, and quiet. Not linked: busy, or a service. */
+  linked: boolean;
+  /** A Solana token account closed since: its owner can no longer be read. */
+  closed: boolean;
 }
 
 export interface OriginSource {
