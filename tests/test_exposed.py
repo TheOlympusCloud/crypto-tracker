@@ -1,4 +1,5 @@
 import importlib
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -49,3 +50,15 @@ def test_without_am_i_exposed_the_tracker_stays_in_front(db):
     client = TestClient(app, base_url="http://localhost")
     assert "<title>Crypto tracker</title>" in client.get("/").text
     assert client.get("/api/analysis").json()["exposed"] is False
+
+
+def test_the_am_i_exposed_patches_leave_build_output_alone():
+    """The build rewrites public/sitemap.xml; a patch holding it fails on the next release."""
+    patches = Path(__file__).parent.parent / "patches" / "am-i-exposed"
+    touched = {
+        line.split(" b/")[-1]
+        for patch in patches.glob("*.patch")
+        for line in patch.read_text().splitlines()
+        if line.startswith("diff --git ")
+    }
+    assert touched and "public/sitemap.xml" not in touched
