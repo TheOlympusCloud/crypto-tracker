@@ -1,0 +1,16 @@
+# am-i-exposed on http://<host>:8000/ and the wallet tracker on /tracker/, behind one
+# password. Put CT_PASSWORD and any other setting of the README's table in .env, then:
+#   docker compose up -d --build
+services:
+  crypto-tracker:
+    build: .
+    image: crypto-tracker
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file: .env
+    volumes:
+      - data:/data
+
+volumes:
+  data:

@@ -373,6 +373,12 @@ function evidence(address, v, k) {
   );
 }
 
+// am-i-exposed, served at ../ next to this app (see CT_EXPOSED), scores one Bitcoin address in depth.
+function privacyScore(n) {
+  if (!analysis.exposed || chainOf(n) !== "bitcoin" || n.addresses) return null;
+  return h("a", { className: "button", href: `../#addr=${encodeURIComponent(n.address)}` }, "Privacy score");
+}
+
 function openWallet(address) {
   const n = byAddress.get(address);
   const v = analysis.verdicts.find((x) => x.address === address);
@@ -403,6 +409,7 @@ function openWallet(address) {
       h("button", { className: "primary", onclick: () => showPath([], "", address) }, "Show in graph"),
       h("button", { onclick: wallet(!n.public) }, n.public ? "Make private" : "Make public"),
       h("button", { onclick: () => startSync([n.wallet || address]) }, "Re-sync"),
+      privacyScore(n),
       h("button", { ariaExpanded: "false", onclick: (e) => {
         rename.hidden = !rename.hidden;
         e.currentTarget.ariaExpanded = String(!rename.hidden);
@@ -505,6 +512,7 @@ function selectNode(n) {
       n.mine || n.address === scope?.address ? null : h("button", { onclick: () => lookUp(n.address).catch(fail) }, "Look up"),
       // A busy address (an exchange, a mixer) can hide the counterparties that only deal with it.
       h("button", { onclick: () => toggleFold(n), ariaPressed: String(collapsed.has(n.address)) }, collapsed.has(n.address) ? `Unfold${hides ? ` (${hides} hidden)` : ""}` : "Fold its counterparties"),
+      privacyScore(n),
       n.explorer_address ? h("a", { className: "button", href: n.explorer_address.replace("{}", encodeURIComponent(n.address.replace("bitcoincash:", ""))), target: "_blank", rel: "noreferrer noopener" }, "Explorer ↗") : null
     ),
     n.mine ? null : form
@@ -640,6 +648,7 @@ function renderLookup() {
       v.mine ? null : h("button", { onclick: watch }, v.watched ? "Stop watching" : "Watch"),
       v.mine ? null : h("button", { onclick: () => selectNode(v) }, v.label ? "Edit label" : "Label"),
       v.chain === "evm" ? h("button", { onclick: () => api("resolve", { q: v.address }).then((f) => askChains(v.address, f.chains, v.chains)).catch(fail) }, "Chains") : null,
+      privacyScore(v),
       v.explorer_address ? h("a", { className: "button", href: v.explorer_address.replace("{}", encodeURIComponent(v.address.replace("bitcoincash:", ""))), target: "_blank", rel: "noreferrer noopener" }, "Explorer ↗") : null
     ),
     v.mine ? null : h("p", { className: "hint" }, "Tracking adds it to your wallets, as private, and syncs it. Watching only keeps it at hand."),

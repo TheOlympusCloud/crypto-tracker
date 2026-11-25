@@ -7,9 +7,10 @@ from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, field_validator
+from starlette.routing import Mount, Route
 
 from . import alerts, chains, graph, hd, lookup, prices, sync, uri
 from . import db as database
@@ -137,6 +138,7 @@ def get_analysis(max_hops: int = 4):
         return {
             "max_hops": max_hops,
             "hop_decay": graph.HOP_DECAY,
+            "exposed": bool(os.environ.get("CT_EXPOSED")),  # am-i-exposed is at ../
             "chains": chains.coverage(),
             "fiat": prices.summary(db),
             "alerts": alerts.recent(db),
@@ -343,4 +345,15 @@ def get_sync():
 if os.environ.get("CT_SYNC_EVERY"):  # minutes
     sync.every(float(os.environ["CT_SYNC_EVERY"]))
 
-app.mount("/", StaticFiles(directory=Path(__file__).parent / "static", html=True))
+pages = StaticFiles(directory=Path(__file__).parent / "static", html=True)
+if exposed := os.environ.get("CT_EXPOSED"):
+    # am-i-exposed's static build is the front page and this app moves to /tracker/, where
+    # its pages find api/ next to themselves; /api/ is left to am-i-exposed, which looks for
+    # a self-hosted mempool there. The password above guards both.
+    app.router.routes = [
+        Route("/tracker", lambda _: RedirectResponse("tracker/")),
+        Mount("/tracker", routes=[*app.routes, Mount("/", pages)]),
+        Mount("/", StaticFiles(directory=exposed, html=True)),
+    ]
+else:
+    app.mount("/", pages)

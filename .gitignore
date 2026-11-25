@@ -8,3 +8,4 @@ chains.json
 android/build/
 *.jks
 *.keystore
+.env
