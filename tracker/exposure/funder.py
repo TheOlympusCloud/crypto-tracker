@@ -11,6 +11,8 @@ one ascending call per chain. The transfer itself is already in the graph: the f
 who made it.
 """
 
+import httpx
+
 from .. import busy, chains, history, lookup
 from .. import db as database
 from ..labels import CONFIDENCE
@@ -26,6 +28,7 @@ def check(ctx):
     _, read = lookup.READS.get((ctx.address, tuple(ctx.view["chains"])), (0, None))
     whole = read is not None and not ctx.view["truncated"] and not ctx.view["errors"]
     funded = {}  # funder -> evidence, one transaction per chain
+    failed = None  # one chain that did not answer spares the others, then says so
     for chain in ctx.view["chains"] if ctx.chain == "evm" else [ctx.chain]:
         cfg = chains.evm_chains().get(chain, {})
         if mine and complete(ctx.db, ctx.address, chain):
@@ -41,12 +44,14 @@ def check(ctx):
                 for t in read["transfers"]
                 if t[0] == chain and t[3] == ctx.address and not t[5]
             ]
-        elif chain == "tron":
-            rows = activator(ctx)
-        elif ctx.chain == "evm":
-            rows = oldest(ctx, chain, cfg)
+        elif ctx.chain == "solana":
+            continue  # no call lists an address from its first transaction
         else:
-            continue  # Solana: no call lists an address from its first transaction
+            try:
+                rows = activator(ctx) if chain == "tron" else oldest(ctx, chain, cfg)
+            except (httpx.HTTPError, RuntimeError, ValueError, KeyError, TypeError) as e:
+                failed = failed or RuntimeError(f"{chain}: {chains.describe(e)}")
+                continue
         if rows:
             src, txid, _ = min(rows, key=lambda r: r[2])
             if database.valid(src):  # indexer output is untrusted
@@ -54,6 +59,8 @@ def check(ctx):
     for src, evidence in funded.items():
         if found := name(ctx, src, evidence, mine):
             yield found
+    if failed:
+        raise failed
 
 
 def complete(db, address, chain):
@@ -77,6 +84,10 @@ def activator(ctx):
 
 def oldest(ctx, chain, cfg):
     """The first coins an EVM address received on `chain`, from its oldest transactions."""
+    # shortcut: one call, txlist only, which has no internal transfers. If the first coins
+    # came by one (a bridge fill, a payout contract) and a normal transfer reached the
+    # address before it sent anything, that later sender is named. Read txlistinternal too,
+    # a second call per chain, if such misnamed funders show up.
     ctx._spend()
     rows = chains._evm_call(
         ctx.client, cfg, ctx.address, "txlist", page=1, offset=TXLIST, sort="asc"

@@ -2,15 +2,17 @@ import time
 
 import httpx
 import pytest
-from test_core import SOL, TRX, A, B, D, mine
+from test_core import SOL, TRX, A, B, C, D, mine
 from test_exposure import label
 from test_lookup import PAYER, stored
+from test_lookup import client as fake_internet
 
 from tracker import chains, exposure, history, lookup
 from tracker.exposure import funder
 
 SOL2 = "4Nd1mBQtrMJVYVfKf2PJy9NZUZdTAsp7D4xWLs4gDB4T"  # another Solana wallet of mine
 FUNDER_TRX = "TXka46PPwttNPWfFDPtt3GUodbPThyufaV"  # hex 41ee...ee
+client = fake_internet  # a fixture: test_lookup's fake indexers, for a sync
 
 
 @pytest.fixture(autouse=True)
@@ -27,14 +29,19 @@ def evm(monkeypatch):
     )
 
 
-def indexers(txlist=(), tron=(), signatures=0):
+def indexers(txlist=(), tron=(), signatures=0, down=()):
     """The ascending reads a funder takes (an Etherscan-style txlist, a TronGrid page) and
-    the Solana busy check. Every call is kept, to be counted."""
+    the Solana busy check; the hosts `down` answer as a refusing Etherscan does. Every call
+    is kept, to be counted."""
     calls = []
 
     def answer(request):
         calls.append(request)
         p = request.url.params
+        if request.url.host in down:
+            return httpx.Response(
+                200, json={"status": "0", "message": "NOTOK", "result": "Max rate"}
+            )
         if request.url.host in ("eth", "poly"):
             assert (p["action"], p["sort"], p["address"]) == ("txlist", "asc", A)
             return httpx.Response(200, json={"status": "1", "result": list(txlist)})
@@ -154,6 +161,63 @@ def test_an_address_that_sent_before_any_coin_reached_it_by_txlist_names_no_fund
     label(db, D, "Coinbase 3", "cex")
     http, calls = indexers(txlist=[row(A, B, "h7", 5, value=0), row(D, A, "h8", 6)])  # a call
     assert scan(db, http, A, ["ethereum"], truncated=True) == [] and len(calls) == 1
+
+
+def test_one_ascending_call_names_a_later_sender_when_the_first_coins_came_internally(db):
+    """shortcut in funder.oldest: txlist has no internal transfers. When the first coins came
+    by one (a bridge fill, a payout contract) and a normal transfer reached the address before
+    it sent anything, that later sender is named. Only a read that holds the whole history,
+    internal transfers included, avoids it."""
+    label(db, D, "Coinbase 3", "cex")
+    http, _ = indexers(txlist=[row(D, A, "h8", 6), row(A, B, "h9", 7, value=0)])
+    found = scan(db, http, A, ["ethereum"], truncated=True)
+    assert [(id, params["exchange"]) for id, params, _ in found] == [
+        ("x-funder-exchange", "Coinbase")
+    ]
+
+
+def test_a_chain_that_does_not_answer_spares_the_funders_of_the_others(db, monkeypatch):
+    label(db, D, "Coinbase 3", "cex")
+    http, _ = indexers(txlist=[row(D, A, "h6", 6)], down=("poly",))
+    view = {"chains": ["ethereum", "polygon"], "truncated": True, "errors": [], "connections": []}
+    view |= {"icon": "evm", "explorer_address": ""}
+    monkeypatch.setattr(lookup, "view", lambda *a, **k: view)
+    monkeypatch.setattr(exposure, "CHECKS", {"any": [funder.check], "evm": []})
+
+    r = exposure.run(db, http, A, ["ethereum", "polygon"])
+
+    assert [(f["id"], f["params"]["chains"]) for f in r["findings"]] == [
+        ("x-funder-exchange", "Ethereum")
+    ]
+    assert (
+        r["partial"]
+        and {"id": "error", "params": {"error": "funder: polygon: txlist: NOTOK Max rate"}}
+        in r["gaps"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("rows", "id", "hub"), [(1000, "x-funder-shared", 0), (2, "x-funder-hub", 1)]
+)
+def test_an_evm_stranger_who_funded_two_wallets_of_mine_is_read_by_a_sync(
+    db, client, monkeypatch, rows, id, hub
+):
+    monkeypatch.setattr(chains, "EVM_ROWS", rows)  # 2: a full page, the stranger is busy
+    mine(db, A)
+    mine(db, C)
+    db.execute("UPDATE node SET name = 'Savings' WHERE address = ?", (C,))
+    transfer(db, "ethereum", "h1", D, A, 5)
+    transfer(db, "polygon", "p2", D, C, 6, "POL")  # the same stranger on another EVM chain
+    complete(db, A)
+    view = {"chains": ["ethereum", "polygon"], "truncated": False, "errors": [], "connections": []}
+    with httpx.Client() as http:  # the fake indexers of test_lookup
+        ctx = exposure.Context(db, http, A, view)
+        found = list(funder.check(ctx))
+
+    params = {"funder": D, "wallets": "Savings", "chains": "Ethereum"}
+    assert found == [(id, params, [{"chain": "ethereum", "txid": "h1"}])]
+    assert ctx.left == exposure.BUDGET - funder.SYNC * 2  # a sync of two readable chains
+    assert db.execute("SELECT hub FROM node WHERE address = ?", (D,)).fetchone()["hub"] == hub
 
 
 def test_the_tron_activator_is_one_ascending_call(db):

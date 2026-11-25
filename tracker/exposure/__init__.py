@@ -128,7 +128,8 @@ def run(db, client, address, evm=()):
         # A check module's `check` goes by the module's name: "exchange", "flagged".
         name = check.__module__.rsplit(".", 1)[-1] if check.__name__ == "check" else check.__name__
         try:
-            found += [finding(*f) for f in check(ctx)]
+            for f in check(ctx):  # what a check found before it failed is kept
+                found.append(finding(*f))
         except Spent:
             gaps.append({"id": "skipped", "params": {"check": name}})
         except (httpx.HTTPError, RuntimeError, ValueError, KeyError, TypeError) as e:

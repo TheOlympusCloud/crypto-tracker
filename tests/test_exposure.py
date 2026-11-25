@@ -130,6 +130,18 @@ def test_a_check_out_of_calls_leaves_the_scan_partly_checked(db, client, monkeyp
     assert r["gaps"] == [{"id": "skipped", "params": {"check": "greedy"}}]
 
 
+def test_findings_a_check_made_before_it_ran_out_of_calls_are_kept(db, client, monkeypatch):
+    def thrifty(ctx):
+        yield "x-multi-chain", {"count": 2, "chains": "Ethereum, Polygon"}, []
+        ctx.get("http://eth/api", {"module": "account", "action": "balance", "address": A})
+
+    monkeypatch.setattr(exposure, "BUDGET", 0)
+    monkeypatch.setattr(exposure, "CHECKS", {"any": [thrifty], "evm": []})
+    r = client.get(f"{SCAN}{A}?chains=ethereum").json()
+    assert [f["id"] for f in r["findings"]] == ["x-multi-chain"] and r["partial"] is True
+    assert r["gaps"] == [{"id": "skipped", "params": {"check": "thrifty"}}]
+
+
 def test_the_scan_takes_account_chains_only(db, client):
     assert client.get(f"{SCAN}{A}?chains=base").status_code == 422  # needs a key
     assert client.get(f"{SCAN}1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa").status_code == 422  # Bitcoin
