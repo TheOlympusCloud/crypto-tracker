@@ -97,8 +97,14 @@ docker compose up -d                  # http://<host>:8000/, the first build tak
 docker compose logs | grep password   # made on the first start, kept in the volume
 ```
 
+The build needs about 2.5 GB of memory and 2 cores: give a container or VM at least 3 GB.
+It runs 2 build workers, whatever the number of CPUs the host shows; on a machine with memory
+to spare, `NEXT_BUILD_CPUS=8` in `.env` makes it faster (each worker takes about 115 MB).
+
 Any user name and that password open it; `docker compose exec crypto-tracker cat
-/data/password` shows the password again. Settings of the table below go in an optional
+/data/password` shows the password again. The generated password also stays in the
+container's log (`docker compose logs`) for as long as the container exists; to keep it out
+of any log, put your own `CT_PASSWORD` in `.env` before the first start. Settings of the table below go in an optional
 `.env` next to `compose.yaml` (`CT_PASSWORD` there replaces the generated one), then
 `docker compose up -d` again. To update: `git pull && docker compose up -d --build`. Your
 wallets, labels and history stay in the volume `data`.
@@ -131,7 +137,7 @@ LXC_IP=192.168.1.50/24,gw=192.168.1.1 bash -c "$(curl -fsSL https://raw.githubus
 | `LXC_STORAGE` | the first storage that holds containers (`local-lvm`, `local-zfs`...) |
 | `LXC_TEMPLATE_STORAGE` | `local` |
 | `LXC_BRIDGE`, `LXC_IP` | `vmbr0`, `dhcp` |
-| `LXC_DISK`, `LXC_MEMORY`, `LXC_CORES` | `16` GB, `4096` MB (the build needs about 3 GB), `2` |
+| `LXC_DISK`, `LXC_MEMORY`, `LXC_CORES` | `16` GB, `4096` MB (at least `3072`), `2` (at least `2`) |
 | `REPO_URL`, `REPO_REF` | this repository, `main` (a branch or a tag) |
 
 Back the container up with Proxmox's own backups (`vzdump`): the volume is inside it.

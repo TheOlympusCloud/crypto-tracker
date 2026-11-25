@@ -7,6 +7,9 @@ const nextConfig: NextConfig = {
   output: "export",
   trailingSlash: true,
   images: { unoptimized: true },
+  // crypto-tracker: Next starts a build worker per CPU the host shows, more than a small container
+  // has memory for; the Docker image caps them with NEXT_BUILD_CPUS.
+  ...(process.env.NEXT_BUILD_CPUS ? { experimental: { cpus: Number(process.env.NEXT_BUILD_CPUS) } } : {}),
   // next dev would otherwise append generated agent rules to CLAUDE.md on every run
   agentRules: false,
   env: {

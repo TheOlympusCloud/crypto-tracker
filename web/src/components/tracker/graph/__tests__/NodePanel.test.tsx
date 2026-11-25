@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { cleanup, fireEvent, screen } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 
 vi.mock("react-i18next", async () => (await import("../../__tests__/i18n-mock")).i18nMock());
 vi.mock("@/lib/tracker/api", () => ({ api: vi.fn(async () => ({})) }));
@@ -102,7 +102,7 @@ describe("NodePanel", () => {
     expect(tracker.startSync).toHaveBeenCalledWith([STRANGER]);
   });
 
-  it("finds the address in a lookup's graph and leads back to the lookup", () => {
+  it("finds the address in a lookup's graph and leads back to the lookup", async () => {
     const scope = {
       ...node(BINANCE),
       chains: ["ethereum"],
@@ -131,10 +131,39 @@ describe("NodePanel", () => {
     expect(screen.queryByRole("button", { name: "Look up" })).toBeNull();
     fireEvent.change(screen.getByRole("textbox", { name: "Label" }), { target: { value: "" } });
     fireEvent.click(button("Save label"));
+    await waitFor(() => expect(again.refresh).toHaveBeenCalled());
     const renamed = vi.mocked(again.setScope).mock.calls[0]?.[0];
     expect(renamed?.label).toBe("");
     expect(renamed?.category).toBeUndefined();
     expect(renamed?.graph.nodes[0]?.label).toBe("");
+  });
+
+  it("keeps the old label on screen when the server refuses the new one", async () => {
+    vi.mocked(api).mockRejectedValueOnce(new Error("category must be one of ..."));
+    const scope = { ...node(BINANCE), chains: ["ethereum"], watched: false, assets: [], value: null, currency: "USD", unvouched: 0,
+      risk: { level: "ok", headline: "", reason: "", reasons: [] }, connections: [], more: 0, truncated: false, errors: [], notes: [],
+      graph: { nodes: [node(BINANCE)], edges: [], links: [] } } as LookupResult;
+    const { tracker } = renderTracker(<NodePanel address={BINANCE} />, { scope });
+    fireEvent.change(screen.getByRole("textbox", { name: "Label" }), { target: { value: "Renamed" } });
+    fireEvent.click(button("Save label"));
+    await waitFor(() => expect(tracker.fail).toHaveBeenCalled());
+    expect(tracker.setScope).not.toHaveBeenCalled();
+    expect(tracker.refresh).not.toHaveBeenCalled();
+  });
+
+  it("does not bring a closed lookup back when its label is saved late", async () => {
+    let saved: (v: unknown) => void = () => {};
+    vi.mocked(api).mockImplementationOnce(() => new Promise((done) => (saved = done)));
+    const scope = { ...node(BINANCE), chains: ["ethereum"], watched: false, assets: [], value: null, currency: "USD", unvouched: 0,
+      risk: { level: "ok", headline: "", reason: "", reasons: [] }, connections: [], more: 0, truncated: false, errors: [], notes: [],
+      graph: { nodes: [node(BINANCE)], edges: [], links: [] } } as LookupResult;
+    const { tracker } = renderTracker(<NodePanel address={BINANCE} />, { scope });
+    fireEvent.change(screen.getByRole("textbox", { name: "Label" }), { target: { value: "Renamed" } });
+    fireEvent.click(button("Save label"));
+    tracker.closePanel(); // Escape, before the server answers
+    saved({});
+    await waitFor(() => expect(tracker.refresh).toHaveBeenCalled());
+    expect(tracker.setScope).not.toHaveBeenCalled();
   });
 
   it("shows nothing for an address it does not know", () => {

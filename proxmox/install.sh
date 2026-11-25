@@ -14,8 +14,8 @@ LXC_TEMPLATE_STORAGE=${LXC_TEMPLATE_STORAGE:-local}
 LXC_BRIDGE=${LXC_BRIDGE:-vmbr0}
 LXC_IP=${LXC_IP:-dhcp}                      # or static: 192.168.1.50/24,gw=192.168.1.1
 LXC_DISK=${LXC_DISK:-16}                    # GB
-LXC_MEMORY=${LXC_MEMORY:-4096}              # MB: building am-i-exposed takes about 3 GB
-LXC_CORES=${LXC_CORES:-2}
+LXC_MEMORY=${LXC_MEMORY:-4096}              # MB, at least 3072: the build peaks at about 2.5 GB
+LXC_CORES=${LXC_CORES:-2}                   # at least 2
 REPO_URL=${REPO_URL:-https://github.com/TheOlympusCloud/crypto-tracker}
 REPO_REF=${REPO_REF:-main}                  # a branch or a tag
 APP=/opt/crypto-tracker                     # inside the container
@@ -28,6 +28,8 @@ in_ct() { pct exec "$LXC_ID" -- "$@"; }
 
 [ "$(id -u)" = 0 ] || die "run it as root on the Proxmox VE host"
 command -v pct >/dev/null || die "pct not found: run it on a Proxmox VE host"
+[ "$LXC_MEMORY" -ge 3072 ] || die "LXC_MEMORY must be at least 3072 (MB): the build needs about 2.5 GB"
+[ "$LXC_CORES" -ge 2 ] || die "LXC_CORES must be at least 2"
 
 LXC_ID=${LXC_ID:-$(pvesh get /cluster/nextid)}
 if pct status "$LXC_ID" >/dev/null 2>&1; then

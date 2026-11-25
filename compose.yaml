@@ -6,8 +6,12 @@
 # Settings of the README's table go in an optional .env next to this file.
 services:
   crypto-tracker:
-    build: .
+    build:
+      context: .
+      args:
+        NEXT_BUILD_CPUS: ${NEXT_BUILD_CPUS:-2} # build workers, about 115 MB each
     image: crypto-tracker
+    pull_policy: build # built here, never looked for in a registry
     restart: unless-stopped
     ports:
       - "8000:8000"

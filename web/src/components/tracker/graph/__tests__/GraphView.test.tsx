@@ -1,6 +1,9 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { configure, act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+
+// The renderers load through a dynamic import: give it more than a second when every test runs at once.
+configure({ asyncUtilTimeout: 5000 });
 
 vi.mock("react-i18next", async () => (await import("../../__tests__/i18n-mock")).i18nMock());
 // jsdom has no WebGL and no canvas: the renderers are stand-ins that record their calls.

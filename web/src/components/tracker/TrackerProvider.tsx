@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { api } from "@/lib/tracker/api";
 import { short, title } from "@/lib/tracker/kinds";
@@ -52,6 +52,8 @@ export interface Tracker {
   /** The looked-up address whose connections the graph shows instead of mine; null for mine. */
   scope: LookupResult | null;
   setScope: (v: LookupResult | null) => void;
+  /** The panel and lookup on show right now, for an answer that arrives after its caller is gone. */
+  latest: () => { panel: PanelState | null; scope: LookupResult | null };
   /** The path drawn as the fat orange line in the graph. */
   shownPath: string[];
   /** Opens the graph with `path` highlighted and spelled out; an empty path focuses `back`. */
@@ -114,11 +116,23 @@ export function TrackerProvider({ children }: { children: ReactNode }) {
   const [note, setNote] = useState<Status | null>(null);
   const hash = useLocationHash().slice(1) as View;
   const view = VIEWS.includes(hash) ? hash : "portfolio";
-  const [panel, setPanel] = useState<PanelState | null>(null);
-  const [scope, setScope] = useState<LookupResult | null>(null);
+  const [panel, setPanelState] = useState<PanelState | null>(null);
+  const [scope, setScopeState] = useState<LookupResult | null>(null);
+  // Written with the state, read later by callers that may have unmounted meanwhile.
+  const now = useRef<{ panel: PanelState | null; scope: LookupResult | null }>({ panel: null, scope: null });
+  const setPanel = useCallback((p: PanelState | null) => {
+    now.current.panel = p;
+    setPanelState(p);
+  }, []);
+  const setScope = useCallback((v: LookupResult | null) => {
+    now.current.scope = v;
+    setScopeState(v);
+  }, []);
+  const latest = useCallback(() => ({ ...now.current }), []);
   const [shownPath, setShownPath] = useState<string[]>([]);
   const folded = useSyncExternalStore(foldedStore.subscribe, foldedStore.getSnapshot, foldedStore.getServerSnapshot);
-  const collapsed = useMemo(() => new Set(folded), [folded]);
+  const [foldedHere, setFoldedHere] = useState<readonly string[] | null>(null); // this visit's folds, also where nothing is kept
+  const collapsed = useMemo(() => new Set(foldedHere ?? folded), [foldedHere, folded]);
   const [minConf, setMinConf] = useState(0);
   const [spam, setSpam] = useState(false);
   const [focus, setFocus] = useState<{ address: string; n: number } | null>(null);
@@ -165,9 +179,23 @@ export function TrackerProvider({ children }: { children: ReactNode }) {
     let filled = false; // the background fill-in was seen reading: read the data again once it is done
     const wait = (ms: number) => new Promise((done) => setTimeout(done, ms));
     void (async () => {
+      let failed = false;
       while (!stop) {
-        const s = await api<SyncStatus>("sync");
+        let s: SyncStatus;
+        try {
+          s = await api<SyncStatus>("sync");
+        } catch (e) {
+          // The server did not answer: say so (not "Syncing" any more), and ask again.
+          if (stop) return;
+          failed = true;
+          setSync(null);
+          fail(e);
+          await wait(5000);
+          continue;
+        }
         if (stop) return;
+        if (failed) setNote(null); // it answers again: the error is over
+        failed = false;
         setSync(s);
         if (s.running) await wait(1500);
         else if (s.filling) await wait(10000);
@@ -201,16 +229,16 @@ export function TrackerProvider({ children }: { children: ReactNode }) {
   const closePanel = useCallback(() => {
     setScope(null); // leaving a lookup brings my graph back
     setPanel(null);
-  }, []);
+  }, [setScope, setPanel]);
   const openWallet = useCallback((address: string) => {
     setScope(null);
     setPanel({ kind: "wallet", address });
-  }, []);
-  const selectNode = useCallback((address: string) => setPanel({ kind: "node", address }), []);
+  }, [setScope, setPanel]);
+  const selectNode = useCallback((address: string) => setPanel({ kind: "node", address }), [setPanel]);
   const lookAt = useCallback((v: LookupResult | null) => {
     setScope(v);
     if (v) setShownPath([]); // a looked-up address shows its own connections, no path of mine
-  }, []);
+  }, [setScope]);
   const showPath = useCallback((path: string[], heading: string, back: string) => {
     setScope(null);
     setShownPath(path);
@@ -220,11 +248,12 @@ export function TrackerProvider({ children }: { children: ReactNode }) {
       requestFocus(back);
       setPanel({ kind: "node", address: back });
     }
-  }, [show, requestFocus]);
+  }, [show, requestFocus, setScope, setPanel]);
   const toggleFold = useCallback((address: string) => {
     const next = new Set(collapsed);
     if (!next.delete(address)) next.add(address);
-    foldedStore.set([...next]); // private browsing: not kept, the graph is still drawn unfolded
+    setFoldedHere([...next]);
+    foldedStore.set([...next]); // where the browser keeps nothing, the folds last for this visit
     requestFocus(address); // frame what is left around it
   }, [collapsed, requestFocus]);
 
@@ -239,7 +268,7 @@ export function TrackerProvider({ children }: { children: ReactNode }) {
   const value: Tracker = {
     graph, analysis, byAddress, loaded, status, setStatus: setNote, fail, refresh, act,
     view, show, panel, openPanel: setPanel, closePanel, openWallet, selectNode,
-    scope, setScope: lookAt, shownPath, showPath, collapsed, toggleFold,
+    scope, setScope: lookAt, latest, shownPath, showPath, collapsed, toggleFold,
     minConf, setMinConf, spam, setSpam, focus, requestFocus, sync, startSync, nameOf,
   };
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

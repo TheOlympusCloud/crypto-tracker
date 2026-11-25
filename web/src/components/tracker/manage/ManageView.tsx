@@ -108,13 +108,13 @@ function Sync() {
 
 function Wallets() {
   const { t } = useTranslation();
-  const { analysis, byAddress, openWallet, act } = useTracker();
+  const { analysis, byAddress, openWallet, act, loaded } = useTracker();
   return (
     <section className={`${CARD} md:col-span-2`}>
       <h2 className={HEADING}>{t("tracker-manage:wallets.heading")}</h2>
       {/* One row per wallet: an HD wallet's addresses are listed in its panel, not here. */}
       <ul>
-        {!analysis.verdicts.length && <li className={HINT}>{t("tracker-manage:wallets.none")}</li>}
+        {loaded && !analysis.verdicts.length && <li className={HINT}>{t("tracker-manage:wallets.none")}</li>}
         {analysis.verdicts.map((v) => {
           const n = byAddress.get(v.address);
           if (!n) return null; // byAddress holds every verdict's wallet, HD ones without a node too
@@ -158,14 +158,14 @@ function Wallets() {
 
 function WatchedWallets() {
   const { t } = useTranslation();
-  const { analysis, act, fail } = useTracker();
+  const { analysis, act, fail, loaded } = useTracker();
   const { lookUp } = useLookup();
   return (
     <section className={`${CARD} md:col-span-2`}>
       <h2 className="eyebrow mb-2">{t("tracker-manage:watched.heading")}</h2>
       <p className={`${HINT} mb-3`}>{t("tracker-manage:watched.hint")}</p>
       <ul>
-        {!analysis.watched.length && <li className={HINT}>{t("tracker-manage:watched.none")}</li>}
+        {loaded && !analysis.watched.length && <li className={HINT}>{t("tracker-manage:watched.none")}</li>}
         {analysis.watched.map((w) => (
           <li key={w.address} className={LIST_ROW}>
             <button type="button" className={`${ROW} min-w-0 flex-1 basis-72`} onClick={() => void lookUp(w.address).catch(fail)}>

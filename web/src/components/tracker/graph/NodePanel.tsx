@@ -23,7 +23,7 @@ type Node = Omit<GraphNode, "balances"> & { balances?: Balance[] };
 /** Any address of the graph on show: what is known about it, and what can be done with it. */
 export function NodePanel({ address }: { address: string }) {
   const { t, i18n } = useTranslation();
-  const { graph, byAddress, scope, setScope, collapsed, shownPath, minConf, act, fail, openWallet, openPanel, startSync, toggleFold } = useTracker();
+  const { graph, byAddress, scope, setScope, latest, collapsed, shownPath, minConf, act, fail, refresh, openWallet, openPanel, startSync, toggleFold } = useTracker();
   const { lookUp } = useLookup();
   const n: Node | undefined = scope ? [...scope.graph.nodes, scope, ...scope.connections].find((x) => x.address === address) : byAddress.get(address);
   if (!n) return null;
@@ -58,12 +58,17 @@ export function NodePanel({ address }: { address: string }) {
     const form = new FormData(e.currentTarget);
     const name = String(form.get("label") ?? "");
     const category = String(form.get("category") ?? "other");
-    act(() => api("labels", { address: n.address, name, category }))();
-    // The looked-up wallet is not part of the data a refresh brings: rename it here.
-    if (scope) {
-      const rename = <T extends { address: string }>(x: T): T => (x.address === n.address ? { ...x, label: name, category: name ? category : undefined } : x);
-      setScope({ ...rename(scope), connections: scope.connections.map(rename), graph: { ...scope.graph, nodes: scope.graph.nodes.map(rename) } });
-    }
+    api("labels", { address: n.address, name, category })
+      .then(() => {
+        // The looked-up wallet is not part of the data a refresh brings: rename it here, if it is still shown.
+        const v = latest().scope;
+        if (v && v.address === scope?.address) {
+          const rename = <T extends { address: string }>(x: T): T => (x.address === n.address ? { ...x, label: name, category: name ? category : undefined } : x);
+          setScope({ ...rename(v), connections: v.connections.map(rename), graph: { ...v.graph, nodes: v.graph.nodes.map(rename) } });
+        }
+        return refresh();
+      })
+      .catch(fail);
   };
 
   return (

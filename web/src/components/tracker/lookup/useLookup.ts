@@ -34,24 +34,30 @@ let asked = 0; // only the newest lookup may fill the panel
  * Either ends with the address's view in the panel and its connections in the graph.
  */
 export function useLookup(): { lookUp: (text: string) => Promise<void>; openLookup: (address: string, chains?: string[]) => Promise<void> } {
-  const { setStatus, openPanel, setScope, show, requestFocus } = useTracker();
+  const { latest, setStatus, openPanel, setScope, show, requestFocus } = useTracker();
 
   const openLookup = useCallback(async (address: string, chains: string[] = []) => {
     const mine = ++asked;
+    // Only the newest lookup may fill the panel, and only while its busy panel is still open. Asked of
+    // the page, not of the caller: a node panel or a retry button that started it is gone by then.
+    const wanted = () => {
+      const p = latest().panel;
+      return mine === asked && p?.kind === "lookup-busy" && p.address === address;
+    };
     openPanel({ kind: "lookup-busy", address });
     try {
       const v = await api<LookupResult>(lookupPath(address, chains));
-      if (mine !== asked) return;
+      if (!wanted()) return;
       if (box.text === address && v.icon) lookupBox.set({ mark: { q: address, icon: v.icon } }); // an EVM address now has its chain
       setScope(v);
       show("graph");
       requestFocus(address);
       openPanel({ kind: "lookup" });
     } catch (e) {
-      if (mine !== asked) return;
+      if (!wanted()) return;
       openPanel({ kind: "lookup-error", address, chains, message: e instanceof Error ? e.message : String(e) });
     }
-  }, [openPanel, setScope, show, requestFocus]);
+  }, [latest, openPanel, setScope, show, requestFocus]);
 
   const lookUp = useCallback(async (text: string) => {
     setStatus({ text: "", level: "" });
