@@ -36,6 +36,7 @@ TTL = 30  # seconds a status is reused
 _last = {"at": 0.0, "status": None}
 
 WAITS = "Bitcoin addresses are read once it is ready, never from a public server meanwhile."
+# (Nor are they sent to the swap APIs while there is a node: swaps.py.)
 NOTICES = {
     "down": "Bitcoin: your own node does not answer. It starts after bitcoind and Fulcrum, or "
     "it is stopped (docker compose ps).",

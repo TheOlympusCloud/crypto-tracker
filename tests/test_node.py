@@ -11,9 +11,9 @@ import time
 import httpx
 import pytest
 from fastapi.testclient import TestClient
-from test_core import SATOSHI, mine
+from test_core import BIP84, SATOSHI, A, mine
 
-from tracker import chains, history, node, sync
+from tracker import chains, graph, history, node, swaps, sync
 
 OWN = "http://mempool-web:8080"
 TIP = "ab" * 32
@@ -221,6 +221,10 @@ def test_am_i_exposed_asks_my_node_through_the_app(site, own):
     # mempool's own web server would pass these on to mempool.space
     assert site.get("/api/v1/services/accelerator/accelerations").status_code == 404
     assert not [r for r in own.asked if "services" in r.url.path]
+    # Nor around that refusal, nor out of /api/.
+    for sneaky in ("/api/v1//services/x", "/api/v1/%2e/services/x", "/api/x/%2e%2e/%2e%2e/out"):
+        assert site.get(sneaky).status_code == 404, sneaky
+    assert not [r for r in own.asked if "services" in r.url.path or "out" in r.url.path]
     assert site.get("/api/tracker/graph").is_success  # the tracker's API is still its own
 
 
@@ -246,3 +250,38 @@ def test_explorer_links_open_my_own_mempool(site):
     v6 = TestClient(site.app, base_url="http://[::1]")
     r = v6.get(f"/api/tracker/mempool/tx/{'cd' * 32}", follow_redirects=False)
     assert r.headers["location"] == f"http://[::1]:8080/tx/{'cd' * 32}"
+
+
+def test_with_a_node_my_bitcoin_addresses_go_to_no_swap_api(db, monkeypatch):
+    """THORChain and Maya are asked about my other addresses only. A swap between a Bitcoin
+    wallet and another of mine is still found from the other side, and the verdict says so."""
+    monkeypatch.setattr(node, "MEMPOOL", OWN)
+    monkeypatch.setattr(chains, "DELAY", 0)
+    mine(db, A)
+    mine(db, BIP84[0])
+    db.commit()
+    leg = {"coins": [{"amount": "100000", "asset": "BTC.BTC"}]}
+    swap = {
+        "type": "swap", "status": "success",
+        "in": [{**leg, "address": A, "txID": "D48A"}],
+        "out": [{**leg, "address": BIP84[0], "txID": "736CD5"}],
+    }  # fmt: skip
+    asked = []
+
+    def midgard(request):
+        asked.append(request.url.params["address"])
+        return httpx.Response(200, json={"actions": [swap] if asked[-1] == A else []})
+
+    with httpx.Client(transport=httpx.MockTransport(midgard)) as client:
+        assert swaps.sync(db, client) == []
+    assert A in asked and BIP84[0] not in asked
+    found = {(r["kind"], frozenset((r["a"], r["b"]))) for r in db.execute("SELECT * FROM link")}
+    assert found == {("swap", frozenset((A, BIP84[0])))}  # from both protocols' records
+    notes = {v["address"]: v["coverage"]["notes"] for v in graph.verdicts(db)}
+    assert swaps.OWN_NODE in notes[BIP84[0]] and swaps.OWN_NODE not in notes[A]
+
+    monkeypatch.setattr(node, "MEMPOOL", "")  # no node: asked about as before
+    asked.clear()
+    with httpx.Client(transport=httpx.MockTransport(midgard)) as client:
+        swaps.sync(db, client)
+    assert BIP84[0] in asked

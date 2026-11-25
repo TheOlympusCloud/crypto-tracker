@@ -2,7 +2,8 @@
 APIs. A swap names its destination address in the open, so it ties the two ends together
 for anyone who looks: stored as a 'swap' link with confidence 0.95.
 
-Each of my addresses is sent to these APIs, like to any other indexer. CT_SWAPS=off skips it.
+Each of my addresses is sent to these APIs, like to any other indexer, except Bitcoin ones
+while there is a node of your own (node.py). CT_SWAPS=off skips it.
 """
 
 import os
@@ -10,7 +11,7 @@ import time
 
 import httpx
 
-from . import chains, history, labels
+from . import chains, history, labels, node
 from . import db as database
 from .heuristics import pair
 
@@ -85,6 +86,10 @@ NOTE = (
     "Swaps: THORChain and Maya records of a wallet are read back over several syncs; until "
     "they are complete, older swaps can be missing."
 )
+OWN_NODE = (
+    "Swaps: with your own Bitcoin node, Bitcoin addresses are not sent to THORChain or Maya; a "
+    "swap with another wallet of yours is still found from that wallet's side."
+)
 PAGE = 50  # swaps per page, the most Midgard serves
 BUDGET = 10  # pages per address and protocol per sync
 
@@ -102,6 +107,13 @@ def _pages(client, url, address, offset, budget, protocol):
     return out, offset, False
 
 
+def notes(chains_of_wallet):
+    """What a wallet on these chains must know about its swaps."""
+    if os.environ.get("CT_SWAPS", "on") == "off":
+        return []
+    return [NOTE] + ([OWN_NODE] if node.MEMPOOL and "bitcoin" in chains_of_wallet else [])
+
+
 def unchecked(db):
     """Swap sources that did not answer at the last sync, as text for a verdict."""
     if os.environ.get("CT_SWAPS", "on") == "off":
@@ -117,6 +129,8 @@ def sync(db, client):
     if os.environ.get("CT_SWAPS", "on") == "off":
         return []
     mine = [r["address"] for r in db.execute("SELECT address FROM node WHERE mine")]
+    if node.MEMPOOL:  # Bitcoin addresses go to your own node and nowhere else
+        mine = [a for a in mine if database.chain_of(a) != "bitcoin"]
     failed = []
     for protocol, url in SOURCES.items():
         try:

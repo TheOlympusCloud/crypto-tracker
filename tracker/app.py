@@ -374,8 +374,10 @@ async def mempool_api(path: str, request: Request):
     """am-i-exposed's Bitcoin requests, passed on to the mempool of your own. While it is not
     ready they get the notice and a 503, never an answer from a public server: am-i-exposed
     then says the local mempool is unreachable and to wait for it to finish syncing."""
-    if path.startswith("v1/services"):
-        raise HTTPException(404)  # mempool's own web server would hand these to mempool.space
+    parts = path.split("/")
+    # mempool's own web server would hand v1/services to mempool.space; and no way out of /api/
+    if parts[:2] == ["v1", "services"] or {"", ".", ".."} & set(parts):
+        raise HTTPException(404)
     found = await run_in_threadpool(node.status)
     if found["state"] != "ready":
         return PlainTextResponse(node.notice(found), status_code=503)
