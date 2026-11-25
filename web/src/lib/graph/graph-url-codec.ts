@@ -1,0 +1,422 @@
+/**
+ * Binary encode/decode for sharing graph structures via URL hash.
+ *
+ * Version 3 format (all multi-byte integers are big-endian):
+ *
+ *   Header (5 bytes):
+ *     [0]     version       uint8  = 3
+ *     [1-2]   nodeCount     uint16
+ *     [3-4]   rootIndex     uint16
+ *
+ *   Multi-root section (variable):
+ *     [0-1]   multiRootCount uint16
+ *     [2..]   multiRootCount * uint16 indices
+ *
+ *   Network (1 byte): 0=mainnet, 1=testnet4, 2=signet (3 was the retired
+ *   testnet3 and now decodes as mainnet, like any unknown byte)
+ *
+ *   Node table (nodeCount * 38 bytes):
+ *     [0-31]  txid (32 raw bytes)
+ *     [32]    depth (int8)
+ *     [33]    flags (bit0=parentEdge, bit1=childEdge)
+ *     [34-35] edgeRef (uint16, 0xFFFF=none)
+ *     [36-37] edgeIndex (uint16)
+ *
+ *   v1/v2 (decode only): node records are 37 bytes with edgeIndex as uint8,
+ *   so they cannot address outputs/inputs above 255. v1 has no extensions.
+ *
+ *   Extensions (v2+):
+ *     Node positions: count(uint16) + entries(nodeIdx:uint16, x:float32, y:float32)
+ *     Node labels:    count(uint16) + entries(nodeIdx:uint16, len:uint8, utf8[len])
+ *     Annotations:    count(uint16) + entries(type:uint8, x:float32, y:float32,
+ *                     w:float32, h:float32, titleLen:uint8, utf8[titleLen])
+ */
+
+import type { BitcoinNetwork } from "@/lib/bitcoin/networks";
+import { bytesToHex, hexToBytes } from "@/lib/bitcoin/hex";
+import type { SavedGraph, SavedGraphNode, GraphAnnotation } from "./saved-graph-types";
+
+const MAX_URL_LENGTH = 6000;
+const NETWORK_MAP: BitcoinNetwork[] = ["mainnet", "testnet4", "signet"];
+const MAX_TITLE_BYTES = 60; // 20 chars * 3 bytes max for UTF-8
+const TXID_BYTES = 32;
+const NODE_RECORD_SIZE = 38; // 32 txid + 1 depth + 1 flags + 2 edgeRef + 2 edgeIndex
+const NODE_RECORD_SIZE_V2 = 37; // v1/v2: edgeIndex was uint8
+const NO_EDGE = 0xFFFF;
+
+// ─── Helpers ────────────────────────────────────────────────────────
+
+function toBase64Url(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function fromBase64Url(str: string): Uint8Array {
+  const padded = str.replace(/-/g, "+").replace(/_/g, "/");
+  const binary = atob(padded);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+function encodeUtf8(str: string): Uint8Array {
+  return new TextEncoder().encode(str);
+}
+
+function decodeUtf8(bytes: Uint8Array, offset: number, length: number): string {
+  return new TextDecoder().decode(bytes.slice(offset, offset + length));
+}
+
+const ANNOTATION_TYPE_MAP: GraphAnnotation["type"][] = ["note", "rect", "circle"];
+
+/** Write a capped UTF-8 label (uint8 length + bytes) into buf at offset. Returns new offset. */
+function writeLabelBytes(buf: Uint8Array, offset: number, bytes: Uint8Array): number {
+  const len = Math.min(bytes.length, MAX_TITLE_BYTES);
+  buf[offset++] = len;
+  buf.set(bytes.slice(0, MAX_TITLE_BYTES), offset);
+  return offset + len;
+}
+
+/** Read a uint8-length-prefixed UTF-8 label from buf at offset. Returns [text, newOffset]. */
+function readLabelBytes(buf: Uint8Array, offset: number): [string, number] {
+  const len = buf[offset++];
+  if (len === undefined || offset + len > buf.length) return ["", offset];
+  const text = decodeUtf8(buf, offset, len);
+  return [text, offset + len];
+}
+
+// ─── Encode ─────────────────────────────────────────────────────────
+
+export function encodeGraphToUrl(saved: SavedGraph): string | null {
+  const nodes = saved.nodes;
+  const nodeCount = nodes.length;
+  if (nodeCount === 0) return null;
+
+  const txidToIdx = new Map<string, number>();
+  for (const [i, node] of nodes.entries()) {
+    txidToIdx.set(node.txid, i);
+  }
+
+  const rootIndex = txidToIdx.get(saved.rootTxid) ?? 0;
+  const multiRoots = saved.rootTxids
+    .map((t) => txidToIdx.get(t))
+    .filter((i): i is number => i !== undefined);
+
+  // Collect position overrides
+  const posEntries: { idx: number; x: number; y: number }[] = [];
+  if (saved.nodePositions) {
+    for (const [txid, pos] of Object.entries(saved.nodePositions)) {
+      const idx = txidToIdx.get(txid);
+      if (idx !== undefined) posEntries.push({ idx, x: pos.x, y: pos.y });
+    }
+  }
+
+  // Collect node labels (title only, max 20 chars)
+  const nodeLabelEntries: { idx: number; bytes: Uint8Array }[] = [];
+  if (saved.nodeLabels) {
+    for (const [txid, label] of Object.entries(saved.nodeLabels)) {
+      const idx = txidToIdx.get(txid);
+      if (idx !== undefined && label) {
+        const truncated = label.slice(0, 20);
+        const bytes = encodeUtf8(truncated);
+        nodeLabelEntries.push({ idx, bytes });
+      }
+    }
+  }
+
+  // Collect annotation titles (max 20 chars each)
+  const annotEntries: { type: number; x: number; y: number; w: number; h: number; titleBytes: Uint8Array }[] = [];
+  if (saved.annotations) {
+    for (const a of saved.annotations) {
+      const typeIdx = ANNOTATION_TYPE_MAP.indexOf(a.type);
+      if (typeIdx < 0) continue;
+      const titleBytes = encodeUtf8((a.title || "").slice(0, 20));
+      annotEntries.push({
+        type: typeIdx,
+        x: a.x,
+        y: a.y,
+        w: a.width ?? (a.type === "circle" ? (a.radius ?? 50) : 180),
+        h: a.height ?? (a.type === "circle" ? (a.radius ?? 50) : 100),
+        titleBytes,
+      });
+    }
+  }
+
+  // Collect edge labels (keyed by "fromTxid->toTxid", max 20 chars)
+  const edgeLabelEntries: { fromIdx: number; toIdx: number; bytes: Uint8Array }[] = [];
+  if (saved.edgeLabels) {
+    for (const [key, label] of Object.entries(saved.edgeLabels)) {
+      const parts = key.split("->");
+      if (parts.length !== 2 || !label) continue;
+      const fromIdx = txidToIdx.get(parts[0]!);
+      const toIdx = txidToIdx.get(parts[1]!);
+      if (fromIdx === undefined || toIdx === undefined) continue;
+      edgeLabelEntries.push({ fromIdx, toIdx, bytes: encodeUtf8(label.slice(0, 20)) });
+    }
+  }
+
+  // Calculate buffer size
+  const headerSize = 5;
+  const multiRootSize = 2 + multiRoots.length * 2;
+  const networkSize = 1;
+  const nodeTableSize = nodeCount * NODE_RECORD_SIZE;
+  const posSize = 2 + posEntries.length * 10;
+  const nodeLabelSize = 2 + nodeLabelEntries.reduce((s, e) => s + 2 + 1 + e.bytes.length, 0);
+  const annotSize = 2 + annotEntries.reduce((s, e) => s + 1 + 16 + 1 + e.titleBytes.length, 0);
+  const edgeLabelSize = 2 + edgeLabelEntries.reduce((s, e) => s + 4 + 1 + e.bytes.length, 0);
+  const totalSize = headerSize + multiRootSize + networkSize + nodeTableSize + posSize + nodeLabelSize + annotSize + edgeLabelSize;
+
+  const buf = new Uint8Array(totalSize);
+  const view = new DataView(buf.buffer);
+  let offset = 0;
+
+  // Header (version 3)
+  buf[offset++] = 3;
+  view.setUint16(offset, nodeCount); offset += 2;
+  view.setUint16(offset, rootIndex); offset += 2;
+
+  // Multi-root
+  view.setUint16(offset, multiRoots.length); offset += 2;
+  for (const idx of multiRoots) {
+    view.setUint16(offset, idx); offset += 2;
+  }
+
+  // Network
+  buf[offset++] = Math.max(0, NETWORK_MAP.indexOf(saved.network));
+
+  // Node table
+  for (const node of nodes) {
+    let txidBytes: Uint8Array;
+    try { txidBytes = hexToBytes(node.txid); } catch { return null; }
+    if (txidBytes.length !== TXID_BYTES) return null;
+    // Edge indices are stored as uint16: a larger one cannot be shared by URL
+    const edgeIndex = node.parentEdge?.outputIndex ?? node.childEdge?.inputIndex ?? 0;
+    if (edgeIndex > 0xFFFF) return null;
+    buf.set(txidBytes, offset); offset += TXID_BYTES;
+    view.setInt8(offset, node.depth); offset += 1;
+
+    // One edge slot per record: flag only the edge actually written, or the
+    // decoder would rebuild a bogus childEdge from the parent's ref.
+    // Format limit: a node with both a parentEdge and a childEdge keeps only
+    // its parentEdge in a shared URL (the childEdge is dropped).
+    buf[offset++] = node.parentEdge ? 1 : node.childEdge ? 2 : 0;
+
+    if (node.parentEdge) {
+      const refIdx = txidToIdx.get(node.parentEdge.fromTxid) ?? NO_EDGE;
+      view.setUint16(offset, refIdx); offset += 2;
+      view.setUint16(offset, node.parentEdge.outputIndex); offset += 2;
+    } else if (node.childEdge) {
+      const refIdx = txidToIdx.get(node.childEdge.toTxid) ?? NO_EDGE;
+      view.setUint16(offset, refIdx); offset += 2;
+      view.setUint16(offset, node.childEdge.inputIndex); offset += 2;
+    } else {
+      view.setUint16(offset, NO_EDGE); offset += 2;
+      view.setUint16(offset, 0); offset += 2;
+    }
+  }
+
+  // ─── V2 Extensions ───────────────────────────────────────────
+
+  // Node positions
+  view.setUint16(offset, posEntries.length); offset += 2;
+  for (const e of posEntries) {
+    view.setUint16(offset, e.idx); offset += 2;
+    view.setFloat32(offset, e.x); offset += 4;
+    view.setFloat32(offset, e.y); offset += 4;
+  }
+
+  // Node labels
+  view.setUint16(offset, nodeLabelEntries.length); offset += 2;
+  for (const e of nodeLabelEntries) {
+    view.setUint16(offset, e.idx); offset += 2;
+    offset = writeLabelBytes(buf, offset, e.bytes);
+  }
+
+  // Annotations (titles only)
+  view.setUint16(offset, annotEntries.length); offset += 2;
+  for (const e of annotEntries) {
+    buf[offset++] = e.type;
+    view.setFloat32(offset, e.x); offset += 4;
+    view.setFloat32(offset, e.y); offset += 4;
+    view.setFloat32(offset, e.w); offset += 4;
+    view.setFloat32(offset, e.h); offset += 4;
+    offset = writeLabelBytes(buf, offset, e.titleBytes);
+  }
+
+  // Edge labels (fromIdx:uint16, toIdx:uint16, len:uint8, utf8[len])
+  view.setUint16(offset, edgeLabelEntries.length); offset += 2;
+  for (const e of edgeLabelEntries) {
+    view.setUint16(offset, e.fromIdx); offset += 2;
+    view.setUint16(offset, e.toIdx); offset += 2;
+    offset = writeLabelBytes(buf, offset, e.bytes);
+  }
+
+  const encoded = toBase64Url(buf.slice(0, offset));
+  if (encoded.length > MAX_URL_LENGTH) return null;
+  return encoded;
+}
+
+// ─── Decode ─────────────────────────────────────────────────────────
+
+export function decodeGraphFromUrl(
+  encoded: string,
+): Omit<SavedGraph, "id" | "name" | "savedAt"> | null {
+  try {
+    const buf = fromBase64Url(encoded);
+    const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+    let offset = 0;
+
+    const version = buf[offset++];
+    if (version !== 1 && version !== 2 && version !== 3) return null;
+    const recordSize = version === 3 ? NODE_RECORD_SIZE : NODE_RECORD_SIZE_V2;
+
+    const nodeCount = view.getUint16(offset); offset += 2;
+    const rootIndex = view.getUint16(offset); offset += 2;
+
+    // Multi-root
+    const multiRootCount = view.getUint16(offset); offset += 2;
+    const multiRootIndices: number[] = [];
+    for (let i = 0; i < multiRootCount; i++) {
+      multiRootIndices.push(view.getUint16(offset)); offset += 2;
+    }
+
+    // Network
+    const networkByte = view.getUint8(offset++);
+    const network: BitcoinNetwork = NETWORK_MAP[networkByte] ?? "mainnet";
+
+    // Node table
+    const txids: string[] = [];
+    const nodeStartOffset = offset;
+    for (let i = 0; i < nodeCount; i++) {
+      txids.push(bytesToHex(buf.subarray(offset, offset + TXID_BYTES)));
+      offset += recordSize;
+    }
+
+    offset = nodeStartOffset;
+    const nodes: SavedGraphNode[] = [];
+    for (const txid of txids) {
+      offset += TXID_BYTES;
+      const depth = view.getInt8(offset); offset += 1;
+      const flags = view.getUint8(offset++);
+      const edgeRefIdx = view.getUint16(offset); offset += 2;
+      let edgeIndex: number;
+      if (version === 3) { edgeIndex = view.getUint16(offset); offset += 2; }
+      else edgeIndex = view.getUint8(offset++);
+
+      const node: SavedGraphNode = { txid, depth };
+      // NO_EDGE (0xFFFF) is never a valid index since nodeCount <= 0xFFFF
+      const edgeTxid = txids[edgeRefIdx];
+      if ((flags & 1) && edgeTxid !== undefined) {
+        node.parentEdge = { fromTxid: edgeTxid, outputIndex: edgeIndex };
+      }
+      if ((flags & 2) && edgeTxid !== undefined) {
+        node.childEdge = { toTxid: edgeTxid, inputIndex: edgeIndex };
+      }
+      nodes.push(node);
+    }
+
+    const rootTxid = txids[rootIndex] ?? txids[0];
+    if (rootTxid === undefined) return null; // empty graph
+    const rootTxids = multiRootIndices.flatMap((i) => txids[i] ?? []);
+    if (rootTxids.length === 0) rootTxids.push(rootTxid);
+
+    // ─── V2 Extensions (optional) ──────────────────────────────
+
+    let nodePositions: Record<string, { x: number; y: number }> | undefined;
+    let nodeLabels: Record<string, string> | undefined;
+    let annotations: GraphAnnotation[] | undefined;
+
+    if (version >= 2 && offset < buf.length) {
+      // Node positions
+      const posCount = view.getUint16(offset); offset += 2;
+      if (posCount > 0) {
+        nodePositions = {};
+        for (let i = 0; i < posCount && offset + 10 <= buf.length; i++) {
+          const idx = view.getUint16(offset); offset += 2;
+          const x = view.getFloat32(offset); offset += 4;
+          const y = view.getFloat32(offset); offset += 4;
+          const txid = txids[idx];
+          if (txid !== undefined) nodePositions[txid] = { x, y };
+        }
+      }
+
+      // Node labels
+      if (offset + 2 <= buf.length) {
+        const labelCount = view.getUint16(offset); offset += 2;
+        if (labelCount > 0) {
+          nodeLabels = {};
+          for (let i = 0; i < labelCount && offset + 3 <= buf.length; i++) {
+            const idx = view.getUint16(offset); offset += 2;
+            const [text, nextOff] = readLabelBytes(buf, offset);
+            offset = nextOff;
+            const txid = txids[idx];
+            if (txid !== undefined) nodeLabels[txid] = text;
+          }
+        }
+      }
+
+      // Annotations
+      if (offset + 2 <= buf.length) {
+        const annotCount = view.getUint16(offset); offset += 2;
+        if (annotCount > 0) {
+          annotations = [];
+          for (let i = 0; i < annotCount && offset + 18 <= buf.length; i++) {
+            const typeIdx = view.getUint8(offset++);
+            const x = view.getFloat32(offset); offset += 4;
+            const y = view.getFloat32(offset); offset += 4;
+            const w = view.getFloat32(offset); offset += 4;
+            const h = view.getFloat32(offset); offset += 4;
+            const [title, nextOff] = readLabelBytes(buf, offset);
+            offset = nextOff;
+            const type = ANNOTATION_TYPE_MAP[typeIdx] ?? "note";
+            annotations.push({
+              id: crypto.randomUUID(),
+              type,
+              x, y,
+              title,
+              body: "", // body is not in URL, workspace only
+              width: type !== "circle" ? w : undefined,
+              height: type !== "circle" ? h : undefined,
+              radius: type === "circle" ? w : undefined,
+            });
+          }
+        }
+      }
+    }
+
+    // Edge labels
+    let edgeLabels: Record<string, string> | undefined;
+    if (version >= 2 && offset + 2 <= buf.length) {
+      const edgeLabelCount = view.getUint16(offset); offset += 2;
+      if (edgeLabelCount > 0) {
+        edgeLabels = {};
+        for (let i = 0; i < edgeLabelCount && offset + 5 <= buf.length; i++) {
+          const fromIdx = view.getUint16(offset); offset += 2;
+          const toIdx = view.getUint16(offset); offset += 2;
+          const [text, nextOff] = readLabelBytes(buf, offset);
+          offset = nextOff;
+          const fromTxid = txids[fromIdx];
+          const toTxid = txids[toIdx];
+          if (fromTxid !== undefined && toTxid !== undefined) {
+            edgeLabels[`${fromTxid}->${toTxid}`] = text;
+          }
+        }
+      }
+    }
+
+    return {
+      network, rootTxid, rootTxids, nodes,
+      nodePositions,
+      nodeLabels,
+      annotations,
+      edgeLabels,
+    };
+  } catch {
+    return null;
+  }
+}

@@ -1,0 +1,167 @@
+import { abortSignalAny, abortSignalTimeout } from "@/lib/abort-signal";
+import type { ChainalysisIdentification } from "./types";
+
+// Cloudflare Worker proxy - avoids CORS and keeps API key server-side.
+// Deploy from workers/chainalysis-proxy/ with `wrangler deploy`.
+// Falls back to direct API call (works in non-browser environments).
+const PROXY_BASE =
+  process.env.NEXT_PUBLIC_CHAINALYSIS_PROXY_URL ||
+  "https://chainalysis-proxy.copexit.workers.dev/address";
+
+// Local Tor proxy route (Umbrel mode - routes through Tor SOCKS5)
+const TOR_PROXY_BASE = "/tor-proxy/chainalysis/address";
+
+import { ADDR_RE } from "@/lib/constants";
+
+const MAX_ADDRESSES = 20;
+const TOR_TIMEOUT_MS = 30_000;
+
+function assertAddress(addr: string): void {
+  if (!ADDR_RE.test(addr)) throw new Error("Invalid address format");
+}
+
+/**
+ * The proxy's per-IP quota (30 req/min) is exhausted. On Tor the quota is
+ * shared with everyone on the same exit node, so this is not a local fault.
+ */
+export class ChainalysisRateLimitError extends Error {
+  constructor() {
+    super("Chainalysis proxy rate limit reached");
+    this.name = "ChainalysisRateLimitError";
+  }
+}
+
+/**
+ * Chainalysis answered but gave no screening result (its API returns service
+ * errors with HTTP 200 and no `identifications`). Never read as "not sanctioned".
+ */
+export class ChainalysisServiceError extends Error {
+  constructor() {
+    super("Chainalysis service returned no screening result");
+    this.name = "ChainalysisServiceError";
+  }
+}
+
+/**
+ * Per-session results by address (memory only, never persisted). Re-checks
+ * and retries after a 429 do not spend the proxy's per-IP quota again.
+ */
+const sessionResults = new Map<string, { sanctioned: boolean; identifications: ChainalysisIdentification[] }>();
+
+interface ChainalysisResponse {
+  identifications: ChainalysisIdentification[];
+}
+
+export type ChainalysisRoute = "tor-proxy" | "direct";
+
+export interface ChainalysisRoutingResult {
+  route: ChainalysisRoute;
+  sanctioned: boolean;
+  identifications: ChainalysisIdentification[];
+  matchedAddresses: string[];
+}
+
+async function checkSingleAddress(
+  address: string,
+  baseUrl: string,
+  signal?: AbortSignal,
+  timeoutMs?: number,
+): Promise<{ sanctioned: boolean; identifications: ChainalysisIdentification[] }> {
+  assertAddress(address);
+
+  const signals: AbortSignal[] = [];
+  if (signal) signals.push(signal);
+  if (timeoutMs) signals.push(abortSignalTimeout(timeoutMs));
+
+  const combinedSignal =
+    signals.length > 0 ? abortSignalAny(signals) : undefined;
+
+  const res = await fetch(`${baseUrl}/${address}`, {
+    headers: { Accept: "application/json" },
+    signal: combinedSignal,
+  });
+
+  if (res.status === 429) throw new ChainalysisRateLimitError();
+  if (!res.ok) {
+    throw new Error(`Chainalysis proxy returned ${res.status}`);
+  }
+
+  const data = (await res.json().catch(() => null)) as Partial<ChainalysisResponse> | null;
+  if (!data || !Array.isArray(data.identifications)) throw new ChainalysisServiceError();
+  return {
+    sanctioned: data.identifications.length > 0,
+    identifications: data.identifications,
+  };
+}
+
+async function checkAddresses(
+  addresses: string[],
+  baseUrl: string,
+  signal?: AbortSignal,
+  timeoutMs?: number,
+): Promise<{
+  sanctioned: boolean;
+  identifications: ChainalysisIdentification[];
+  matchedAddresses: string[];
+}> {
+  const toCheck = [...new Set(addresses)].slice(0, MAX_ADDRESSES);
+  const allIdentifications: ChainalysisIdentification[] = [];
+  const matchedAddresses: string[] = [];
+
+  let fetched = 0;
+  for (const address of toCheck) {
+    signal?.throwIfAborted();
+    let result = sessionResults.get(address);
+    if (!result) {
+      // Small delay between requests to avoid rate limiting
+      if (fetched++ > 0) await new Promise((r) => setTimeout(r, 100));
+      result = await checkSingleAddress(address, baseUrl, signal, timeoutMs);
+      sessionResults.set(address, result);
+    }
+    if (result.sanctioned) {
+      matchedAddresses.push(address);
+      allIdentifications.push(...result.identifications);
+    }
+  }
+
+  return {
+    sanctioned: matchedAddresses.length > 0,
+    identifications: allIdentifications,
+    matchedAddresses,
+  };
+}
+
+/** Route through the local Tor proxy sidecar (Umbrel mode). */
+export async function checkChainalysisViaTor(
+  addresses: string[],
+  signal?: AbortSignal,
+): Promise<ChainalysisRoutingResult> {
+  const result = await checkAddresses(
+    addresses,
+    TOR_PROXY_BASE,
+    signal,
+    TOR_TIMEOUT_MS,
+  );
+  return { route: "tor-proxy", ...result };
+}
+
+/** Direct check via Cloudflare Worker (clearnet). */
+export async function checkChainalysisDirect(
+  addresses: string[],
+  signal?: AbortSignal,
+): Promise<ChainalysisRoutingResult> {
+  const result = await checkAddresses(addresses, PROXY_BASE, signal);
+  return { route: "direct", ...result };
+}
+
+/** Original API - uses direct Cloudflare Worker route. */
+export async function checkChainalysis(
+  addresses: string[],
+  signal?: AbortSignal,
+): Promise<{
+  sanctioned: boolean;
+  identifications: ChainalysisIdentification[];
+  matchedAddresses: string[];
+}> {
+  return checkAddresses(addresses, PROXY_BASE, signal);
+}

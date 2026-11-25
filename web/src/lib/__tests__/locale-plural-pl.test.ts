@@ -1,0 +1,27 @@
+import { describe, it, expect } from "vitest";
+import i18next from "i18next";
+import pl from "../../../public/locales/pl/common.json";
+
+describe("Polish plural forms", () => {
+  it("resolves the singular, _few and _many forms for integer counts", async () => {
+    const i18n = i18next.createInstance();
+    await i18n.init({ lng: "pl", resources: { pl: { translation: pl } }, keySeparator: false, nsSeparator: false });
+    const title = (count: number) => i18n.t("finding.entity-ofac-match.title", { count });
+    expect(title(1)).toBe("Wykryto adres objęty sankcjami OFAC");
+    expect(title(2)).toBe("Wykryto 2 adresy objęte sankcjami OFAC");
+    expect(title(5)).toBe("Wykryto 5 adresów objętych sankcjami OFAC");
+    expect(title(22)).toBe("Wykryto 22 adresy objęte sankcjami OFAC");
+    expect(i18n.t("cex.addressCount", { count: 12 })).toBe("12 adresów");
+    expect(i18n.t("local.lookupParents", { count: 1 })).toBe("1 transakcję nadrzędną");
+    expect(i18n.t("local.lookupParents", { count: 3 })).toBe("3 transakcje nadrzędne");
+    expect(i18n.t("local.lookupParents", { count: 5 })).toBe("5 transakcji nadrzędnych");
+    expect(i18n.t("local.lookupAddresses", { count: 22 })).toBe("22 adresy");
+    expect(i18n.t("services.outOf", { count: 1 })).toBe("1 moneta wyszła z zarejestrowanych CoinJoinów");
+    expect(i18n.t("services.outOf", { count: 3 })).toBe("3 monety wyszły z zarejestrowanych CoinJoinów");
+    expect(i18n.t("services.outOf", { count: 5 })).toBe("5 monet wyszło z zarejestrowanych CoinJoinów");
+    const merge = (count: number) => i18n.t("finding.wallet-change-merge.title", { count });
+    expect(merge(1)).toBe("1 wydatek połączył resztę z innymi monetami");
+    expect(merge(3)).toBe("3 wydatki połączyły resztę z innymi monetami");
+    expect(merge(5)).toBe("5 wydatków połączyło resztę z innymi monetami");
+  });
+});

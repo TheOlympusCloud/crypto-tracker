@@ -1,0 +1,101 @@
+"use client";
+
+import { useState, useRef, useEffect } from "react";
+import { Copy, Check } from "lucide-react";
+import { useTranslation } from "react-i18next";
+import { copyToClipboard } from "@/lib/clipboard";
+import { ACTION_BTN_CLASS } from "@/lib/constants";
+import type { Grade } from "@/lib/types";
+import { useNetwork } from "@/context/NetworkContext";
+import { shareUrl as buildShareUrl } from "@/lib/share-url";
+
+interface ShareButtonsProps {
+  grade: Grade;
+  score: number;
+  query: string;
+  inputType: "txid" | "address";
+  findingCount: number;
+}
+
+
+function getShareText(
+  grade: Grade,
+  score: number,
+  findingCount: number,
+  t: (key: string, opts: { defaultValue: string; grade?: string; score?: number; count?: number }) => string,
+): string {
+  if (score < 25) {
+    return t("share.textBad", {
+      defaultValue: "Privacy score: {{grade}} ({{score}}/100) - {{count}} issues found. Address reuse, no coin control, zero privacy hygiene. This is what chain analysis firms love to see.",
+      grade, score, count: findingCount,
+    });
+  } else if (score < 50) {
+    return t("share.textMedium", {
+      defaultValue: "Privacy score: {{grade}} ({{score}}/100) - {{count}} issues. Some effort, but chain analysis can still connect the dots. Bitcoin privacy is hard.",
+      grade, score, count: findingCount,
+    });
+  } else {
+    return t("share.textGood", {
+      defaultValue: "Privacy score: {{grade}} ({{score}}/100) - solid privacy practices. This is how it should be done. {{count}} heuristics checked.",
+      grade, score, count: findingCount,
+    });
+  }
+}
+
+const btnClass = ACTION_BTN_CLASS;
+
+export function ShareButtons({
+  grade,
+  score,
+  query,
+  inputType,
+  findingCount,
+}: ShareButtonsProps) {
+  const { t } = useTranslation();
+  const [linkCopied, setLinkCopied] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  useEffect(() => () => clearTimeout(timerRef.current), []);
+
+  const { network } = useNetwork();
+  const shareUrl = buildShareUrl(query, inputType, network);
+  const shareText = getShareText(grade, score, findingCount, t);
+
+  const handleTwitterShare = () => {
+    const fullText = `${shareText}\n\n${shareUrl}`;
+    const url = `https://x.com/intent/tweet?text=${encodeURIComponent(fullText)}`;
+    window.open(url, "_blank", "noopener,noreferrer,width=600,height=400");
+  };
+
+  const handleCopyLink = async () => {
+    const ok = await copyToClipboard(shareUrl);
+    if (ok) {
+      setLinkCopied(true);
+      clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => setLinkCopied(false), 2000);
+    }
+  };
+
+  return (
+    <>
+      <button onClick={handleTwitterShare} className={btnClass} aria-label={t("share.twitter", { defaultValue: "Share" })}>
+        <svg
+          viewBox="0 0 24 24"
+          className="w-4 h-4 fill-current"
+          aria-hidden="true"
+        >
+          <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
+        </svg>
+        <span className="hidden sm:inline">{t("share.twitter", { defaultValue: "Share" })}</span>
+      </button>
+
+      <button onClick={handleCopyLink} className={btnClass} aria-label={t("share.copyLink", { defaultValue: "Copy link" })}>
+        {linkCopied ? <Check size={14} /> : <Copy size={14} />}
+        <span className="hidden sm:inline">
+          {linkCopied
+            ? t("share.copied", { defaultValue: "Copied" })
+            : t("share.copyLink", { defaultValue: "Copy link" })}
+        </span>
+      </button>
+    </>
+  );
+}

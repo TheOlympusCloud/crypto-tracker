@@ -1,0 +1,2163 @@
+# Privacy Engine - Technical Reference
+
+## Overview
+
+This document describes the privacy analysis engine behind **am-i.exposed**, an open-source, client-side Bitcoin privacy scanner. It is intended for cypherpunks, privacy researchers, wallet developers, and anyone who wants to understand exactly how their Bitcoin transactions are being analyzed - by this tool, and by adversaries.
+
+The engine implements 28 transaction-level heuristics, 6 address-level heuristics, 5 wallet-level heuristics, and 12 chain analysis modules that evaluate the on-chain privacy of Bitcoin addresses and transactions. These are the same techniques - sometimes simplified, sometimes extended - that chain surveillance firms use to cluster addresses, trace fund flows, and deanonymize users.
+
+**Why this tool exists now.** In April 2024, OXT.me and KYCP.org ("Know Your Coin Privacy") went offline following the arrest of the Samourai Wallet developers. OXT.me was the gold standard for Boltzmann entropy analysis of Bitcoin transactions, created by LaurentMT as part of OXT Research. KYCP.org provided CoinJoin analysis and entropy calculations accessible to ordinary users. Both are gone. As of today, there is no publicly available tool that combines Boltzmann entropy estimation, wallet fingerprinting detection, and multi-transaction graph analysis in a single interface. am-i.exposed fills that gap.
+
+Everything runs client-side. No server ever sees your query and your results together. Nothing is sent unless you choose to broadcast; broadcasting sends only the signed transaction to the endpoint shown. The code is open source. Verify, don't trust.
+
+---
+
+## Threat Model
+
+### Adversaries
+
+**Chain surveillance firms** - Chainalysis, Elliptic, CipherTrace (now Mastercard), Crystal Blockchain, Scorechain, and others. These companies operate full-node infrastructure, run proprietary clustering algorithms at scale, and sell deanonymization services to law enforcement, exchanges, and financial institutions. They maintain databases mapping address clusters to real-world identities. Their heuristics are more sophisticated than those implemented here - they have access to off-chain data, proprietary intelligence feeds, and years of accumulated cluster data - but the on-chain heuristics they rely on are the same ones documented here.
+
+**Exchanges with KYC requirements** - Any exchange that collects identity documents can link deposit and withdrawal addresses to your government ID. When combined with chain analysis, this creates an anchor point from which all connected transactions can be traced. Even if you acquire bitcoin through non-KYC means, sending to or receiving from a KYC-linked address can compromise your privacy.
+
+**Blockchain explorers logging IP-to-query correlations** - Services like blockchain.com, blockchair.com, and even mempool.space log queries. If you search for your own address from your home IP, you have created a correlation between your IP address and your Bitcoin address. This is a metadata leak that exists entirely outside the blockchain itself. The explorer operator, anyone with access to their logs, and any network-level observer between you and the server can see which addresses you are interested in.
+
+### What adversaries are trying to do
+
+1. **Cluster addresses** - Group addresses controlled by the same entity. The Common Input Ownership Heuristic (H3) is the primary tool, but change detection (H2), address reuse (H8), and dust attacks (H9/H12) all contribute.
+
+2. **Link identities** - Connect address clusters to real-world identities. This requires at least one "anchor point" - a KYC exchange deposit, a merchant payment, a donation page, a forum post containing an address.
+
+3. **Trace fund flows** - Follow the movement of bitcoin from source to destination, even across multiple hops. Change detection, CIOH, and temporal analysis enable this.
+
+4. **Assess privacy tool usage** - Determine whether a user has employed CoinJoins, PayJoins, or other privacy-enhancing techniques, and attempt to undo the privacy gains through post-mix analysis.
+
+5. **Profile behavior** - Identify spending patterns, transaction timing, wallet software, and financial activity that can be correlated with other data sources.
+
+---
+
+## Heuristics
+
+Each heuristic is described with its technical mechanism, privacy implications, detection method, scoring impact, and relevant references. Scoring impacts are applied as modifiers to a base score of 70.
+
+---
+
+### H1: Round Amount Detection
+
+**Technical description**
+
+A transaction output is flagged as a "round amount" if its value matches common round BTC denominations or round satoshi values. The tool checks for:
+
+- Round BTC values: 0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0 BTC
+- Round satoshi multiples: 10,000, 100,000, 1,000,000, 10,000,000 sats (values below 10,000 sats are excluded as too common to be meaningful)
+- Any output value where `value % multiple == 0` for the above multiples
+
+The check is performed against all transaction outputs.
+
+**Why it matters for privacy**
+
+When a user sends a payment, they typically choose a round amount - "send 0.1 BTC" or "send $500 worth." The change output, by contrast, is whatever is left over after subtracting the payment and the fee. Change is almost never round.
+
+This means that if a transaction has two outputs and one is a round amount, an observer can confidently identify which output is the payment and which is the change. This breaks the ambiguity that protects the sender's privacy, because the change output goes back to the sender's wallet and can be traced forward through subsequent spending.
+
+**How it is detected**
+
+```
+For each output in the transaction:
+  value_btc = output.value / 100_000_000
+  if value_btc matches known round BTC denominations OR
+     output.value matches known round sat amounts OR
+     output.value % 10000 == 0:
+    flag as round amount
+```
+
+Only exact round amounts are detected. "Nearly round" amounts (e.g., a "send max" producing slightly less than 0.1 BTC) are not currently flagged to avoid false positives.
+
+**Scoring impact:** -8 to -20
+
+- 1 round output: -8
+- 2 round outputs: -16
+- 3+ round outputs: -20 (capped)
+
+The formula is `Math.min(roundOutputCount * 8, 20)`.
+
+When the historical price is known, outputs that are round in USD or EUR (within 0.5%, or 1% on self-hosted backends) are flagged the same way (`h1-round-usd-amount`, `h1-round-eur-amount`). An output that is already a round BTC amount is not counted again in fiat, and fiat findings fire only when some but not all outputs are fiat-round (USD and EUR matches combined).
+
+**References**
+- Meiklejohn et al., "A Fistful of Bitcoins: Characterizing Payments Among Men with No Names" (2013) - identifies round amounts as a payment indicator
+- Nick, "Data-Driven De-Anonymization in Bitcoin" (2015)
+
+---
+
+### H2: Change Detection
+
+**Technical description**
+
+Change detection attempts to identify which output in a transaction returns funds to the sender. This is one of the most consequential heuristics because correctly identifying change allows an adversary to follow the money through multiple hops. Two sub-heuristics are implemented, with two more planned:
+
+**Sub-heuristic 2a: Address type mismatch**
+
+If all inputs are spent from one address type (e.g., P2WPKH / bc1q) and one output matches that type while another does not, the matching output is likely change. Wallets typically generate change addresses of the same type as their receiving addresses.
+
+```
+input_types = set of address types across all inputs
+for each output:
+  if output.address_type in input_types:
+    candidate_change.add(output)
+  else:
+    candidate_payment.add(output)
+```
+
+**Sub-heuristic 2b: Round payment amount leaves non-round change**
+
+If one output is a round amount and the other is not, the non-round output is likely change. This overlaps with H1 but is scored here in the context of change identification specifically.
+
+**Sub-heuristic 2c: Unnecessary input (optimal change) heuristic**
+
+Wallets do not add inputs they do not need. If output X were the change, the other output (the payment) plus fee must have required every input - otherwise the smallest input was unnecessary. Since `sum(inputs) = payment + change + fee`, this holds only when the change is smaller than the smallest input. When exactly one output is smaller than the smallest input, that output is the change (Bitcoin Wiki "Privacy", unnecessary input heuristic; Kalodner et al., BlockSci 2017, "optimal change"). Example: inputs 2 + 3 BTC, outputs 4 + 1 BTC - the 1 BTC output is change.
+
+```
+smallest_input = min(input.value for input in tx.inputs)  // skip if any prevout is missing
+candidates = [o for o in outputs if o.value < smallest_input]
+if len(candidates) == 1 and candidates[0].value >= 0.1 * smallest_input:
+  // candidates[0] is change. Below 10% of the smallest input the
+  // shadow-change signal already votes for it, so it is not counted twice.
+```
+
+**Sub-heuristic 2d: Value disparity**
+
+In a 2-output transaction, if one output is 100x or more larger than the other, the larger output is likely change (payments are typically smaller than the sender's total holdings). This complements round-amount detection and catches cases where neither output is round but the magnitude difference is telling.
+
+```
+ratio = max(output[0].value, output[1].value) / min(output[0].value, output[1].value)
+if ratio >= 100:
+  // The larger output is likely change; the smaller is likely payment.
+```
+
+**Sub-heuristic 2e: Output ordering** *(not yet implemented)*
+
+Some wallet software consistently places the change output in a specific position. Historically, many wallets placed change last (index 1 in a 2-output transaction). BIP69-compliant wallets sort outputs lexicographically, which randomizes position based on value and script. Bitcoin Core randomizes output order. A wallet that always puts change at the same index leaks information.
+
+**Why it matters for privacy**
+
+Change detection is the backbone of transaction tracing. If an adversary can identify which output is change, they know which output returns to the sender's wallet. They can then follow that change output into subsequent transactions, building a chain of custody. Break change detection, and you break most tracing.
+
+**Scoring impact:** 0 to -25
+
+- Self-send detected (all outputs return to sender): -25; consolidation to input address: -15; partial self-send: -20
+- Medium confidence change detection (one sub-heuristic matches clearly): -10
+- Low confidence: -5
+- Wallet hop (address type upgrade): 0
+- Sweep (`h2-sweep`, exactly 1 input and 1 output, spending one UTXO in full to a different address): 0, informational. The lone output must be addressed: a 1-in/1-out payment to a bare P2PK or other address-less script is not reported as a sweep, and a 1-in/1-out spend back to the input address is left to the self-send checks.
+
+**References**
+- Meiklejohn et al., "A Fistful of Bitcoins: Characterizing Payments Among Men with No Names" (2013) - foundational change detection heuristics
+- Bitcoin Wiki, "Privacy" - change avoidance section
+
+---
+
+### H3: Common Input Ownership Heuristic (CIOH)
+
+**Technical description**
+
+If a transaction spends multiple inputs, all of those inputs are assumed to be controlled by the same entity. This is the foundational clustering heuristic - the single most powerful tool in the chain surveillance arsenal. It works because constructing a valid Bitcoin transaction requires signatures from the private keys controlling each input. Under normal circumstances, only the wallet owner has access to all of those keys.
+
+```
+if len(tx.inputs) > 1:
+  cluster = set()
+  for input in tx.inputs:
+    cluster.add(input.address)
+  // All addresses in 'cluster' are now assumed to belong to the same entity
+```
+
+This heuristic is applied transitively. If address A appears in a multi-input transaction with address B, and address B appears in a different multi-input transaction with address C, then A, B, and C are all clustered together. Surveillance firms build massive cluster databases this way, containing millions of addresses per cluster for large services like exchanges.
+
+**Critical exceptions where CIOH does not hold:**
+
+- **CoinJoin transactions** - Multiple users contribute inputs to a single transaction. CIOH is deliberately broken. This is the entire point of CoinJoin.
+- **PayJoin (P2EP / BIP78)** - The sender and the recipient both contribute inputs. CIOH is deliberately violated to poison the heuristic.
+- **Dual-funded Lightning channel opens** - Two parties contribute inputs to open a channel cooperatively.
+- **Batched payments by exchanges** - Some exchanges batch many customer withdrawals into one transaction. The inputs come from exchange hot wallets, not individual users.
+
+**Why it matters for privacy**
+
+CIOH alone enables the majority of address clustering. A single multi-input transaction can link dozens of addresses to the same entity. Combined with a single KYC anchor point, an entire wallet's history can be deanonymized. Users who consolidate UTXOs are especially vulnerable - they are voluntarily linking all of their addresses in a single transaction.
+
+**Scoring impact:** -3 to -45
+
+- Single-input transaction: 0 (no CIOH exposure)
+- 2-4 unique input addresses: -3 per address (up to -12)
+- 5-9 unique input addresses: -15
+- 10-19 unique input addresses: -25
+- 20-49 unique input addresses: -35
+- 50+ unique input addresses: -45
+- Exception: CoinJoin pattern detected (H4): 0 (suppressed)
+- Reuse among inputs: when one of the clustered addresses funds 2+ inputs received in separate transactions (consolidation `40b88e16...` spends two UTXOs of `18m5f3qt...`), `h3-cioh` reports it (`reusedCount`, "N reused" in the title). It is not scored separately: CIOH already links those inputs, so the reuse adds no link inside the transaction. When every input comes from one address, `h3-input-reuse` applies instead (-20, or -30 for 5+ receives).
+
+**References**
+- Nakamoto, "Bitcoin: A Peer-to-Peer Electronic Cash System" (2008), Section 10 - "Some linking is still unavoidable with multi-input transactions, which necessarily reveal that their inputs were owned by the same owner."
+- Meiklejohn et al., "A Fistful of Bitcoins: Characterizing Payments Among Men with No Names" (2013) - formalizes and applies CIOH at scale
+- Ron and Shamir, "Quantitative Analysis of the Full Bitcoin Transaction Graph" (2013)
+
+---
+
+### H4: CoinJoin Detection
+
+**Technical description**
+
+CoinJoin is a collaborative transaction protocol where multiple users combine their inputs and outputs into a single transaction. When done correctly, an observer cannot determine which inputs funded which outputs. CoinJoin is the single most effective on-chain privacy technique available today.
+
+The major CoinJoin implementations are detected:
+
+**Whirlpool (Samourai / Sparrow)**
+
+- 5 to 10 spendable outputs at known denominations (classic: 5, post-Sparrow 1.7.6: 8 or 9). Input count is not constrained.
+- 5 or more outputs have equal value at a known denomination, with at most 1 non-matching output
+- Standard pool denominations: 50,000 sats (0.0005 BTC), 100,000 sats (0.001 BTC), 1,000,000 sats (0.01 BTC), 5,000,000 sats (0.05 BTC), 50,000,000 sats (0.5 BTC)
+- No toxic change in the CoinJoin transaction itself (change is handled in a separate TX0 premix transaction)
+
+```
+spendable = [o for o in tx.outputs if not o.is_op_return]
+if 5 <= len(spendable) <= 10:
+  for denom in WHIRLPOOL_DENOMINATIONS:
+    match_count = sum(1 for o in spendable if o.value == denom)
+    if match_count >= 5 and len(spendable) - match_count <= 1:
+      flag as Whirlpool CoinJoin
+```
+
+**Wasabi Wallet 2.x (WabiSabi)** - `src/lib/analysis/heuristics/wabisabi.ts`, `classifyWabiSabi`
+
+One classifier feeds every consumer: the H4 finding (`isWabiSabi: 1`), the CoinJoin suppressions and wallet inference, the `wabisabi-coinjoin` tx type, `isCoinJoinTx`, and Boltzmann's tier-decomposed routing (`detectWabiSabiForTurbo`, rounds of 10+ inputs and 10+ outputs; smaller rounds use the exact engine). A transaction is labelled WabiSabi only when it has the structure the coordinator builds, which follows from the WalletWasabi source:
+
+- **Standard denominations.** `DenominationBuilder.CreateDenominationAmounts` builds the set from six series: 2^n, 3^n, 2*3^n, 10^n, 2*10^n, 5*10^n sats, kept between the round's minimum and maximum output amounts (default `MinRegistrableAmount` 5,000 sats, `MaxRegistrableAmount` 43,000 BTC: 93 values). Denomination outputs carry the exact amount (`Output.FromDenomination`); the mining fee is paid on top. The set is unchanged since v2.0.0.0 (then `AmountDecomposer.CreateDenominationsPlusFees`, refactored in PR #13326, 2024) and identical in the Ginger Wallet fork. Trezor Suite (2022-2024) decomposed through the WalletWasabi middleware and the BTCPay plugin embeds WalletWasabi, so they use the same set. Coordinators may lower the minimum: coinjoin.nl rounds carry 2,187 (3^7) and 4,374 (2*3^7) sat outputs, so the detector accepts denominations from 1,000 sats.
+- **Change and other outputs.** The decomposer prefers changeless decompositions; otherwise a participant gets at most one change output (`CreateNaiveDecomposition` / `CreatePreDecompositions`). The coordinator adds one output for the coordination fee (zkSNACKs: 0.3%, free below 0.01 BTC and for remixes) or, since the fee rate concept was removed (PR #13297, August 2024), for leftovers participants could not decompose (optionally trimmed to a denomination, PR #14881). Payments in a round are arbitrary amounts. In 130 real rounds the lowest share of standard-denomination outputs was 71%.
+- **Ordering and scripts.** `SigningState.SortedInputs` orders inputs by amount descending; `SortedOutputs` merges outputs per scriptPubKey and orders them by value descending. So both lists are descending and no two outputs share a script.
+- **Transaction fields.** `RoundParameters.CreateTransaction` uses NBitcoin defaults: every nSequence final (0xffffffff, no RBF) and nLockTime 0.
+- **Script types.** Inputs may only be P2WPKH or P2TR (`AllowP2wpkhInputs` / `AllowP2trInputs`); clients decompose into P2WPKH / P2TR outputs (a coordinator may accept other output types for payments).
+
+Rules (all must hold):
+
+```
+structure:  5+ inputs and 5+ outputs; every input a P2WPKH/P2TR prevout (no coinbase)
+            every nSequence == 0xffffffff and nLockTime == 0; no OP_RETURN / zero-value output
+            input values and output values both in descending order
+            no two outputs to the same scriptPubKey; standard outputs paid to P2WPKH/P2TR
+evidence:   >= 60% of outputs at an exact standard denomination
+            >= 2 distinct standard denominations
+            >= 2 outputs at a non-decimal denomination (2^n, 3^n, 2*3^n)
+confidence: high with 20+ inputs and 3+ distinct non-decimal denominations, else medium
+```
+
+The non-decimal requirement is what separates WabiSabi from lookalikes: exchange withdrawals, payroll and Whirlpool pools use round decimal amounts (100,000, 1,000,000, 5,000,000 sats are also WabiSabi denominations), but nobody else pays 8,388,608 or 4,782,969 sats. The structural rules reject the remaining lookalikes (Wasabi 1.x rounds and batches are not value-sorted; RBF-signalling and address-reusing "standard denomination" transactions fail the sequence and script rules).
+
+A transaction with 5+ equal outputs that fails these rules is still reported as a generic CoinJoin (`isWabiSabi: 0`); one without 5+ equal outputs gets no CoinJoin finding (the older ">= 10 inputs, >= 10 outputs, 3+ repeated values" path labelled exchange batches WabiSabi and is gone).
+
+Evaluation (`__tests__/fixtures/wabisabi-corpus.json`, asserted by `__tests__/wabisabi.test.ts`, plus the repo fixtures and golden corpus): 130 real rounds (zkSNACKs 2023-2024, and kruw, opencoordinator.org/.to, gingerwallet, coinjoin.nl, coinjoiner and smaller 2024 coordinators up to 2026) and 238 negatives (Whirlpool, JoinMarket, Wasabi 1.x rounds, exchange batches, Stonewall, dust, the crocs-muni list of Dumplings false positives, golden corpus). Precision 100% (0 false positives); recall 95.4% (124/130). That recall includes 49 remix ancestors of `fb596c9f...` that are labelled structurally (they are the inputs' parent rounds, not independently attributed); on the 81 independently labelled rounds (LiquiSabi coordinator lists, crocs-muni coordinator labels, Dumplings fixtures, the repo example) recall is 92.6% (75/81), and all 6 misses are in that subset. The thresholds (60% standard outputs, 2 tiers, 2 non-decimal outputs, 5x5 minimum) were chosen on this same corpus, with no held-out split, so these figures are in-sample. The 6 missed rounds are tiny: one 2-input round, and five rounds of 7-9 inputs whose outputs are all one decimal denomination, which is indistinguishable from an equal-output mix and stays generic. The previous rule (10+ inputs and outputs, 3+ repeated values) had precision 95% / recall 87.7% for the finding, and its Boltzmann routing had precision 52% (it tier-decomposed every Wasabi 1.x round).
+
+Sources: WalletWasabi [`DenominationBuilder.cs`](https://github.com/WalletWasabi/WalletWasabi/blob/master/WalletWasabi/WabiSabi/Client/CoinJoin/Client/Decomposer/DenominationBuilder.cs), [`AmountDecomposer.cs`](https://github.com/WalletWasabi/WalletWasabi/blob/master/WalletWasabi/WabiSabi/Client/CoinJoin/Client/Decomposer/AmountDecomposer.cs), [`Output.cs`](https://github.com/WalletWasabi/WalletWasabi/blob/master/WalletWasabi/WabiSabi/Client/CoinJoin/Client/Decomposer/Output.cs), [`SigningState.cs`](https://github.com/WalletWasabi/WalletWasabi/blob/master/WalletWasabi/WabiSabi/Models/MultipartyTransaction/SigningState.cs), [`WabiSabiConfig.cs`](https://github.com/WalletWasabi/WalletWasabi/blob/master/WalletWasabi/WabiSabi/Coordinator/WabiSabiConfig.cs), [v2.0.0.0 `AmountDecomposer.cs`](https://github.com/WalletWasabi/WalletWasabi/blob/v2.0.0.0/WalletWasabi/WabiSabi/Client/AmountDecomposer.cs), PRs [#13297](https://github.com/WalletWasabi/WalletWasabi/pull/13297) and [#14881](https://github.com/WalletWasabi/WalletWasabi/pull/14881); Ginger Wallet [`DenominationBuilder.cs`](https://github.com/GingerPrivacy/GingerWallet/blob/master/WalletWasabi/WabiSabi/Client/CoinJoin/Client/Decomposer/DenominationBuilder.cs); Trezor Suite [`outputDecomposition.ts`](https://github.com/trezor/trezor-suite/blob/develop/packages/coinjoin/src/client/round/outputDecomposition.ts); prior art: Dumplings [`Scanner.cs`](https://github.com/nopara73/Dumplings/blob/master/Dumplings/Scanning/Scanner.cs) (same denominations and ordering, 50+ inputs, > 80% standard outputs). Corpus labels: [LiquiSabi](https://liquisabi.com) round list, [crocs-muni/coinjoin-analysis](https://github.com/crocs-muni/coinjoin-analysis) `data/wasabi2` (coordinator labels and false positives) and its Dumplings fixtures, mempool.space.
+
+**JoinMarket**
+
+- Maker/taker model: one taker initiates the CoinJoin, multiple makers provide liquidity
+- Unequal inputs (different makers have different UTXOs)
+- Equal outputs for the CoinJoin amount, plus change outputs for makers
+- Fewer participants than Wasabi, but higher flexibility in amounts
+- Identifiable by the characteristic pattern of equal-value outputs mixed with varied change outputs
+- Participant arithmetic (`fitsJoinMarketParticipants`, both JoinMarket paths and `isCoinJoinTx`): each participant funds exactly one equal output from its own inputs and takes at most one change, so n equal outputs need n <= distinct input addresses and at most 2n outputs (OP_RETURN and outputs paying back to an input address are not counted). A JoinMarket shape that breaks this is not a CoinJoin at all, so the single-wallet findings (CIOH, change, round amounts, fingerprints) apply again. Example: 2 inputs paying 5 equal outputs plus 3 others. On the study set (mempool.space, 2021-2026) this removed 34 of 40 JoinMarket labels on block-sampled txs that are not JoinMarket-shaped (batch payouts with one repeated amount) and 2 of ~1,800 rounds in the JoinMarket reference sets (both with a reused input address, so fewer addresses than equal outputs).
+
+**Single-entity hint on a JoinMarket label** (`h4-coinjoin-single-entity`, variants `rbf` and `linked`, medium; see also `isolated` below)
+
+Probabilistic, never proof: the finding says the equal outputs *may* all belong to the wallet that built the tx. It fires on an `h4-joinmarket` tx when:
+
+- any input signals RBF (nSequence < 0xfffffffe; JoinMarket always uses 0xfffffffe), or
+- LINK and G both hold. LINK: an input address repeats, or 2+ inputs were created by the same non-CoinJoin parent, or there are fewer independent input clusters than equal outputs (inputs whose non-CoinJoin parents share an input address count as one cluster). The parent clauses use the parents fetched by the backward trace and are skipped without them. G: 3+ equal outputs and no change output fits a maker's change, i.e. no input subset (up to 3 inputs; 2 above 16 inputs, 1 above 40) gives subset - equal - change within [-(0.3% of equal + 5,000), +2,000] sats (a maker earns a fee, so its change is a little more than its inputs minus the equal output).
+
+It is skipped when the tx follows every WabiSabi coordinator rule and only lacks the denomination evidence (a small WabiSabi round). The label stays and the CoinJoin suppressions stay; the finding's `scoreImpact` is minus the JoinMarket bonus, so the bonus is cancelled exactly. Measured on ~1,100 JoinMarket rounds whose inputs come from 2+ earlier CoinJoins: fires on 0.3-0.4% (all RBF); on 17 JoinMarket-labelled txs whose equal outputs were later co-spent (the single-entity proxy) about 70%.
+
+**Isolated CoinJoin** (`h4-coinjoin-single-entity`, variant `isolated`, medium, probabilistic)
+
+Real CoinJoins live in chains: Whirlpool inputs come from a Tx0 or an earlier cycle and post-mix outputs remix for free, JoinMarket makers re-offer their coins in later rounds, Wasabi keeps remixing until the target anonymity score. A CoinJoin made by one wallet is usually a one-off. On an `h4-joinmarket` label, or an `h4-coinjoin` label that is not WabiSabi or Wasabi 1.x (generic), the finding fires when all of these hold:
+
+- (a) every input's parent is known and none is a CoinJoin or a Tx0. The check is permissive: `isCoinJoinTx`, `detectTx0` or `isLikelyCoinJoinTx` (5+ input sources and 5+ outputs, or 3+ sources with a repeated output value) on the parent rules it out;
+- (b) at least 2 equal outputs are already spent;
+- (c) the spending tx of every spent equal output is known and none is a CoinJoin (same permissive check).
+
+It uses only what the scan already has with default settings: the parents from the first backward trace layer and the outspends plus the first forward trace layer (`TxContext.outspends` and `childTxs`). A missing parent (input under `minSats`, more than 50 parents, timeout), outspend or child means no evidence and the finding does not fire, so the CLI and the per-tx views of address and wallet scans, which do not fetch children, never show it. It is skipped when the tx follows every WabiSabi coordinator rule and only lacks the denomination evidence (a small WabiSabi round). It never stacks with `rbf` or `linked`, and an observed co-spend of equal outputs (`cospent`) replaces it. The label and the CoinJoin suppressions stay; `scoreImpact` is minus the CoinJoin bonus.
+
+Measured (mempool.space, 2023 to 2026, reference sets built without chain linkage):
+
+| Set | n | `isolated` fires |
+|---|---|---|
+| Whirlpool cycles (whirlpoolstats.xyz) | 774 | 0 (95% upper bound ~0.4%) |
+| WabiSabi rounds (LiquiSabi, uniform) | 399 | 0 |
+| WabiSabi rounds (LiquiSabi, 50 or fewer inputs) | 600 | 0 |
+| JoinMarket rounds (block-sampled, changes fit maker fees) | 188 | 1 (0.5%), already flagged `rbf`, so no score change |
+| Proxy: JoinMarket label, 2+ equal outputs co-spent within a week | 22 | 9 (41%) |
+| Proxy: generic label, 2+ equal outputs co-spent within a week | 56 | 7 (12.5%) |
+
+The strict variant (engine `isCoinJoinTx` only) fired on 3/188 real JoinMarket rounds (1.6%), the reason for the permissive check. Rule (a) alone fires on 2.1% of real JoinMarket rounds (takers often bring fresh coins), so all three conditions are needed. The proxy is a proxy: co-spent equal outputs show one wallet held 2+ of them, not that it built the tx. Most generic-labelled hits are batch payouts (2-3 inputs, dozens of outputs with one repeated amount).
+
+**Unknown implementation note:** the JoinMarket and generic equal-output descriptions end with "This only gives privacy if the inputs really belong to different people, which cannot be verified on chain." Whirlpool, Wasabi 1.x and WabiSabi match coordinator fingerprints and do not carry it; Stonewall does not either, because a solo Stonewall is one wallet by design and its ambiguity does not depend on several owners.
+
+**Single-owner structure is not a CoinJoin**
+
+A CoinJoin needs more than one party, so two structural checks run before any equal-output counting:
+
+- Outputs that pay back to an address among the inputs are excluded from the equal-output groups. They certainly belong to the spender and hide nothing (e.g. `53d885d1...`, where 7 of 8 equal 546-sat outputs return to the input address).
+- When every input comes from one address, the equal-output paths (generic, JoinMarket, WabiSabi, Wasabi 1.x) are skipped. Whirlpool detection and Stonewall keep their own rules, since solo Stonewall is single-owner by design. Example: `ebe3d1ad...` (2 inputs from one address, 10 equal 546-sat outputs back to it) is a self-transfer, not a JoinMarket round.
+- A Whirlpool tx0 (premix, see "CoinJoin Premix (tx0) Detection") is not a CoinJoin: its equal outputs are not mixed yet. Both the H4 heuristic and the structural `isCoinJoinTx` check used by chain analysis return early on a tx0, so a mix whose inputs come from a tx0 is not credited with "inputs came from CoinJoin", and premix outputs are not treated as post-mix outputs.
+
+**Why it matters for privacy**
+
+CoinJoins are the ONLY positive privacy signal in on-chain analysis. A well-executed CoinJoin breaks the transaction graph by creating ambiguity about which inputs funded which outputs. After a CoinJoin, an adversary tracking funds encounters an exponential increase in possible interpretations. This is why CoinJoin detection is the only heuristic that increases the privacy score.
+
+CoinJoin is not a silver bullet. Post-mix behavior matters enormously. If a user performs a CoinJoin and then immediately consolidates the outputs, or sends them all to a single address, the privacy gains are destroyed. Toxic change from premix transactions can also link back to the user's pre-CoinJoin identity if handled carelessly.
+
+**Scoring impact:** +15 to +30
+
+- Whirlpool-pattern CoinJoin detected: +30
+- Wasabi 1.x / WabiSabi CoinJoin detected: +20 to +25
+- Equal-output generic CoinJoin (5+ equal): +15 to +25
+- Stonewall pattern: +15
+- JoinMarket-pattern CoinJoin detected: +15 to +25
+- `h4-coinjoin-single-entity`: minus the CoinJoin bonus (hint on a JoinMarket label, an isolated JoinMarket or generic CoinJoin, or equal outputs later spent together, see Compound Scoring Adjustments)
+
+**References**
+- Maxwell, "CoinJoin: Bitcoin privacy for the real world" (2013) - original proposal on bitcointalk
+- Ficsor (nopara73), "ZeroLink: The Bitcoin Fungibility Framework" (2017) - Wasabi's protocol design
+- Belcher, "Design for a CoinJoin Implementation with Fidelity Bonds" - JoinMarket design
+- OXT Research, CoinJoin detection methodology
+
+---
+
+### H5: Boltzmann Entropy
+
+**Technical description**
+
+Transaction entropy measures the number of valid interpretations of a transaction - that is, how many different mappings of inputs to outputs are consistent with the transaction's structure. Higher entropy means more ambiguity for an adversary. Entropy E = log2(N), where N is the number of valid interpretations.
+
+Full Boltzmann analysis, as defined by LaurentMT, counts all valid input-to-output partitions. For equal-value CoinJoin transactions, the interpretation count can be computed exactly using integer partitions of n.
+
+**Address merging (Boltzmann MERGE_INPUTS / MERGE_OUTPUTS):** before counting, inputs that share an address are merged into one input (values summed), and likewise for outputs, as LaurentMT's Boltzmann tool does with its merge options. Coins controlled by one address belong to one party, so counting them as separate parties would invent interpretations. A single-address self-transfer such as `ebe3d1ad...` (2 inputs and 11 outputs, all on one address) is therefore 1-in-1-out with 0 bits, not 15. The merged counts drive every path below and the reported UTXO count.
+
+The WASM result carries `nb_cmbn` as a u64. The tier-decomposed WabiSabi and JoinMarket model counts are computed in f64 and exceed u64 for large rounds; the count is then clamped to u64::MAX and flagged `nb_cmbn_saturated`, and every display (heat map, graph, entropy finding, CLI) shows it as ~2^entropy instead of the clamped number. Any count past 2^53 is shown the same way, since it is not exact as a JavaScript number.
+
+The WASM Boltzmann link probability matrix is not merged: its rows and columns must map one-to-one to the transaction's inputs and outputs for the heat map, the graph and auto-trace. When the WASM result covers a different number of UTXOs than the merged H5 computation, it does not replace the H5 finding, so the score keeps the merged value while the heat map still shows per-UTXO links.
+
+**Single input or single output in the matrix:** the link probability matrix follows LaurentMT's `process_tx` rule: after dropping zero-value txos, a transaction with at most 1 input or exactly 1 output has one interpretation, 0 bits, and every link deterministic (the fee-only reading, where an input below the fee funds no output, applies only to 2+ outputs). H5 already scores these transactions as zero entropy, so the matrix adds no penalty: the WASM result does not override the H5 finding when it has one interpretation, and `linkability-deterministic` / `linkability-equal-subset` skip transactions with one interpretation or one output.
+
+**Single input:** when the transaction has one input (after address merging), every output is funded by that input, so there is exactly one interpretation and entropy is 0 bits, whatever the output values. Equal-value outputs on a 1-input transaction (a dust fan-out, a payout batch) are not a CoinJoin and earn no entropy credit: 1-in-1-out gets `h5-zero-entropy` (0), 1-in-N-out gets `h5-low-entropy` (-3, method "single input") with confidence `deterministic` and its own text (`_variant: "single_input"`: every output is funded by the one input, 0 bits), since the value is exact rather than estimated. For the same reason a single-owner transaction earns no anonymity-set credit (see Anonymity Set Analysis).
+
+A two-path approach is used:
+
+**Path A - Equal-value outputs (Boltzmann partition formula):**
+
+When all spendable outputs share the same value (common in Whirlpool, WabiSabi, and other CoinJoin protocols), the number of valid interpretations is computed using integer partitions:
+
+```
+N = sum over all integer partitions (s1, s2, ..., sk) of n:
+    n!^2 / (prod(si!^2) * prod(mj!))
+```
+
+where:
+- n = number of equal outputs (or number of inputs that can fund them, whichever is smaller)
+- (s1, s2, ..., sk) is a partition of n (s1 + s2 + ... + sk = n, each si >= 1)
+- mj = multiplicity of each distinct part size in the partition
+
+**Reference values:**
+
+| n (equal outputs) | Interpretations (N) | Entropy (bits) |
+|---|---|---|
+| 2 | 3 | 1.58 |
+| 3 | 16 | 4.00 |
+| 4 | 131 | 7.03 |
+| 5 | 1,496 | 10.55 |
+| 6 | 22,482 | 14.46 |
+| 7 | 426,833 | 18.70 |
+| 8 | 9,934,563 | 23.24 |
+| 9 | ~277,006,192 | ~28.05 |
+
+For n=5 (Whirlpool pool size), the partition formula gives 1,496 valid interpretations = 10.55 bits of entropy. This is the mathematically correct value per the Boltzmann model.
+
+Note: The classic permutation model (n! = 120 for n=5) undercounts because it only considers one-to-one assignments. The partition model correctly accounts for the possibility that multiple outputs could be funded by the same input, yielding significantly more valid interpretations.
+
+**Worked example (n=5 Whirlpool):**
+
+The integer partitions of 5 are: [5], [4,1], [3,2], [3,1,1], [2,2,1], [2,1,1,1], [1,1,1,1,1].
+
+For partition [1,1,1,1,1] (5 parts of size 1): N_term = 5!^2 / (1!^10 * 5!) = 14400/120 = 120
+For partition [2,1,1,1] (one part of 2, three parts of 1): N_term = 5!^2 / (2!^2 * 1!^6 * 1! * 3!) = 14400/24 = 600
+... and so on for all 7 partitions. The sum = 1,496.
+
+**Path B - Mixed values (assignment-based enumeration):**
+
+For transactions with mixed output values (<= 8x8), the engine enumerates which input funds which output. A mapping is valid if each input can cover the sum of outputs assigned to it. This is a lower bound of the true Boltzmann count but is reasonable for non-CoinJoin transactions.
+
+For large mixed-value transactions (> 8x8), structural estimation is used based on the largest group of equal outputs, applying the Boltzmann partition formula to that group. Only an input worth at least the denomination can fund an equal output alone, so k counts those inputs (as Path A does); with n > k equal outputs the same partial-coverage count as Path A applies, log2(B(k) * C(n, k)). This is reported as method "Boltzmann estimate": it is neither exact nor an upper bound, because it ignores how the change outputs constrain the assignment (2 inputs of 1,000,000 sats paying 12 x 100,000 plus a 777,000 change: 198 here, 133 exact). The WASM Boltzmann result replaces it for transactions small enough to compute exactly.
+
+**Incomplete data:** if any non-coinbase input is missing its prevout (e.g. a self-hosted backend that could not enrich it), H5 emits nothing rather than computing on a partial input set, which would misreport the structure (a 2-in-1-out consolidation would look like a 1-in-1-out sweep). Transactions with no valued outputs (OP_RETURN-only burns) are also skipped.
+
+**Entropy interpretation:**
+- 0 bits: Deterministic transaction. Only one valid interpretation exists.
+- 1-3 bits: Low entropy. A few possible interpretations, limited ambiguity.
+- 4-8 bits: Moderate entropy. Meaningful ambiguity exists.
+- 9-15 bits: High entropy. Typical of Whirlpool 5x5 CoinJoins (10.55 bits).
+- 15+ bits: Very high entropy. Larger CoinJoins (7x7+, WabiSabi).
+
+**Why it matters for privacy**
+
+Entropy is the most rigorous measure of transaction privacy. Unlike heuristics that flag specific patterns, entropy quantifies the actual ambiguity an adversary faces when analyzing a transaction. A transaction with high entropy is genuinely difficult to trace, regardless of other heuristic signals.
+
+This is why OXT.me's Boltzmann tool was so valuable - and why its loss in April 2024 was so significant. It gave users a mathematically grounded privacy metric.
+
+**Scoring impact:** -5 to +15
+
+- 0 bits (1-in-1-out after address merging): 0 (normal sweep / exact payment / single-address self-transfer)
+- 0 bits (N-in-1-out sweep/consolidation of 2+ input addresses): -3
+- Near-zero entropy (rounded to 0): -3
+- Less than 1 bit: 0
+- 1-2 bits: +2
+- 2-3 bits: +4 to +5
+- 4-7 bits: +8 to +14
+- 8+ bits (CoinJoin territory): +15 (capped)
+
+**References**
+- LaurentMT, "Bitcoin Transactions & Privacy" (Parts 1-3) - foundational entropy framework, gist.github.com/LaurentMT
+- LaurentMT, "Introducing Boltzmann" (Medium, 2017) - the original entropy analysis tool
+- LaurentMT/boltzmann - reference implementation, github.com/Samourai-Wallet/boltzmann
+- Shannon, "A Mathematical Theory of Communication" (1948) - foundational information theory
+- OXT Research, "Understanding Bitcoin Privacy with OXT" (Parts 1-4, 2021)
+- privacidadbitcoin.com - community entropy calculation reference
+
+---
+
+### H6: Fee Analysis
+
+**Technical description**
+
+Transaction fees and their associated metadata reveal information about the wallet software used and the user's behavior. Several fee-related signals are analyzed:
+
+**Round fee rates**
+
+If the fee rate is an exact integer multiple of 1 sat/vB (e.g., exactly 5.0 sat/vB rather than 5.3), this suggests the wallet uses simple fee estimation or offers only discrete fee tiers ("low / medium / high"). More sophisticated wallets use precise algorithmic fee estimation that results in non-round rates.
+
+**RBF signaling**
+
+Replace-By-Fee is signaled via the nSequence field of transaction inputs. If any input has nSequence < 0xfffffffe, the transaction signals RBF opt-in (BIP125). This reveals:
+- The wallet supports RBF (narrows wallet identification)
+- The user (or their wallet's default settings) chose to enable replaceability
+- The transaction can be fee-bumped, which has implications for payment acceptance and zero-confirmation security
+
+```
+for input in tx.inputs:
+  if input.sequence < 0xfffffffe:
+    rbf_signaled = true
+    break
+```
+
+**Fee rate relative to mempool conditions**
+
+If the fee rate is significantly higher or lower than the prevailing mempool fee rate at the time of broadcast, it may indicate urgency, a lack of fee estimation sophistication, or specific wallet behavior. This signal is noisy but contributes to the overall wallet fingerprint (H11).
+
+**Why it matters for privacy**
+
+Fee analysis alone is a weak signal. But combined with other wallet fingerprinting data (H11), it narrows the set of possible wallet software significantly. Knowing the wallet software can reveal the user's technical sophistication, preferred privacy tools, and even geographic region (some wallets are popular in specific communities).
+
+**Fee computed on raw size (SegWit discount ignored)**
+
+A wallet that ignores the SegWit discount computes `fee = rate * raw_size`. The finding fires only when the fee is an exact multiple of the raw size at 2+ sat/B and not an exact multiple of the vsize. An earlier near-integer window (fee/size within 0.1 of an integer) fired on about 16% of random SegWit fees; the exact-product test fires on roughly 1/size of them.
+
+```
+if has_segwit_inputs and size != vsize:
+  if fee % size == 0 and fee / size >= 2 and fee % vsize != 0:
+    flag h6-fee-segwit-miscalc
+```
+
+**Scoring impact:** -2
+
+- Round fee rate detected (exact sat/vB integer): -2
+- Fee computed on raw size: -2
+- RBF signaling: 0 (informational only)
+
+**References**
+- BIP125 - Opt-in Full Replace-by-Fee Signaling
+- 0xB10C, wallet fingerprinting research on fee patterns
+
+---
+
+### H7: OP_RETURN Detection
+
+**Technical description**
+
+OP_RETURN is a Bitcoin script opcode that marks an output as provably unspendable and allows up to 80 bytes of arbitrary data to be embedded in the transaction. This data is stored permanently in the blockchain and is visible to anyone, forever.
+
+All transaction outputs are checked for the OP_RETURN opcode and, when found, an attempt is made to identify the protocol or purpose:
+
+**Known protocol markers:**
+- **Omni Layer** (formerly Mastercoin): hex prefix `6f6d6e69` ("omni") - indicates a token transfer, historically used by Tether (USDT) before migrating to other chains
+- **OpenTimestamps**: prefix `4f54` - cryptographic timestamp proof anchored to the Bitcoin blockchain
+- **Counterparty**: prefix `434e545250525459` ("CNTRPRTY") - XCP protocol messages
+- **Veriblock**: proof-of-proof data for the VeriBlock sidechain
+- **RUNES protocol**: Runes etching and minting data
+- **Ordinals**: envelope data related to inscriptions
+
+**Arbitrary messages:**
+
+Some users embed ASCII text, URLs, hashes, or other data in OP_RETURN outputs. The payload is decoded as UTF-8 and any human-readable content is flagged.
+
+```
+for output in tx.outputs:
+  if output.scriptPubKey starts with OP_RETURN:
+    data = output.scriptPubKey.data
+    protocol = identify_protocol(data)
+    if protocol:
+      flag as "OP_RETURN: {protocol} data"
+    elif is_printable_ascii(data):
+      flag as "OP_RETURN: contains readable text"
+    else:
+      flag as "OP_RETURN: contains embedded binary data"
+```
+
+**Why it matters for privacy**
+
+OP_RETURN data is a permanent, public annotation on a transaction. It may contain identifying information - a protocol marker that reveals the purpose of the transaction, a message, a hash that can be correlated with off-chain data, or metadata that narrows the universe of possible senders. Even when the data itself is not directly identifying, it reduces the anonymity set by distinguishing the transaction from ordinary payments.
+
+**Scoring impact:** -5 to -8
+
+- OP_RETURN with known protocol marker (Omni, OpenTimestamps, etc.): -8
+- OP_RETURN with unknown data: -5
+
+**References**
+- Bitcoin Core documentation on OP_RETURN
+- Bartoletti and Pompianu, "An Empirical Analysis of Smart Contracts: Platforms, Applications, and Design Patterns" (2017)
+
+---
+
+### H8: Address Reuse
+
+**Technical description**
+
+Address reuse occurs when a Bitcoin address receives funds in more than one transaction. This is the single biggest privacy failure a Bitcoin user can make.
+
+When an address is used only once (as intended by the Bitcoin protocol's design), the transactions associated with it retain a degree of ambiguity - an observer cannot trivially determine which outputs in subsequent transactions belong to the same user without applying heuristics. But when an address is reused, every transaction involving that address is trivially linked. The address becomes a persistent identifier, functionally equivalent to a bank account number.
+
+Address reuse is detected by querying the transaction history:
+
+```
+address_txs = fetch_address_transactions(address)
+receive_count = count_transactions_where_address_appears_in_outputs(address_txs)
+if receive_count > 1:
+  flag as address reuse
+  severity scales with receive_count
+```
+
+**Why it matters for privacy**
+
+Address reuse:
+- Links all transactions to and from that address to the same entity, with certainty
+- Reveals the total amount received and spent over time
+- Allows temporal analysis of spending patterns
+- Makes change detection trivial in subsequent transactions (the reused address is always the same entity)
+- Exposes the public key on first spend for P2PKH, enabling potential future quantum-computing attacks
+- Destroys any privacy gains from prior CoinJoin activity if a post-mix output is sent to a reused address
+- Is not a probabilistic heuristic - it is a deterministic, irrefutable link
+
+Many wallets handle this correctly by generating a new address for each receive using HD key derivation. But some users manually share the same address multiple times, and some poorly designed software defaults to showing a static receive address.
+
+**Scoring impact:** -70 to -93
+
+- Address used in 2 transactions (first reuse): -70
+- 3-4 transactions: -78
+- 5-9 transactions: -84
+- 10-49 transactions: -88
+- 50-99 transactions: -90
+- 100-999 transactions: -92
+- 1000+ transactions: -93
+
+All address reuse findings are severity "critical". This is intentionally the harshest penalty in the scoring model. Address reuse is the most damaging privacy behavior, and it is entirely avoidable.
+
+**References**
+- Nakamoto, "Bitcoin: A Peer-to-Peer Electronic Cash System" (2008), Section 10 - recommends using a new key pair for each transaction
+- Meiklejohn et al., "A Fistful of Bitcoins: Characterizing Payments Among Men with No Names" (2013) - demonstrates how address reuse enables large-scale clustering
+- Bitcoin Wiki, "Address reuse"
+
+---
+
+### H9: UTXO Analysis
+
+**Technical description**
+
+A Bitcoin address's UTXO (Unspent Transaction Output) set represents the funds currently available to spend. The characteristics of this set reveal information about the user's behavior and potential vulnerabilities.
+
+Several properties are analyzed:
+
+**UTXO count**
+
+A large number of UTXOs on a single address suggests either many small receives over time (which implies address reuse or predictable receive patterns) or that the address serves as a collection or donation endpoint. Either way, a large UTXO count increases exposure.
+
+**Total value distribution**
+
+The distribution of values across UTXOs reveals patterns. Many equal-value UTXOs suggest CoinJoin outputs. Highly varied values suggest organic transaction activity. A few large UTXOs suggest consolidation or large transfers.
+
+**Dust detection (see also H12)**
+
+UTXOs with very small values - under 1000 sats - may be "dusting attacks." In a dusting attack, an adversary sends tiny, unsolicited amounts to target addresses. When the victim later spends this dust alongside their other UTXOs, the Common Input Ownership Heuristic (H3) links the dusted address to all other inputs in the spending transaction. This is an active surveillance technique, not a passive observation.
+
+```
+for utxo in address.utxos:
+  if utxo.value < 1000:
+    flag as potential dust
+  if utxo.value < 546:
+    flag as non-standard dust (below Bitcoin Core's default dust limit)
+```
+
+**Consolidation risk**
+
+If a user has many UTXOs and decides to consolidate them into one, the consolidation transaction will link all input addresses via CIOH (H3). Large UTXO counts are flagged as a future consolidation risk.
+
+**Why it matters for privacy**
+
+The UTXO set is a snapshot of the user's current on-chain state. Dust UTXOs represent active threats - landmines that will detonate when spent carelessly. A large UTXO count represents potential future privacy damage if consolidation is performed without coin control. Understanding the UTXO set helps users make informed decisions about coin selection and spending strategy.
+
+**Scoring impact:** -11 to +2 (dust and UTXO count findings can stack)
+
+- Clean UTXO set (no dust, reasonable count): +2
+- Dust UTXOs detected (3+): -8; fewer: -5
+- Large UTXO count (>=20 on a single address): -3 (consolidation risk)
+- Moderate UTXO count (>=5): -2
+
+**References**
+- BitMEX Research, "Dust Attacks" analysis
+- Bitcoin Wiki, "Privacy" - UTXO management section
+
+---
+
+### H10: Address Type Analysis
+
+**Technical description**
+
+Bitcoin supports several address types, each with different privacy properties. The address type determines the script used to lock and unlock funds, which in turn affects the information revealed on-chain when funds are spent.
+
+**P2TR - Pay-to-Taproot (bc1p...)**
+
+Taproot addresses (BIP341/342) provide the best privacy among current address types. The key innovation is that all Taproot spends look identical on-chain, regardless of the underlying script complexity. A simple single-signature spend, a multisig spend, a timelock, and a complex smart contract all produce the same-looking output when using the key-path spend. This dramatically increases the anonymity set because an observer cannot distinguish between these use cases.
+
+Taproot uses Schnorr signatures (BIP340), which enable signature aggregation. In a multisig setup, all participants can produce a single aggregate signature that is indistinguishable from a single-signer signature.
+
+**P2WPKH - Pay-to-Witness-Public-Key-Hash (bc1q...)**
+
+Native SegWit addresses are the current mainstream standard. They have a large anonymity set due to widespread adoption. On spend, they reveal the public key and signature in the witness data. Privacy is good but not as strong as Taproot because the script type is visible, distinguishing single-sig from multisig.
+
+**P2SH - Pay-to-Script-Hash (3...)**
+
+P2SH addresses can wrap various script types - most commonly SegWit (P2SH-P2WPKH) or multisig. The script is revealed on spend, which can disclose the spending conditions (e.g., 2-of-3 multisig). The address format is shared between many different use cases, providing some anonymity, but the revealed script on spending narrows identification.
+
+**P2PKH - Pay-to-Public-Key-Hash (1...)**
+
+The original Bitcoin address format. Has the largest historical anonymity set simply because it has been in use the longest. However, it reveals the public key on first spend, is the least efficient format, and is increasingly associated with older or less sophisticated software. As adoption of newer formats grows, P2PKH transactions become more distinguishable.
+
+**Why it matters for privacy**
+
+The address type determines the ceiling of on-chain privacy. A user on Taproot benefits from the largest possible anonymity set because their transactions are indistinguishable from all other Taproot transactions regardless of script complexity. A user on P2PKH leaks more information with every spend and is increasingly distinguishable as the ecosystem moves to newer formats.
+
+Address type also contributes to change detection (H2). If a transaction spends from P2WPKH inputs and creates one P2WPKH output and one P2TR output, the P2WPKH output is likely change (returning to the sender's wallet) and the P2TR output is likely the payment (going to the recipient's newer wallet).
+
+**Scoring impact:** -5 to 0
+
+- P2TR (Taproot): 0 (smaller anonymity set than P2WPKH for single-sig)
+- P2WPKH (Native SegWit): 0
+- P2WSH (Native SegWit multisig): -2
+- P2SH (Wrapped SegWit or other): -3
+- P2PKH (Legacy): -5
+
+**References**
+- BIP341/342 - Taproot (Schnorr + MAST)
+- BIP340 - Schnorr Signatures for secp256k1
+- BIP141 - Segregated Witness
+- Bitcoin Wiki, "Privacy" - address types section
+
+---
+
+### H11: Wallet Fingerprinting
+
+**Technical description**
+
+Different wallet software produces transactions with subtly different structural characteristics. By examining the raw transaction data, it is often possible to identify the wallet that created it - or at least narrow the possibilities significantly. Research by 0xB10C and Chris Belcher has shown that approximately 45% of Bitcoin transactions are identifiable by wallet software based on transaction structure alone.
+
+The following signals are analyzed:
+
+**nLockTime**
+
+The nLockTime field specifies the earliest block height (or timestamp) at which a transaction can be mined. Different wallets set this differently:
+
+- **Bitcoin Core**: Sets nLockTime to the current block height as an anti-fee-sniping measure. This is a strong fingerprint.
+- **Electrum**: Also sets nLockTime to the current block height (since version 3.x).
+- **Most mobile wallets**: Set nLockTime to 0.
+- **Wasabi Wallet**: Sets nLockTime to the current block height with occasional random offset.
+- **Hardware wallets**: Varies by firmware and companion software.
+
+```
+if tx.locktime == 0:
+  possible_wallets = ["mobile wallets", "older software", "some hardware wallets"]
+elif tx.locktime is close to block height at confirmation time:
+  possible_wallets = ["Bitcoin Core", "Electrum", "Wasabi"]
+```
+
+**nVersion**
+
+- Version 1: Legacy default. Increasingly rare in modern transactions.
+- Version 2: Required for BIP68 relative timelocks. Used by wallets that enable RBF by default.
+
+A version 1 transaction in 2025 or later is itself a mild fingerprint, indicating older or deliberately conservative software.
+
+**nSequence values**
+
+The sequence number on each input encodes RBF and timelock information:
+
+- `0xffffffff`: Final. No RBF, no relative timelock. Common in legacy wallets.
+- `0xfffffffe`: No RBF, no relative timelock, but transaction is not final (allows nLockTime). Used by wallets that set nLockTime for anti-fee-sniping but disable RBF.
+- `0xfffffffd`: RBF opt-in (BIP125), no relative timelock. Bitcoin Core default since version 0.25.
+
+Different wallets set different default nSequence values. Some always signal RBF, some never do, some let the user choose. This is a distinguishing signal.
+
+**BIP69 lexicographic ordering**
+
+BIP69 specifies a deterministic ordering of inputs and outputs based on lexicographic sorting. Electrum and some other wallets implement this. If inputs are sorted by txid (then by vout index) and outputs are sorted by value (then by scriptPubKey), the transaction follows BIP69 ordering.
+
+```
+inputs_sorted = all(inputs[i] <= inputs[i+1] for i in range(len(inputs)-1))
+  // comparison by txid, then by vout
+outputs_sorted = all(outputs[i] <= outputs[i+1] for i in range(len(outputs)-1))
+  // comparison by value, then by scriptPubKey
+bip69_compliant = inputs_sorted and outputs_sorted
+```
+
+BIP69 was intended to improve privacy by standardizing ordering, but because adoption is not universal, it ironically became a fingerprint for the wallets that implement it.
+
+**Low-R signatures**
+
+Bitcoin Core since version 0.17 grinds the ECDSA nonce to produce signatures where the R value is in the lower half of the curve order. This produces 71-byte signatures instead of 72-byte, saving 1 byte per input. This is a distinctive fingerprint - most other wallets do not implement low-R grinding.
+
+```
+sigs = []
+for input in tx.inputs:
+  for item in input.witness + input.scriptSig pushes:
+    if item is a strict DER signature + sighash byte (not a 64/65-byte Schnorr sig):
+      sigs.append(item)
+if len(sigs) > 0 and every sig has an R length <= 32 bytes:
+  flag low-R (probable Bitcoin Core >= 0.17)
+```
+
+Only parsed signature fields are inspected, never the whole raw hex (a pattern search over raw hex matches txids, amounts and pubkeys). Taproot inputs carry no DER signatures and do not count.
+
+**Why it matters for privacy**
+
+Wallet fingerprinting reduces the anonymity set. If an adversary can determine that a transaction was created by Bitcoin Core, they have eliminated all Electrum, Wasabi, mobile wallet, and hardware wallet users from consideration. Combined with other metadata (geographic IP data, timing patterns, transaction amounts), wallet identification significantly aids deanonymization.
+
+Research shows approximately 45% of transactions carry enough structural signals to be attributed to specific wallet software with reasonable confidence. For privacy-conscious users, this is a reminder that the choice of wallet software has privacy implications beyond its feature set.
+
+**Scoring impact:** -3 to -8
+
+- Bitcoin Core: -5 (large anonymity set, ~40% of network)
+- Electrum: -6 (BIP69 ordering is a strong fingerprint)
+- Ashigaru/Samourai/Sparrow: -7 (niche privacy wallets, small anonymity set)
+- Wasabi Wallet: -7 (distinctive nVersion=1 pattern). "Wasabi Wallet (WabiSabi)" is named only when `classifyWabiSabi` recognises the round; WabiSabi rounds are sorted by value descending, so a large BIP69 (ascending) transaction is never labelled WabiSabi
+- Unknown/rare wallet: -8 (very small anonymity set)
+- 3+ signals, no wallet match: -5
+- Minimal signals (1-2): -3
+
+**References**
+- 0xB10C, "Wallet Fingerprinting" research - empirical analysis of transaction structure patterns
+- Belcher, Chris, "Wallet Fingerprinting" analysis
+- BIP69 - Lexicographic Indexing of Transaction Inputs and Outputs
+- Bitcoin Core source code - low-R signature grinding implementation (src/key.cpp)
+
+---
+
+### H12: Dust Detection
+
+**Technical description**
+
+While dust detection is part of H9 (UTXO Analysis), it is important enough to document as its own heuristic. Dust attacks are an active surveillance technique - not a passive analytical observation, but a deliberate attack against a target's privacy.
+
+A dusting attack works as follows:
+
+1. The attacker sends a tiny amount of bitcoin (typically 500-1000 sats, sometimes less) to a target address. This is the "dust."
+
+2. The target sees the incoming UTXO in their wallet. If using automatic coin selection (as most wallets do by default), this dust UTXO may be included as an input the next time the target spends funds.
+
+3. When the dust is spent alongside other UTXOs, the Common Input Ownership Heuristic (H3) links the dusted address to all other input addresses in the spending transaction.
+
+4. If the attacker knows the identity behind the dusted address (e.g., from a forum post, a merchant payment, or a previous analysis), they now know the identity behind all the other input addresses as well.
+
+**Detection criteria:**
+
+```
+for utxo in address.utxos:
+  if utxo.value < 1000:
+    // Check if the sending transaction suggests a dust attack
+    sending_tx = fetch_transaction(utxo.txid)
+    indicators = 0
+    if utxo.value < 546:  // Below Bitcoin Core's default dust limit
+      indicators += 2
+    if sending_tx has many outputs to different addresses:
+      indicators += 1  // Fan-out pattern typical of mass dusting campaigns
+    if indicators >= 2:
+      flag as "probable dusting attack"
+    else:
+      flag as "potential dust - exercise caution"
+```
+
+At transaction level, outputs below 1000 sats are reported as `dust-outputs`, and as `dust-attack` when the shape matches dusting: a 1-in-2-out transaction with one dust output, or 5+ dust outputs making up more than half of the outputs. A dust attack is dust sent to someone else, so dust outputs paying back to an address among the transaction's own inputs (e.g. 546-sat token postage outputs in `ebe3d1ad...` and `53d885d1...`) do not count toward the attack shape; they are still reported as `dust-outputs`.
+
+Any UTXO with a value below 1000 sats is flagged. UTXOs below 546 sats (the default dust limit in Bitcoin Core) are flagged with higher severity, as they are below the economic threshold for normal use and are more likely to be surveillance dust.
+
+**Why it matters for privacy**
+
+Dusting attacks are cheap to execute (a few hundred sats per target) and devastatingly effective against users who are unaware of the threat. A single dusting attack, combined with careless automatic coin selection, can link an entire wallet's address set through CIOH. This is an asymmetric attack - the cost to the attacker is negligible, but the privacy damage to the victim can be catastrophic.
+
+The recommended response is to never spend dust UTXOs. Most privacy-aware wallets (Sparrow, Wasabi) support coin control - the ability to manually select which UTXOs to include in a transaction. Dust UTXOs should be frozen (excluded from automatic coin selection) or spent in isolation through a CoinJoin.
+
+**Scoring impact:** -3 to -8
+
+- No dust outputs: 0
+- Surveillance dust pattern (single tiny output to unrelated address): -8
+- Small outputs below 1000 sats (sub-546 extreme dust): -5
+- Small outputs below 1000 sats: -3
+
+**References**
+- BitMEX Research, "Dusting Attacks" analysis
+- Bitcoin Wiki, "Privacy" - dust attacks section
+
+---
+
+### Anonymity Set Analysis
+
+**Technical description**
+
+Calculates the anonymity set for each output value - the number of outputs sharing the same value, making them indistinguishable from each other. An anonymity set of 1 means the output is unique and trivially traceable. Higher anonymity sets (like in CoinJoin) mean more possible interpretations of the transaction graph.
+
+This is complementary to H4 CoinJoin detection. While H4 determines whether a transaction is a CoinJoin, the anonymity set analysis provides granular per-output ambiguity measurement that applies to any transaction.
+
+**Detection criteria:**
+
+```
+value_counts = count occurrences of each output value (non-dust, spendable)
+max_set = largest group of equal-value outputs
+
+if distinct input addresses < 2 and max_set >= 2:
+  no finding (one owner funds every output: nothing to hide among)
+elif max_set >= 5:
+  "Strong anonymity set" (+5, good)
+elif max_set >= 2:
+  "Moderate anonymity set" (+1, low)
+else:
+  "No anonymity set - all outputs unique" (-1, low)
+```
+
+An anonymity set needs several possible owners. With one input (or all inputs on one address) a single party funds every output, so equal output values hide nothing: batch payouts such as `3d81a6b9...` (1 input, 143 outputs) get no `anon-set-moderate` credit.
+
+**Scoring impact:** -1 to +5
+
+---
+
+### H14: Timing Analysis
+
+**Technical description**
+
+Analyzes transaction timing patterns that may reveal information about the sender. Unconfirmed transactions are visible in the mempool, creating IP correlation risk. UNIX timestamp-based nLockTime values are rare and reveal the intended broadcast time. Stale locktime values (significantly before the confirmation block height) suggest the transaction was created well before broadcast.
+
+**Detection criteria:**
+
+```
+if transaction is unconfirmed:
+  "Mempool visible - IP correlation risk" (-2, low)
+
+if nLockTime >= 500,000,000:
+  "UNIX timestamp locktime - reveals creation time" (-3, medium)
+elif confirmed and (block_height - nLockTime) > 20:
+  "Stale locktime - delayed broadcast" (-1, low)
+```
+
+**Scoring impact:** -1 to -3
+
+---
+
+### H15: Script Type Mix Analysis
+
+**Technical description**
+
+Analyzes the mix of script types (P2PKH, P2SH, P2WPKH, P2WSH, P2TR) across inputs and outputs. When a transaction mixes different script types (e.g., P2WPKH inputs with a P2TR change output), the change output is easily identifiable because it often matches the input type.
+
+Also detects bare multisig (P2MS) outputs, which expose all participant public keys directly on the blockchain.
+
+**Detection criteria:**
+
+```
+input_types = set of input script types
+output_types = set of output script types (excluding OP_RETURN)
+all_types = union of input_types and output_types
+
+if bare multisig output detected:
+  "Bare multisig - all public keys exposed" (-8, high)
+
+if all_types has 1 element:
+  "Uniform script types" (+2, good)
+elif all_types has 3+ elements:
+  "Mixed script types" (-3, medium)
+else:
+  "Mixed script types" (-1, low)
+```
+
+This heuristic is suppressed (impact set to 0) for CoinJoin transactions, where mixed script types are expected since participants use different wallet software.
+
+**Scoring impact:** -8 to +2
+
+---
+
+### H16: Spending Pattern Analysis (Address-level)
+
+**Technical description**
+
+Analyzes spending behavior of an address to assess exposure. High-volume addresses (100+ transactions) are more likely to be monitored by chain analysis firms. Addresses that have never spent ("cold storage") reveal no spending patterns. Addresses transacting with many counterparties create a wide exposure surface.
+
+Counterparty counting excludes likely change outputs by comparing address types: in a 2-output send transaction, the output matching the sender's address type is excluded as probable change.
+
+**Detection criteria:**
+
+```
+if tx_count >= 100:
+  "High transaction volume" (-3, medium)
+
+if spent_count == 0 and funded_count > 0:
+  "Cold storage pattern" (+2, good)
+
+if unique_counterparties >= 20:
+  "Wide exposure surface" (-2, medium)
+```
+
+**Scoring impact:** -5 to +2 (high volume -3 and wide exposure -2 can stack)
+
+---
+
+### H17: Multisig/Escrow Detection
+
+**Technical description**
+
+Parses wrapped multisig inputs (P2SH, P2WSH, P2SH-P2WSH) to determine the M-of-N configuration and detect escrow patterns. Three detection methods are used in priority order:
+
+1. Parse `inner_witnessscript_asm` field (when available from mempool.space API) using regex to extract OP_M...pubkeys...OP_N OP_CHECKMULTISIG
+2. Parse raw witness hex from the last element of the witness stack for P2WSH inputs
+3. Parse `inner_redeemscript_asm` for legacy P2SH multisig
+
+**Why it matters for privacy**
+
+Multisig scripts reveal the multi-party nature of an input when spent. Legacy P2SH and P2WSH multisig expose the M-of-N configuration on-chain, allowing observers to infer custody arrangements. Specific patterns are associated with known services:
+
+- **2-of-2 multisig + 2 outputs**: Consistent with P2P exchange escrow releases (Bisq-style) or Lightning Network cooperative channel closes. The 2-of-2 structure reveals that exactly two parties had to sign.
+- **2-of-3 multisig**: Consistent with P2P exchange escrow (HodlHodl), cold storage solutions (Unchained, Casa, Nunchuk), or business escrow arrangements. Three parties share custody.
+- **HodlHodl-specific pattern**: 2-of-3 multisig input + output to known HodlHodl fee address (`bc1qqmmzt02nu4rqxe03se2zqpw63k0khnwq959zxq`). This identifies the transaction as a HodlHodl escrow release with high confidence (90-95% precision).
+
+Taproot multisig (MuSig2, FROST) is indistinguishable from single-sig on-chain and is not detected by this heuristic - which is the desired outcome for privacy.
+
+**Detection criteria:**
+
+```
+For each input in tx.vin:
+  multisigInfo = parseMultisigFromInput(input)
+  if multisigInfo is null: skip
+
+Check most specific pattern first:
+  if single 2-of-3 input + output to known HodlHodl fee address:
+    "Likely HodlHodl escrow release" (-3, high)
+  elif 2-of-3 input without fee address match:
+    "2-of-3 multisig escrow detected" (-2, medium)
+  elif single 2-of-2 input and BOLT 3 commitment (nLockTime >> 24 == 0x20 and nSequence >> 24 == 0x80):
+    # any output count: anchor outputs and pending HTLCs add outputs
+    "Likely legacy Lightning channel close" (-3, medium)
+  elif single 2-of-2 input + 2 outputs:
+    if legacy BOLT 3 cooperative close (closing_signed: version 2, nLockTime 0, nSequence 0xffffffff):
+      "Likely legacy Lightning channel close" (-3, medium)
+    else:
+      "2-of-2 multisig escrow detected" (h17-escrow-2of2, -2, medium)
+  else:
+    "Wrapped multisig detected: M-of-N" (0, low, informational)
+```
+
+**Scoring impact:** 0 to -3
+
+- HodlHodl escrow release: -3 (high confidence P2P exchange identification)
+- 2-of-3 escrow: -2 (escrow pattern reveals multi-party custody)
+- 2-of-2 escrow: -2 (P2P exchange or other 2-of-2 spend)
+- Legacy Lightning channel close: -3 (2-of-2 with BOLT 3 fingerprint)
+- Generic M-of-N: 0 (informational only)
+
+**False positive analysis:**
+
+- HodlHodl detection has 90-95% precision due to the known fee address anchor
+- 2-of-2 detection has ~60-70% precision for P2P exchanges; Lightning cooperative closes are a significant source of false positives (mitigated by matching the BOLT 3 fingerprints: a commitment tx stores the obscured commitment number with nLockTime upper byte 0x20 and nSequence upper byte 0x80; a legacy `closing_signed` cooperative close uses version 2, nLockTime 0, nSequence 0xffffffff). The commitment fingerprint is matched at any output count (anchor channels add 2 anchor outputs, pending HTLCs add more); the cooperative-close fingerprint only on 2-output spends. Closes negotiated with `option_simple_close` set nLockTime to the current height and nSequence 0xfffffffd, which is indistinguishable from a plain anti-fee-sniping spend, so they (like any such spend) stay an `h17-escrow-2of2` finding
+- 2-of-3 detection cannot distinguish between cold storage and P2P escrow without additional context
+
+**Remediation guidance:**
+
+For all escrow findings, recommend migration to Taproot-based multisig (MuSig2 or FROST) which hides the multisig structure entirely. For Lightning, cooperative closes are normal and expected.
+
+**References:**
+- Bisq protocol documentation: 2-of-2 multisig trade protocol
+- HodlHodl documentation: 2-of-3 multisig escrow with platform arbitration
+- BIP340/BIP341: Taproot and Schnorr signatures (enabling MuSig2)
+
+---
+
+### Peel Chain Detection
+
+**Technical description**
+
+Detects linear chain patterns where 1-input, 2-output transactions are chained together such that one output feeds the next transaction as its sole input. At each hop, the smaller output is typically the payment, making the entire payment history trivially traceable by following the chain. The engine uses pre-fetched parent and child transactions to check 1 hop backward and 1 hop forward (up to 3 consecutive hops).
+
+```
+For the current transaction:
+  if tx has exactly 1 input and 2 outputs:
+    backward_hop = check if the input's parent tx also has 1 input and 2 outputs
+    forward_hop = check if either output is spent in a tx with 1 input and 2 outputs
+    chain_length = 1 + backward_hops + forward_hops
+```
+
+**Why it matters for privacy**
+
+Peel chains are one of the simplest and most effective tracing patterns. An adversary identifying a peel chain can follow the entire sequence of payments with high confidence. At each hop, the smaller output is the payment and the larger output is change feeding the next hop. This pattern is common in wallets that make many sequential payments without consolidation or coin control.
+
+**Scoring impact:** -15 to -20
+
+- 2 consecutive hops detected: -15 (high)
+- 3+ consecutive hops detected: -20 (critical)
+
+**Remediation:** Break the chain pattern by using CoinJoin between payments, varying transaction structure, using multi-output batch payments, or changing coin selection strategies.
+
+**Forward peel chain (`chain-forward-peel`, chain analysis, -5):** fires when an output of the analyzed transaction starts a peel chain of at least 2 consecutive hops found in the forward trace: the spending tx is a peel hop (1 input, 2 spendable outputs, smaller < 30% of the larger) and its larger output (the change) is the single input of another peel hop. A single downstream 1-in-2-out payment is ordinary spending and does not fire (e.g. sweep `8cbe3322...` and batch `aefda8a7...`); consolidation `40b88e16...` does, because its output is peeled by `3c32cc3c...` whose change is peeled again by `3a87bb2f...`. Suppressed when the analyzed transaction is a CoinJoin. It only fires when the second hop is inside the forward trace (trace depth and its filters), so a shallow or filtered trace can miss a real peel chain; that errs toward not penalizing.
+
+**References**
+- Meiklejohn et al., "A Fistful of Bitcoins: Characterizing Payments Among Men with No Names" (2013) - identifies peel chain patterns
+- Kappos et al., "How to Peel a Million: Validating and Expanding Bitcoin Clusters"
+
+---
+
+### Consolidation Pattern Detection
+
+**Technical description**
+
+Detects four sub-patterns related to UTXO consolidation and batching behavior:
+
+**Fan-in (consolidation):** A transaction with 3 or more inputs and exactly 1 output. This reveals the entire UTXO set being consolidated, linking all input addresses via CIOH.
+
+```
+if len(tx.inputs) >= 3 and len(spendable_outputs) == 1:
+  severity scales with input count:
+    3-5 inputs: -3
+    6-9 inputs: -5
+    10+ inputs: -8
+```
+
+**Cross-type consolidation:** A fan-in transaction combining UTXOs from different script types (e.g., P2PKH + P2WPKH). This links addresses from different wallet generations, revealing a long history of address ownership.
+
+```
+if fan_in and len(unique_input_script_types) >= 2:
+  impact: -5
+```
+
+**Fan-out (batching):** A transaction with 1 input and 5 or more outputs. Common in exchange batch withdrawals where multiple customer withdrawals are combined. Informational signal.
+
+```
+if len(tx.inputs) == 1 and len(tx.outputs) >= 5:
+  impact: -3
+```
+
+**I/O ratio anomaly:** A transaction with 5 or more inputs and exactly 2 outputs. Reveals consolidation behavior merged with a payment, exposing more of the wallet's UTXO set than necessary.
+
+```
+if len(tx.inputs) >= 5 and len(tx.outputs) == 2:
+  impact: -3 to -5 (scales with input count)
+```
+
+**Why it matters for privacy**
+
+Consolidation transactions are among the most damaging patterns for privacy. A single consolidation links every input address to the same entity with certainty, giving adversaries a complete view of the wallet's UTXO history. Cross-type consolidation is especially harmful because it links addresses that might otherwise appear unrelated due to different script types.
+
+**Scoring impact:** -3 to -8
+
+**Remediation:** Consolidate during high-fee periods when the cost of linking is offset by fee savings, use CoinJoin-based consolidation (Whirlpool or WabiSabi), or consolidate only UTXOs that are already linked. Avoid cross-type consolidation entirely.
+
+---
+
+### Unnecessary Input Detection
+
+**Technical description**
+
+Detects when more inputs were used than needed to cover the payment plus fee. For 2-output transactions, the engine tries each output as the "change" output and computes the minimum inputs needed via greedy covering. The most conservative (highest) minimum across both interpretations is used.
+
+```
+For a 2-output transaction:
+  for each output as candidate_payment:
+    remaining = other_output_value  // treating as change
+    sort inputs descending by value
+    needed = 0
+    for input in sorted_inputs:
+      if remaining <= 0: break
+      remaining -= input.value
+      needed += 1
+    min_needed = max(min_needed, needed)
+
+  excess = len(tx.inputs) - min_needed
+  if excess > 0:
+    impact = min(excess * 2, 8)
+```
+
+**Why it matters for privacy**
+
+Excess inputs strengthen the Common Input Ownership Heuristic by unnecessarily linking addresses. If a transaction could have been funded with 2 inputs but used 5, the additional 3 inputs are gratuitously linked to the sender's cluster. Sophisticated coin selection algorithms (like Branch-and-Bound) minimize this exposure, but many wallets use naive algorithms that include more inputs than necessary.
+
+**Scoring impact:** -2 to -8
+
+- 1 excess input: -2
+- 2 excess inputs: -4
+- 3 excess inputs: -6
+- 4+ excess inputs: -8 (capped)
+
+**Remediation:** Use wallet software with advanced coin selection (Bitcoin Core's BnB, Sparrow's manual coin control). When possible, construct changeless transactions that spend exact amounts.
+
+---
+
+### CoinJoin Premix (tx0) Detection
+
+**Technical description**
+
+Detects Whirlpool tx0 (premix) transactions, which are the precursor to a CoinJoin mix. The tx0 splits a user's UTXO into pool-sized outputs plus a coordinator fee and optional toxic change.
+
+```
+Pattern:
+  1-3 inputs
+  Multiple outputs at a Whirlpool denomination (50k, 100k, 1M, 5M, 50M sats)
+  1 small coordinator fee output
+  0-1 toxic change output
+
+if len(tx.inputs) <= 3:
+  denom_outputs = [o for o in tx.outputs if o.value in WHIRLPOOL_DENOMS]
+  if len(denom_outputs) >= 2:
+    non_denom = [o for o in tx.outputs if o not in denom_outputs]
+    if len(non_denom) <= 2:  // fee + optional change
+      flag as tx0 premix
+```
+
+**Why it matters for privacy**
+
+A tx0 is a positive signal indicating the user is preparing for CoinJoin. However, the toxic change output from a tx0 is NOT mixed and retains a direct link to the pre-CoinJoin identity. Spending toxic change alongside post-mix outputs destroys the anonymity gained from mixing.
+
+**Scoring impact:** +5
+
+**Remediation:** Never spend toxic change from tx0 alongside post-mix UTXOs. The toxic change should be mixed separately or spent in isolation.
+
+---
+
+### BIP69 Lexicographic Ordering Detection
+
+**Technical description**
+
+BIP69 specifies that transaction inputs should be sorted lexicographically by txid:vout and outputs sorted by value:scriptpubkey. While designed to reduce fingerprinting through deterministic ordering, in practice it identifies specific wallet software because adoption is not universal.
+
+```
+inputs_bip69 = inputs sorted by (txid ascending, vout ascending)
+outputs_bip69 = outputs sorted by (value ascending, scriptpubkey ascending)
+
+if tx.inputs matches inputs_bip69 ordering AND
+   tx.outputs matches outputs_bip69 ordering AND
+   len(tx.inputs) >= 2 AND len(tx.outputs) >= 2:
+  flag as BIP69 compliant
+```
+
+The check requires at least 2 inputs and 2 outputs because single-element sequences are trivially sorted and would produce false positives.
+
+**Why it matters for privacy**
+
+BIP69 compliance is primarily associated with Electrum and older Ashigaru (formerly Samourai) versions. Most modern wallets use random ordering instead. As a result, BIP69 ordering has become a wallet fingerprint rather than a privacy enhancement, narrowing the anonymity set to the subset of users running BIP69-compliant software.
+
+**Scoring impact:** -2
+
+**Remediation:** Use wallet software that randomizes input and output ordering (Bitcoin Core, Sparrow, most modern wallets). If using Electrum, be aware that BIP69 ordering is a distinguishing feature.
+
+---
+
+### BIP47 Notification Transaction Detection
+
+**Technical description**
+
+Detects BIP47 (PayNym) notification transactions used to establish reusable payment channels. A notification transaction is a one-time setup that enables the sender and receiver to derive fresh addresses for all future payments without further on-chain coordination.
+
+```
+Pattern:
+  1-3 inputs
+  1 OP_RETURN with exactly 80 bytes (encrypted payment code)
+  1 small notification output (546-1000 sats)
+  0-1 change output
+
+Exclusions (known non-BIP47 80-byte protocols):
+  - Omni Layer (prefix 6f6d6e69)
+  - Counterparty (prefix 434e545250525459)
+  - Stacks (prefix 5354)
+  - Veriblock (prefix 564200)
+
+if len(tx.inputs) <= 3:
+  op_return = find OP_RETURN output
+  if op_return and len(op_return.data) == 80 and not matches_known_protocol:
+    small_outputs = [o for o in tx.outputs if 546 <= o.value <= 1000]
+    if len(small_outputs) == 1:
+      flag as BIP47 notification
+```
+
+**Why it matters for privacy**
+
+BIP47 notification transactions are a positive privacy signal indicating the use of reusable payment codes (PayNyms). After the notification, all subsequent payments between the two parties use freshly derived addresses, eliminating address reuse. However, the change output from the notification transaction is toxic - it links the sender's identity to the PayNym connection and should not be spent alongside unrelated UTXOs.
+
+**Scoring impact:** +3
+
+**Remediation:** Be aware that the notification transaction itself is identifiable and the change from it is toxic. Do not spend notification change alongside post-CoinJoin or unrelated UTXOs.
+
+**References**
+- BIP47 - Reusable Payment Codes for Hierarchical Deterministic Wallets
+
+---
+
+### Exchange Pattern Detection
+
+**Technical description**
+
+Detects structural patterns consistent with centralized exchange batch withdrawals without maintaining any address database. This is a purely structural heuristic.
+
+```
+Pattern:
+  1-2 inputs
+  10+ outputs
+  At least 2 of the following:
+    - 3+ different output script types
+    - 80%+ unique output addresses
+    - Wide value spread (max output / min output > 100x)
+
+if len(tx.inputs) <= 2 and len(tx.outputs) >= 10:
+  script_type_diversity = len(unique_output_script_types) >= 3
+  address_uniqueness = len(unique_addresses) / len(outputs) >= 0.8
+  value_spread = max(output_values) / min(output_values) > 100
+  if sum([script_type_diversity, address_uniqueness, value_spread]) >= 2:
+    flag as exchange batch pattern
+```
+
+**Why it matters for privacy**
+
+Receiving funds from an identifiable exchange batch withdrawal links the recipient to a KYC-regulated entity. If the exchange is compromised or subpoenaed, the withdrawal can be traced to a specific customer account. The batch pattern itself is informational, but being a recipient in such a transaction reduces privacy.
+
+**Scoring impact:** -3
+
+One fan-out gets one finding. The generic `consolidation-fan-out` ("Batch payment pattern", -3) needs exactly 1 input; `exchange-withdrawal-pattern` accepts 1-2 inputs. The exchange reading replaces the generic fan-out on the same transaction. When the fan-out is a dust attack (`dust-attack`: most outputs are dust sent to others), the dust attack is the explanation: the exchange readings (`exchange-withdrawal-pattern`, `entity-behavior-exchange`, exchanges do not pay hundreds of dust outputs) and the generic `consolidation-fan-out` are all dropped, and only `dust-attack` (-8) is scored (dust tx `65551b77...`, 1 input to 563 x 547 sats). Such a batch dust attack keeps the `batch-payment` tx type.
+
+**Remediation:** When withdrawing from exchanges, use intermediate wallets or CoinJoin before moving funds to long-term storage. Consider using non-KYC acquisition methods.
+
+---
+
+### Coin Selection Pattern Detection
+
+**Technical description**
+
+Detects three coin selection sub-patterns that reveal wallet software behavior:
+
+**Branch-and-Bound (BnB):** Two inputs with a single output to a new address and no change. This indicates the wallet found an exact combination of UTXOs to cover the payment, eliminating the change output entirely. Consolidations are changeless by nature, so they earn no credit: 3+ inputs to 1 output is a consolidation (`consolidation-fan-in`), an output back to an input address is a self-send (`h2-self-send`), and a 1-in-1-out sweep never qualifies. The credit is not a behavioral-rollup signal (see Behavioral Fingerprint Rollup).
+
+```
+if len(tx.inputs) == 2 and len(spendable_outputs) == 1 and output.address not in input_addresses:
+  flag as changeless transaction (BnB or manual coin selection)
+  impact: +3 (good - no change output to trace)
+```
+
+**Value ascending:** 3 or more inputs sorted from smallest to largest value. May indicate a smallest-first coin selection algorithm.
+
+```
+if len(tx.inputs) >= 3:
+  values = [input.value for input in tx.inputs]
+  if values == sorted(values):
+    flag as value ascending selection
+    impact: -1
+```
+
+**Value descending:** 3 or more inputs sorted from largest to smallest value. May indicate a largest-first coin selection algorithm.
+
+```
+if len(tx.inputs) >= 3:
+  values = [input.value for input in tx.inputs]
+  if values == sorted(values, reverse=True):
+    flag as value descending selection
+    impact: -1
+```
+
+**Why it matters for privacy**
+
+Coin selection algorithms are a wallet fingerprint. A changeless transaction is privacy-positive because it eliminates the change output, removing the most common tracing vector. Deterministic ordering (ascending or descending) is a mild fingerprint that narrows the set of possible wallet software.
+
+**Scoring impact:** -1 to +3
+
+**Remediation:** Use wallet software that supports Branch-and-Bound coin selection (Bitcoin Core) or manual coin control (Sparrow). Avoid wallets with predictable selection ordering.
+
+---
+
+### Witness Data Analysis
+
+**Technical description**
+
+Analyzes the witness data of SegWit transactions for five sub-findings that reveal structural information about inputs:
+
+**Mixed witness/non-witness inputs:** SegWit inputs appearing alongside legacy (non-witness) inputs in the same transaction. This reveals a wallet managing UTXOs from different eras or a deliberate cross-type spend.
+
+```
+if any input has witness data AND any input lacks witness data:
+  impact: -1
+```
+
+**Deep witness stack (>4 items):** A witness stack with more than 4 elements indicates a complex script such as HTLC (Hash Time-Locked Contract), timelock, or other conditional spending paths.
+
+```
+for input in tx.inputs:
+  if len(input.witness) > 4:
+    flag as complex script
+    impact: -1
+```
+
+**Mixed witness depths:** Varying witness stack depths across inputs in the same transaction. This suggests inputs from different script types or spending conditions.
+
+```
+depths = [len(input.witness) for input in tx.inputs if input.witness]
+if len(set(depths)) > 1:
+  impact: -1
+```
+
+**Uniform witness sizes (non-standard):** All witness items having identical byte lengths, suggesting intentional padding for privacy. This is a positive signal.
+
+```
+sizes = [len(item) for input in tx.inputs for item in input.witness]
+if len(set(sizes)) == 1 and sizes[0] not in STANDARD_SIZES:
+  impact: +1
+```
+
+**Mixed Schnorr/ECDSA signatures:** Taproot inputs (Schnorr signatures) alongside SegWit v0 inputs (ECDSA signatures) in the same transaction. This is a strong wallet transition fingerprint.
+
+```
+has_schnorr = any(input uses taproot key-path spend)
+has_ecdsa = any(input uses segwit v0 spend)
+if has_schnorr and has_ecdsa:
+  impact: -2
+```
+
+**Why it matters for privacy**
+
+Witness data patterns are a relatively unexplored fingerprinting vector. Mixed signature schemes, complex scripts, and varying stack depths all reduce the anonymity set by distinguishing the transaction from the majority of simple single-type spends.
+
+**Scoring impact:** -2 to +1
+
+**Remediation:** Avoid mixing Taproot and SegWit v0 inputs in the same transaction. Complete the migration to Taproot before spending mixed-type UTXOs together.
+
+---
+
+### Post-Mix Consolidation Detection
+
+**Technical description**
+
+Detects the most common CoinJoin mistake: spending 2 or more outputs from different CoinJoin transactions in a single non-CoinJoin transaction. This re-links UTXOs via CIOH, completely destroying the anonymity set gained from mixing.
+
+```
+For each input in the current transaction:
+  parent_tx = fetch parent transaction (pre-fetched)
+  if parent_tx matches CoinJoin pattern (H4):
+    post_mix_input_count += 1
+
+if post_mix_input_count >= 2 and current_tx is NOT a CoinJoin:
+  if post_mix_input_count == 2:
+    impact: -12 (high)
+  if post_mix_input_count >= 3:
+    impact: -18 (critical)
+```
+
+**Why it matters for privacy**
+
+Post-mix consolidation is the single most damaging mistake a CoinJoin user can make. The entire purpose of CoinJoin is to break deterministic links between inputs and outputs. When a user takes outputs from separate CoinJoin rounds and spends them together, CIOH re-links those outputs to the same entity, undoing the mixing entirely. An adversary can then trace backward through each CoinJoin to the pre-mix inputs, collapsing the anonymity set to 1.
+
+**Scoring impact:** -12 to -18
+
+- 2 post-mix inputs consolidated: -12 (high)
+- 3+ post-mix inputs consolidated: -18 (critical)
+
+**Remediation:** Never spend outputs from different CoinJoin rounds in the same transaction. Use each post-mix UTXO independently. Sparrow's UTXO labeling and coin control features help prevent accidental consolidation.
+
+---
+
+### Entity Detection
+
+**Technical description**
+
+Three tiers of entity detection, ranging from deterministic to behavioral:
+
+**Tier 1 - OFAC match:** Input or output addresses appearing on the OFAC SDN (Specially Designated Nationals) sanctioned list. These are addresses associated with sanctioned entities and have zero false positive rate.
+
+```
+if address in OFAC_SDN_LIST:
+  impact: -20 (critical)
+  flag: "OFAC sanctioned address"
+```
+
+**Tier 2 - Known entity filter:** Input or output addresses matched against a pre-built index and Bloom filter of known exchange, service, darknet market, mixer, and gambling addresses. The Bloom filter has a 0.1% false positive rate. Named index lookups are deterministic.
+
+```
+if address matches entity_index (named lookup):
+  if input: impact -3 (known entity funds this transaction)
+  if output: impact -1 (transaction sends to known entity)
+
+if address matches bloom_filter (probabilistic):
+  same impacts, with 0.1% FP caveat noted in finding
+```
+
+**Tier 3 - Behavioral patterns:** Structural detection of entity types without any address database. Purely pattern-based.
+
+```
+Exchange batch: 1-2 inputs, 10+ outputs, diverse types (0 impact, informational)
+Non-standard mixing/darknet: unusual structure patterns (-2)
+Gambling: high-frequency small-value patterns (-1)
+```
+
+**Why it matters for privacy**
+
+Transacting with known entities - especially sanctioned addresses, exchanges, and darknet markets - creates anchor points that adversaries use to trace fund flows. An OFAC-listed address in any input or output is a critical finding. Known exchange addresses enable chain analysis firms to correlate on-chain activity with KYC records.
+
+**Scoring impact:** -20 to 0
+
+- OFAC sanctioned address: -20 (critical)
+- Known entity input: -3
+- Known entity output: -1
+- Behavioral detection: -2 to 0
+
+**Remediation:** Check destination addresses before sending. Avoid reusing addresses associated with known services. Use CoinJoin to create distance between KYC-linked UTXOs and privacy-sensitive spending.
+
+---
+
+### Ricochet Detection
+
+**Technical description**
+
+Detects the first hop (hop 0) of an Ashigaru Ricochet transaction by identifying the known fee address and exact 100,000 sat fee. Ricochet adds 4 extra hops between a CoinJoin and the final destination, creating transactional distance that defeats shallow chain analysis (1-3 hop lookback).
+
+```
+RICOCHET_FEE = 100_000  // sats
+KNOWN_FEE_ADDRESSES = [known Ashigaru Ricochet fee addresses]
+
+for output in tx.outputs:
+  if output.value == RICOCHET_FEE and output.address in KNOWN_FEE_ADDRESSES:
+    flag as Ricochet hop 0
+    impact: +5
+```
+
+The PayNym variant of Ricochet is undetectable by design because it uses stealth addresses derived from BIP47 payment codes.
+
+**Why it matters for privacy**
+
+Ricochet is a positive privacy technique that inserts transactional distance between CoinJoin outputs and the final destination. Many exchanges and compliance tools only look back 1-3 hops, so 4 extra hops can be sufficient to avoid flagging. Detection of hop 0 is possible only because of the known fee address; subsequent hops are indistinguishable from normal transactions.
+
+**Scoring impact:** +5
+
+**Remediation:** Consider using the PayNym variant of Ricochet for undetectable multi-hop delivery.
+
+---
+
+### UTXO Age Spread
+
+**Technical description**
+
+Flags transactions where co-spent UTXOs have vastly different creation block heights. Spending a years-old UTXO alongside a recent one reveals the wallet's activity window and dormancy patterns to any observer.
+
+```
+For each input in tx.inputs:
+  parent_tx = fetch parent transaction
+  if parent_tx.block_height is known:
+    input_heights.append(parent_tx.block_height)
+
+if len(input_heights) >= 2:
+  age_spread = max(input_heights) - min(input_heights)
+  if age_spread > 210_000:  // ~4 years
+    impact: -4 (medium)
+  elif age_spread > 52_560:  // ~1 year
+    impact: -2 (low)
+```
+
+**Why it matters for privacy**
+
+A large age spread between co-spent UTXOs tells an adversary that the wallet has been active across a long time period, the user has dormant UTXOs (suggesting long-term holding), and the spending pattern reveals when the wallet was first funded. This temporal fingerprint aids behavioral profiling.
+
+**Scoring impact:** -2 to -4
+
+- Age spread > 52,560 blocks (~1 year): -2
+- Age spread > 210,000 blocks (~4 years): -4
+
+**Remediation:** Spend UTXOs of similar ages together. Consolidate old UTXOs through CoinJoin before mixing them with recent funds.
+
+---
+
+### Coinbase Detection
+
+**Technical description**
+
+Identifies block reward (coinbase) transactions. A coinbase transaction has no regular inputs - its single input references a null txid (all zeros) with vout index 0xFFFFFFFF. The output addresses are associated with a publicly identifiable mining pool.
+
+```
+if len(tx.inputs) == 1 and tx.inputs[0].txid == "00...00" and tx.inputs[0].vout == 0xFFFFFFFF:
+  flag as coinbase transaction
+```
+
+**Why it matters for privacy**
+
+Coinbase transactions are informational only. Mining rewards are not a privacy concern per se, but the output addresses are publicly associated with mining pools. If a user receives a coinbase output directly, it may indicate they are a miner, which is metadata about their identity and activity.
+
+**Scoring impact:** 0 (informational)
+
+---
+
+### Recurring Payment Detection (Address-Level)
+
+**Technical description**
+
+Detects when the same sender-receiver pair transacts multiple times across the transaction history of a target address. A counterparty frequency map is built across all transactions involving the target address.
+
+```
+counterparty_counts = {}
+for tx in address_transactions:
+  counterparties = extract_counterparty_addresses(tx, target_address)
+  for cp in counterparties:
+    counterparty_counts[cp] = counterparty_counts.get(cp, 0) + 1
+
+for cp, count in counterparty_counts.items():
+  if count >= 2:
+    if count >= 10:
+      impact: -10 (critical)
+    elif count >= 4:
+      impact: -7 (high)
+    else:  // 2-3
+      impact: -5 (medium)
+```
+
+**Why it matters for privacy**
+
+Even with CoinJoin, recurring payments to the same address re-link parties over time. An adversary observing multiple transactions between the same pair can infer a business relationship, subscription, salary, rent, or other recurring financial obligation. The pattern itself is metadata that aids behavioral profiling and identity inference.
+
+**Scoring impact:** -5 to -10
+
+- 2-3 repeated counterparty transactions: -5
+- 4-9 repeated counterparty transactions: -7
+- 10+ repeated counterparty transactions: -10
+
+**Remediation:** Use BIP47 (PayNym) reusable payment codes so that each payment uses a fresh derived address. For regular payments, use Lightning Network which does not expose individual payment details on-chain.
+
+---
+
+### High Activity Address Detection (Address-Level)
+
+**Technical description**
+
+Detects unusually high transaction counts on a single address, indicating an exchange, service, or heavily reused personal address. Transaction count thresholds are calibrated against observed patterns in known entity addresses.
+
+```
+tx_count = len(address_transactions)
+
+if tx_count >= 1000:
+  flag as "exchange-level activity" (-8, critical)
+elif tx_count >= 100:
+  flag as "service-level activity" (-5, high)
+elif tx_count >= 20:
+  flag as "moderate activity" (-3, medium)
+```
+
+**Why it matters for privacy**
+
+High-activity addresses are more likely to be monitored by chain analysis firms, flagged by exchanges, and included in address databases. An address with 1000+ transactions is almost certainly a service or exchange hot wallet, and any transaction involving it can be correlated with the service's KYC records. Even moderate activity (20+ transactions) on a single address indicates address reuse and creates a rich dataset for temporal and behavioral analysis.
+
+**Scoring impact:** -3 to -8
+
+- 1000+ transactions: -8 (critical, exchange-level)
+- 100+ transactions: -5 (high, service-level)
+- 20+ transactions: -3 (medium, moderate activity)
+
+**Remediation:** Generate a new address for every receive. Use HD wallets that derive fresh addresses automatically. For services, implement address rotation and avoid reusing deposit addresses.
+
+---
+
+## Wallet-Level Heuristics
+
+Wallet audits (xpub/descriptor, `src/lib/analysis/wallet-audit.ts`) know something no single-transaction analysis knows: which addresses are the wallet's and which outputs were its change. Five heuristics use that ground truth to score what the wallet did across its history (spec: [spec-wallet-heuristics.md](./spec-wallet-heuristics.md)). They are pure functions of the scan data (no extra API calls, no traces), so the web app, the CLI (`scan xpub`) and the MCP `scan_wallet` tool return identical results.
+
+**Behaviour model** (`src/lib/analysis/wallet-behavior.ts`). Every scanned tx is deduplicated by txid. Each output paid to a wallet address gets one class from its funding tx (first match):
+
+| Class | Rule |
+|---|---|
+| `unknown` | The funding tx is not in the scanned history (address history truncated at 100 txs), or the wallet funded only part of it (outside inputs: never labelled). |
+| `received` | The funding tx is someone else's CoinJoin (no wallet input, not Whirlpool), e.g. a JoinMarket taker paying the wallet. |
+| `mixed` | The funding tx is a CoinJoin (`isCoinJoinTx`, including Stonewall) and the coin's value equals another output's value. A tx funded only by the wallet counts as a CoinJoin only when an equal-value output returns to the wallet, so an own equal-amount batch is a solo spend. |
+| `coinjoin-change` | The funding tx is a CoinJoin and the value is unique, or the coin is a Whirlpool tx0's toxic change. |
+| `received` | No input of the funding tx is the wallet's. |
+| `change` | The wallet funded the tx and it also paid an outside address. |
+| `self` | The wallet funded the tx and every addressed output is the wallet's. |
+
+- **Solo spends:** every input is the wallet's and the tx is not a CoinJoin. A tx with any outside input (collaborative, PayJoin-shaped, a CoinJoin someone else built) is skipped by every check and never labelled; PayJoin is never detected (see Non-Heuristics).
+- **Simple payments:** solo spends with exactly one addressed output to the wallet (the change) and one to someone else, excluding tx0s.
+- `unknown` never triggers a finding, so missing history cannot cause a false positive.
+- **Gap limit:** Own addresses beyond the scanned gap limit look external: a self-transfer to them reads as a payment, which can turn `self` into `change` and add change-exposure or peel-chain hits. The "Rescan with" larger gap limit control is the remedy.
+- The audit also reports `utxoOrigins`: unspent coins by class (count and sats), shown as the "Coin origins" bar on the wallet result and in CLI text/JSON output. Every unspent coin is in exactly one class, so the counts sum to the UTXO total. The UTXO list and the coin selection advisor show the same class per coin (a `mixed` coin is "Mixed (CoinJoin)", a `coinjoin-change` coin is "CoinJoin change", never mixed). Holding mixed and unmixed coins is shown, not scored.
+- **Linkage clusters** (`src/lib/analysis/wallet-clusters.ts`): union-finds over the wallet's coins of what its history already links on-chain, in two tiers. **Certain:** the same address; inputs co-spent in a solo spend; a solo spend with exactly one wallet output (that output joins its inputs); a CoinJoin's `coinjoin-change` with the wallet's inputs of that CoinJoin when those inputs were one certain cluster. **Inferred** (adds to certain): a solo spend with 2+ wallet outputs joins them with each other and its inputs, and so their descendants; an observer has to guess which output was the change. A `mixed` output, a receipt from outside and any tx with an outside input never link. The coin selection advisor counts a merge within one certain cluster as no new link and within one inferred cluster as a probable link (tier f of Privacy first); merging two outputs of one wallet-built transaction is a hard violation instead, counted once; W2 counts merges across certain clusters and scores those within one inferred cluster a notch lower.
+
+### W1: Post-Mix Merge (`wallet-postmix-merge`)
+
+**Mechanism:** A solo spend with 2+ inputs, at least one `mixed`. Variant `unmixed`: another input is a known non-mixed class (`coinjoin-change`, `change`, `self`, `received`). Variant `mixed`: every other input is `mixed` or `unknown` (including two outputs of the same CoinJoin).
+
+**Privacy impact:** CIOH (Meiklejohn et al. 2013, Androulaki et al. 2013) links every input of a non-CoinJoin spend. Merging a mixed output with an unmixed coin ties it to that coin's history, the post-mix failure documented by OXT Research, the Whirlpool "doxxic change" guidance and Wasabi's coin control docs; Möser and Böhme (2017) measured that such merges deanonymize a large share of CoinJoin outputs. Merging only mixed outputs intersects their anonymity sets (LaurentMT, Boltzmann).
+
+**Detection:** `checkMerges` in `wallet-heuristics.ts`, over the input classes from `coinClass`.
+
+**Impact:** critical -20 (2+ `unmixed` spends), critical -15 (1), high -12 (2+ `mixed`-only spends), high -8 (1). One finding; the title counts the variant's spends.
+
+### W2: Change Merged With Other Coins (`wallet-change-merge`)
+
+**Mechanism:** A solo spend with 2+ inputs, no `mixed` input, and at least one change input (`isChangeClass` in `wallet-behavior.ts`: `change`, `self`, the outputs of a self-transfer, or `coinjoin-change`, the same definition the coin selector's "spend change on its own" rule uses) that sat in a different certain linkage cluster from another input just before the spend (clusters built parents first). A spend counted by W1 is not counted here. When every counted spend merged only within one inferred cluster (coins from the same payment's outputs), or merged only ambiguous change (no change-detection rule points at it: `changeIdentifiable` in `wallet-heuristics.ts`, which reuses the H2 signals and is shared with the coin selector), the finding drops a notch: low -2 (1 spend), medium -4 (2-4), medium -7 (5+).
+
+**Privacy impact:** Change carries the history of the payment that created it. The recipient, and anyone applying standard change rules (Meiklejohn 2013, Kappos et al. 2022), already attribute it to the sender. Spending it with a coin from another transaction hands that coin and its source to the same observers and joins the two clusters. Merging coins the history certainly links (coins on the change's own address, coins co-spent with it, coins descending from it through single-output spends) adds no new link and does not count. Merging two outputs of one payment, or their descendants, confirms to anyone that both were the wallet's (so which output was the change): it counts, a notch lower. Receipts-only merges are not newly penalized (3+ input merges are already `wallet-consolidation-history`, and the tx view shows `h3-cioh`).
+
+**Identifiable change** (`changeIdentifiable` in `change-identifiable.ts`, shared with the linkage clusters and the coin selector): CoinJoin change; a tx's only output; change sent back to an input address; an address already spent from in an earlier spend (W2 counts only spends before the merge); on a 2-output tx, whatever H2 (`analyzeChangeDetection`) picks as change, with the wallet's own address use counts feeding its fresh-address signal; on a tx with 3+ outputs, a W3 rule (round amount, address type, optimal change) pointing at it against every other output. Missing data (an input without a prevout address, a tx outside the history) counts as identifiable. Ambiguous change joins its payment's inputs only in the inferred cluster tier. Known gaps: round fiat amounts (no historical price in this local check), the fresh-address signal for outside addresses (their use counts are not fetched), and H2's value disparity, unnecessary input and shadow change on 3+ outputs (the engine has no multi-output version).
+
+**Detection:** `checkMerges` in `wallet-heuristics.ts`.
+
+**Impact:** medium -4 (1 spend), high -7 (2-4), high -10 (5+).
+
+### W3: Change Exposure (`wallet-change-exposed`)
+
+**Mechanism:** Over the wallet's simple payments, counts those where a standard change rule points at the **real** change: `type` (the change shares every input's address type and the payment's type differs), `round` (the payment is round and the change is not, H1), `optimal` (2+ inputs, the change is smaller than every input and the payment is not; Nick 2015). A payment counts only when at least one rule picks the change and no rule picks the payment: facing contradicting rules (a Taproot payment with a round change, say) an analyst cannot tell, so that payment is not exposed.
+
+**Privacy impact:** These are the rules chain analysts run at scale (validated against ground truth by Kappos et al. 2022). A wallet whose habits make them right lets anyone follow its change from payment to payment. This folds in round-payment habits and script-type mixing across spends, which matter only because they expose change.
+
+**Detection:** `checkChangeExposure` in `wallet-heuristics.ts`, over `simplePayments`.
+
+**Impact:** by ratio exposed/payments: high -6 (> 50%), medium -4 (> 20%), low -2 (any), no finding when none.
+
+### W4: Peel Chain, Wallet Level (`wallet-peel-chain`)
+
+**Mechanism:** Single-input simple payments linked when one spends the previous one's change. The longest chain counts if it has 3+ payments.
+
+**Privacy impact:** Peel chains are the main way analysts follow a wallet through its payments (Kappos et al. 2022, "How to Peel a Million"). With the wallet's ground truth the chain is exact: identify one payment and the rest follow.
+
+**Detection:** `checkPeelChains` in `wallet-heuristics.ts`.
+
+**Impact:** high -6 (6+ payments), medium -3 (3-5). Below tx-level Peel Chain Detection because W3 already scores how detectable each hop's change is.
+
+### W5: Coins Kept Apart (`wallet-no-merge`)
+
+**Mechanism:** 3+ solo spends, none counted by W1, W2 or `wallet-consolidation-history`, and no W4 peel chain.
+
+**Privacy impact:** Rewards the coin control the other findings teach (mirrors `wallet-no-reuse` +5 and `wallet-uniform-script` +3).
+
+**Detection:** `checkNoMerge` in `wallet-heuristics.ts`.
+
+**Impact:** good, +3.
+
+**Deduplication:** each solo spend is counted under at most one merge finding, in the order W1, W2, `wallet-consolidation-history`. W3, W4 and W5 are separate facts and stack.
+
+---
+
+## Scoring Model
+
+### Base Score
+
+Every transaction analysis begins with a base score of **70**. This represents a "typical" Bitcoin transaction with no obviously good or bad privacy characteristics. The base score is set above the midpoint (50) because most transactions do not have catastrophic privacy failures - they have the normal, baseline level of exposure inherent in using a transparent public blockchain.
+
+For address-level analysis, the base score is **93**, reflecting the smaller number of heuristics (6) and their limited positive impact range (max +9).
+
+For wallet audits (xpub/descriptor), the base score is **70**, the same as transactions; wallet checks and wallet-level heuristics add their impacts to it.
+
+### Score Calculation
+
+```
+final_score = base_score + sum(all heuristic impacts)
+final_score = clamp(final_score, 0, 100)
+```
+
+All heuristic impacts are summed. Negative impacts indicate privacy weaknesses. Positive impacts indicate privacy-enhancing features. Heuristics that can produce positive impacts: CoinJoin detection (H4), high entropy (H5), no address reuse (H8, +3), clean UTXO set (H9, +2), strong anonymity sets (+1 to +5), uniform script types (+2), and cold storage patterns (+2).
+
+### Grade Thresholds
+
+| Grade | Score Range | Interpretation |
+|-------|-------------|----------------|
+| A+ | >= 90 | Excellent. CoinJoin participant, Taproot, no address reuse, high entropy. You know what you are doing. |
+| B | >= 75 | Good. Minor issues that could be improved, but no critical exposure. |
+| C | >= 50 | Fair. Notable privacy concerns. An adversary with moderate resources could trace activity. |
+| D | >= 25 | Poor. Significant exposure. Chain analysis firms can likely cluster and trace with confidence. |
+| F | < 25 | Critical. Severe privacy failures. Address reuse, trivial clustering, deterministic transaction interpretation. |
+
+### Heuristic Impact Summary
+
+| ID | Heuristic | Level | Min Impact | Max Impact |
+|----|-----------|-------|------------|------------|
+| H1 | Round Amount Detection | TX | -8 | -20 |
+| H2 | Change Detection | TX | -5 | -25 |
+| H3 | Common Input Ownership (CIOH) | TX | -6 | -45 |
+| H4 | CoinJoin Detection | TX | +15 | +30 |
+| H5 | Simplified Entropy (Boltzmann) | TX | -5 | +15 |
+| H6 | Fee Analysis | TX | 0 | -2 |
+| H7 | OP_RETURN Detection | TX | -5 | -8 (stacks) |
+| H8 | Address Reuse | Addr | +3 | -93 |
+| H9 | UTXO Analysis | Addr | +2 | -11 |
+| H10 | Address Type Analysis | Addr | -5 | 0 |
+| H11 | Wallet Fingerprinting | TX | -3 | -8 |
+| H12 | Dust Detection | TX | -3 | -8 |
+| - | Anonymity Set Analysis | TX | -1 | +5 |
+| - | Script Type Mix Analysis | TX | -8 | +2 |
+| - | Timing Analysis | TX | -3 | -1 |
+| H17 | Multisig/Escrow Detection | TX | 0 | -3 |
+| - | Spending Pattern Analysis | Addr | -5 | +2 |
+| - | Peel Chain Detection | TX | -15 | -20 |
+| - | Consolidation Patterns | TX | -3 | -8 |
+| - | Unnecessary Input | TX | -2 | -8 |
+| - | CoinJoin Premix (tx0) | TX | +5 | +5 |
+| - | BIP69 Ordering | TX | -2 | -2 |
+| - | BIP47 Notification | TX | +3 | +3 |
+| - | Exchange Pattern | TX | -3 | -3 |
+| - | Coin Selection | TX | -1 | +3 |
+| - | Witness Analysis | TX | -2 | +1 |
+| - | Post-Mix Consolidation | TX | -12 | -18 |
+| - | Entity Detection | TX | -20 | 0 |
+| - | Ricochet Detection | TX | +5 | +5 |
+| - | UTXO Age Spread | TX | -2 | -4 |
+| - | Coinbase Detection | TX | 0 | 0 |
+| - | Recurring Payments | Addr | -5 | -10 |
+| - | High Activity Detection | Addr | -3 | -8 |
+| W1 | Post-Mix Merge | Wallet | -8 | -20 |
+| W2 | Change Merged With Other Coins | Wallet | -4 | -10 |
+| W3 | Change Exposure | Wallet | -2 | -6 |
+| W4 | Peel Chain (Wallet) | Wallet | -3 | -6 |
+| W5 | Coins Kept Apart | Wallet | +3 | +3 |
+
+### Score Design Properties
+
+- A single critical failure (e.g., any address reuse at -70 or worse) drops the grade to F by itself
+- Multiple minor issues compound to produce meaningful score reductions
+- CoinJoin participation provides a substantial boost but does not erase other issues
+- The theoretical maximum (100) requires: CoinJoin participation, Taproot address, no address reuse, high entropy, no dust, no OP_RETURN, clean wallet fingerprint
+- The theoretical minimum (0) requires: extensive address reuse, deterministic transaction, dust UTXOs, legacy address type, identifiable wallet, OP_RETURN metadata
+
+---
+
+## Cross-Heuristic Intelligence
+
+Individual heuristics analyze isolated signals, but real-world transactions produce findings that interact. The cross-heuristic engine runs after all individual heuristics complete, applying suppression rules, compound scoring adjustments, and contradiction detection. This prevents double-counting, resolves conflicting signals, and captures emergent patterns that no single heuristic can identify.
+
+The engine is implemented in `src/lib/analysis/cross-heuristic/` and consists of 7 rule groups:
+
+### 1. CoinJoin/Stonewall Suppressions
+
+When a CoinJoin (H4) or Stonewall pattern is detected, many single-user heuristics produce misleading findings because the transaction structure deliberately violates their assumptions. The following findings are suppressed (impact zeroed or removed):
+
+- **CIOH** (`h3-cioh`): Multiple inputs are expected in CoinJoin; they do not indicate common ownership.
+- **Round amounts** (`h1-*`): Equal-value CoinJoin outputs are round by design.
+- **Change detection** (`h2-change-detected`): CoinJoin outputs are not "change." Note: `h2-self-send` is NOT suppressed, as self-sends within CoinJoin are still meaningful.
+- **Script type mixing** (`script-mixed`): Participants use different wallet software, so mixed types are expected.
+- **Low entropy** (`h5-low-entropy`): Suppressed because CoinJoin entropy is calculated differently.
+- **Wallet fingerprint** (`h11-wallet-fingerprint`): Impact zeroed and a context annotation is added explaining that wallet identification is less meaningful in a multi-party transaction.
+- **Dust outputs**, **timing analysis**, **fee fingerprinting**: All suppressed in CoinJoin context.
+- **Anonymity set** (none/moderate): Suppressed because CoinJoin anonymity sets are evaluated by H4 directly.
+- **Multisig** (`h17-*`), **consolidation**, **BIP69**, **witness analysis**, **coin selection**, **peel chain**: All suppressed.
+- **Linkability recommendations**: Adjusted to reflect post-mix best practices rather than generic spending advice.
+
+### 2. Multisig Suppressions
+
+When multisig spending is detected (H17), certain structural findings are suppressed because they are inherent properties of multisig transactions rather than privacy failures:
+
+- **Script type mixing** (`script-mixed`): Multisig inputs reveal their script type by design.
+- **CIOH** (`h3-cioh`): Multisig cosigners contributing inputs is expected behavior.
+- **Consolidation**: Multi-input multisig spending is structural, not consolidation.
+
+### 3. Consolidation Deduplication
+
+Prevents double-counting when consolidation and CIOH both fire on the same transaction:
+
+- When CIOH fires on a non-CoinJoin transaction, consolidation impact is reduced to -2 and `unnecessary-input` is suppressed entirely. CIOH already captures the multi-input problem; adding full consolidation and unnecessary-input penalties would triple-count the same underlying issue.
+- For consolidation self-sends, redundant zero-entropy findings are suppressed (a consolidation to a single output is inherently zero-entropy, so flagging both is redundant).
+- When `consolidation-fan-in` already exists, the entropy sweep finding is removed to avoid duplication.
+
+### 4. Compound Scoring Adjustments
+
+Sub-rules that detect when multiple findings together indicate a stronger (or weaker) signal than the sum of their parts:
+
+**RBF x Change:** When both `h6-rbf-signaled` and `h2-change-detected` fire, the change finding's impact is boosted by -2. RBF signaling confirms which output is change because the wallet that initiated RBF is the one controlling the change output.
+
+**Multi-heuristic confidence boost:** When change detection is corroborated by 2 or more independent signals (wallet fingerprint, peel chain, low entropy), the change finding's impact is boosted by -2 per corroborating signal (maximum -6 additional), and its severity is escalated. This reflects the higher confidence in change identification when multiple heuristics agree.
+
+**Post-mix entity escalation:** When post-mix consolidation AND `entity-known-output` fire together, the entity finding is escalated to critical severity with impact -10. Sending post-mix outputs to a known entity (exchange) undoes the CoinJoin and creates a KYC anchor point.
+
+**Chain overlap dedup:** Chain findings count toward the grade, so one fact is scored once. `chain-coinjoin-input`, `chain-coinjoin-ancestry` and the CoinJoin-origin `chain-ricochet` all reward CoinJoin provenance: only the strongest keeps its score, the others get `scoreImpact: 0` and `params.context: "overlap"` (an Ashigaru Ricochet hop is a separate fact and keeps its bonus). Likewise `chain-entity-proximity-backward` and `chain-taint-backward` both penalize an entity among the parent's inputs: only the stronger penalty counts. Entity proximity never matches the analyzed transaction's own addresses, and taint only scores the fraction reached through parents, because `entity-detection` already scores the transaction's own addresses.
+
+**Equal outputs spent together after the fact:** When `chain-post-coinjoin-consolidation` shows 2+ outputs of the same value (equal outputs) spent together in one non-CoinJoin child, and the tx is a Whirlpool, JoinMarket, Stonewall or simplified Stonewall (each participant receives exactly one equal output), one wallet held at least two of them. The -15 consolidation finding stays and `h4-coinjoin-single-entity` (variant `cospent`, high, deterministic) cancels the tx's CoinJoin bonus. Never for `h4-coinjoin` (WabiSabi, Wasabi 1.x, generic): one WabiSabi user often holds several outputs of a denomination (62% of LiquiSabi-labelled rounds show such a co-spend), so WabiSabi keeps only the -15; the same holds for a tx that follows every WabiSabi coordinator rule but lacks the denomination evidence. Not applied twice when the single-entity hint already cancelled the bonus; it replaces the weaker `isolated` hint (same offset). Measured: 0/525 Whirlpool and 1/1,134 JoinMarket reference rounds show such a co-spend.
+
+**Post-mix backward CoinJoin dedup:** When post-mix consolidation is present, the surviving CoinJoin provenance bonus (`chain-coinjoin-input`, `chain-coinjoin-ancestry` or CoinJoin-origin `chain-ricochet`) is reduced or zeroed. The post-mix consolidation already accounts for and penalizes this pattern; giving a CoinJoin bonus for the parent transactions would partially offset the consolidation penalty.
+
+### 5. Wallet Contradiction Rules
+
+Detects paradoxical combinations of findings that indicate unusual or suspicious wallet behavior:
+
+**Wasabi reuse paradox:** When a Wasabi Wallet fingerprint (nVersion=1, nLockTime=0) is detected alongside address reuse findings, the engine emits a `cross-wasabi-reuse-paradox` finding (impact: 0, severity: high). Wasabi is a privacy-focused wallet that should never produce address reuse. This combination suggests either a misconfigured wallet, a non-Wasabi wallet that mimics Wasabi's fingerprint, or deliberate misuse.
+
+### 6. Deterministic Score Cap
+
+When `h2-same-address-io` fires (partial self-send where change is revealed deterministically because an output pays back to an input address), the transaction's privacy is fundamentally broken. The engine emits a `compound-deterministic-cap` finding with enough negative impact to ensure the final score reaches F grade. Specifically, the impact is calculated to bring the score to -46 from the base of 70, guaranteeing the score clamps to 0 or near-0 regardless of any positive findings.
+
+### 7. Behavioral Fingerprint Rollup
+
+When 2 or more behavioral sub-signals fire together, their combined fingerprinting power exceeds the sum of individual impacts. The engine detects the following contributing signals: wallet fingerprint (H11), round fee rate, RBF signaling, SegWit fee miscalculation, BIP69 ordering, value-ordered coin selection (ascending/descending), and witness analysis patterns. A signal counts only when it is scored as a penalty (`scoreImpact < 0`): a suppressed signal (0) does not count, and neither does a credit.
+
+The changeless Branch-and-Bound credit (`h-coin-selection-bnb`, +3) is not a rollup signal. It is scored as a privacy gain, and a changeless 2-input payment is produced by Bitcoin Core and Sparrow BnB but also by any exact-amount or send-max spend with coin control, so it does not single out a wallet; counting it also made a changeless payment score below the same payment with a change output (credit +3, rollup -6). Consequences: consolidations, which no longer get the false BnB credit, also no longer reach the rollup through it, so they net +3 against the old engine (+3 credit and -6 rollup both gone: golden corpus `2d2dcc80...` D 31 -> D 34 and `8ce796fe...` C 53 -> C 56, consolidation `40b88e16...` heuristics-only D 48 -> C 51; its live and offline web scan stays D because `chain-forward-peel` fires). A real 2-in-1-out changeless payment keeps its +3 and loses one rollup signal: the first Taproot script-path spend `37777def...` goes from 4 signals (-12) to 3 (-6), D 46 -> C 52.
+
+When these signals co-occur:
+
+- **2-3 behavioral signals:** Emits `behavioral-fingerprint-rollup` with impact -6 (medium severity). The wallet is distinguishable from the majority of transactions.
+- **4+ behavioral signals:** Impact -12 (critical severity). The wallet is highly identifiable, likely attributable to a specific software version.
+
+This rollup captures the compounding effect of multiple weak signals. A single round fee rate is trivial; a round fee rate combined with BIP69 ordering, nVersion=1, and value-ascending coin selection narrows the anonymity set to a very small population.
+
+---
+
+## Operational Security Concerns
+
+The privacy of your Bitcoin transactions is only one dimension of your overall privacy. How you use this tool - or any blockchain analysis tool - introduces its own set of risks.
+
+### IP Address Disclosure
+
+When you query the mempool.space API (or any blockchain explorer API), your request reveals:
+
+- **Your IP address** - which can be geolocated to your city, linked to your ISP account, and correlated with other activity from the same IP
+- **Which addresses and transactions you are querying** - this is the critical leak. If you are querying your own address, you have created a link between your IP and your Bitcoin address
+- **Timestamps of queries** - when you made the request, which can be correlated with on-chain transaction timing
+
+The mempool.space operators can see all of this. While mempool.space is operated by a privacy-respecting team, you are trusting their operational practices. Any compromise of their infrastructure would expose query logs.
+
+**Mitigation:** Use Tor Browser or a trusted, no-log VPN. Route all API requests through Tor. am-i.exposed auto-detects Tor and can use the mempool.space .onion endpoint when available.
+
+### Timing Correlation
+
+If you receive bitcoin and immediately query that address or transaction on am-i.exposed (or any blockchain explorer), the timing itself creates a correlation. An adversary monitoring both the Bitcoin network (for new transactions) and the explorer API (for queries) can correlate the two.
+
+Example: A transaction confirms at block height N. Within 30 seconds, an IP address queries that transaction on mempool.space. The observer can reasonably infer that the IP address belongs to a party involved in that transaction.
+
+**Mitigation:** Wait before querying. There is no precise safe interval, but querying hours or days after a transaction significantly reduces timing correlation risk.
+
+### DNS Leakage
+
+Even with a VPN, your DNS queries may leak to your ISP if DNS is not properly configured. When your browser resolves `mempool.space` or `am-i.exposed`, the DNS query reveals that you are using these services.
+
+**Mitigation:** Use DNS-over-HTTPS (DoH) or DNS-over-TLS (DoT). Configure your VPN to handle all DNS resolution. Better yet, use Tor, which handles DNS resolution through the Tor network.
+
+### Browser Fingerprinting
+
+Standard web fingerprinting techniques - canvas rendering, WebGL renderer strings, installed fonts, screen resolution, timezone, language preferences, and dozens of other signals - can create a unique identifier for your browser. This fingerprint persists across sessions and can be used to track you even without cookies.
+
+If mempool.space or any intermediary CDN employs browser fingerprinting (or is compromised to do so), your queries across different sessions could be linked together, allowing an observer to build a profile of all addresses and transactions you have ever queried.
+
+**Mitigation:** Use Tor Browser, which standardizes the browser fingerprint across all users. If not using Tor, use a privacy-focused browser with fingerprinting resistance (Firefox with `privacy.resistFingerprinting` enabled, or Brave with aggressive fingerprinting protection).
+
+### Mitigations
+
+The following measures minimize the privacy risks of using this tool:
+
+- **All analysis runs client-side.** Your browser fetches raw data from the blockchain API and runs all heuristics locally. No server ever receives your query and your analysis results together. There is no am-i.exposed backend that processes or logs what you are analyzing. A pasted PSBT or raw transaction is analyzed in memory only: never in the URL, history, bookmarks or cache. For a raw transaction (no input amounts), an optional lookup of the parent transactions and output-address history is automatic on your own node and one explicit click on mempool.space, because it reveals which coins are about to be spent and where they go.
+- **Optional wallet key lock.** Wallet bookmarks can keep their xpub/descriptor sealed with a password (PBKDF2 + AES-GCM) in one localStorage vault; the bookmark and the `#xpub=` URL then hold only a placeholder, the first 16 hex of an unsalted SHA-256 of the key (domain-tagged). That placeholder lets anyone holding a candidate xpub confirm it is bookmarked in this browser, like the saved-scan key. While unlocked, only the derived non-extractable key stays in tab memory; a reload locks again. The lock does not protect against malware on the device.
+- **Tor .onion endpoint auto-detection.** When the tool detects that it is running in Tor Browser, it automatically routes API requests to the mempool.space .onion address, keeping your queries within the Tor network.
+- **Strict Referrer-Policy headers.** am-i.exposed sets `Referrer-Policy: no-referrer` to prevent the browser from sending the page URL (which may contain your queried address in the hash) in the Referer header when making API requests.
+- **Content Security Policy.** CSP headers restrict which domains the page can connect to, preventing exfiltration of data to unauthorized endpoints. Only explicitly listed API endpoints are allowed.
+- **No analytics, no tracking, no cookies.** am-i.exposed does not use Google Analytics, Plausible, or any analytics platform. No cookies are set. Recent scan history is stored in localStorage. API responses are cached in IndexedDB for faster repeat analysis. Both can be cleared from Settings. Nothing is sent unless you choose to broadcast. Broadcasting is opt-in, only for a fully signed transaction, after a confirm dialog naming the endpoint (mempool.space, its onion, or your own node), and sends only the signed transaction to that endpoint. The CLI and MCP server stay fully offline (no broadcast, no lookups).
+
+---
+
+## Competitor Analysis
+
+### Blockchair Privacy-o-Meter
+
+- Provides a "privacy score" for Bitcoin transactions
+- **Black box scoring algorithm** - the methodology is not publicly documented, making it impossible to verify, audit, or understand the score
+- **Server-side analysis** - Blockchair's servers see every query you make, creating a direct correlation between your IP and the addresses/transactions you are analyzing
+- No Boltzmann entropy calculation
+- No wallet fingerprinting detection
+- No dust attack detection
+- No address reuse analysis (transaction-level scoring only)
+
+### OXT.me (OFFLINE since April 2024)
+
+- Was the gold standard for Boltzmann entropy analysis of Bitcoin transactions
+- Created by LaurentMT as part of the Samourai Wallet ecosystem and OXT Research
+- Provided detailed transaction graphs, entropy scores, wallet cluster analysis, and advanced tools for privacy researchers
+- The Boltzmann tool was open source and academically rigorous
+- **Shut down following the arrest of Samourai Wallet developers in April 2024**
+- The source code exists on GitHub but the hosted service is offline with no indication of return
+- am-i.exposed fills this gap with a simplified but functional entropy estimation, with full Boltzmann analysis now available via a Rust/WASM implementation running in a Web Worker
+
+### KYCP.org (OFFLINE since April 2024)
+
+- "Know Your Coin Privacy" - built by the Samourai Wallet team
+- Focused on CoinJoin analysis, post-mix privacy assessment, and Whirlpool-specific metrics
+- Entropy calculations for Whirlpool CoinJoin transactions
+- Clean, accessible interface that made privacy analysis approachable for non-technical users
+- **Also shut down after the Samourai arrests**
+- No replacement exists in the public ecosystem
+- am-i.exposed incorporates KYCP-style CoinJoin detection and privacy assessment
+
+### Sparrow Wallet
+
+- Excellent privacy features at transaction construction time: coin control, PayJoin support, Whirlpool integration, UTXO management, address labeling
+- **No post-hoc analysis** of existing transactions - it helps you build private transactions, not analyze arbitrary existing ones
+- Desktop only (no web interface)
+- Cannot analyze transactions or addresses that are not part of your own wallet
+- Complementary to am-i.exposed rather than competitive - use Sparrow to construct transactions, use am-i.exposed to verify the result from the outside
+
+---
+
+## What Makes am-i.exposed Different
+
+1. **Open source, client-side analysis.** Every heuristic is documented in this file and implemented in publicly auditable TypeScript. No black boxes. No closed-source algorithms. Fork the code and verify the scoring yourself.
+
+2. **No server ever sees your query and results together.** API calls go directly from your browser to the blockchain data source, and the only other request is the opt-in broadcast of a signed transaction to the endpoint shown. The static hosting infrastructure serves files and has no visibility into what is being analyzed. There is nothing to subpoena.
+
+3. **Wallet fingerprinting detection.** No other consumer-facing privacy tool currently offers transaction-level wallet fingerprinting. This is a heuristic that chain surveillance firms use routinely, but that has never been exposed to end users in an accessible format until now.
+
+4. **Dust attack detection.** Potential dusting attacks on addresses are flagged, alerting users to active surveillance threats before they accidentally compromise their privacy by spending dust UTXOs through careless automatic coin selection.
+
+5. **Honest about operational security limitations.** am-i.exposed documents the privacy risks of using it. The documentation covers IP disclosure, timing correlation, DNS leakage, and browser fingerprinting with specific mitigations. Most tools pretend these risks do not exist.
+
+6. **Fills the gap left by OXT.me and KYCP.org.** Since April 2024, there has been no publicly available tool combining entropy analysis, CoinJoin detection, wallet fingerprinting, and multi-heuristic privacy assessment. am-i.exposed is building what was lost.
+
+---
+
+## Additional Features
+
+### Pre-Send Destination Check
+
+**Status:** Implemented
+
+**Technical description**
+
+Before sending bitcoin to an address, a user pastes the destination address into am-i.exposed. The tool queries the address's full transaction history and reports:
+
+1. **Reuse count** - How many times has this address received funds? If more than once, the recipient has poor privacy hygiene, and sending to them links your transaction to all of their other activity.
+2. **Total received/spent** - Volume of activity on this address. High volume on a single address suggests an exchange deposit address, a merchant, or a careless user.
+3. **Associated transaction count** - How many transactions involve this address.
+4. **Known entity detection** - If the address appears in known databases (exchange hot wallets, mining pools, sanctioned addresses), flag it.
+5. **First-degree cluster size** (see Cluster Analysis below) - How many other addresses are linked to this one through CIOH.
+
+```
+destination = user_input_address
+history = fetch_address_transactions(destination)
+receive_count = count_receives(history)
+if receive_count > 1:
+  warn("This address has been used {receive_count} times. The recipient is reusing addresses.")
+if receive_count > 10:
+  warn("This address has received {receive_count} deposits. Likely an exchange or service address.")
+
+cluster = build_first_degree_cluster(history)
+if len(cluster) > 1:
+  warn("This address belongs to a cluster of {len(cluster)} addresses via common-input-ownership.")
+```
+
+**Why it matters for privacy**
+
+Sending to a reused address is a privacy leak for BOTH parties. The sender's transaction becomes trivially linkable to all other transactions involving that address. If the destination is a known entity (exchange, merchant), the sender's identity may be inferred through the recipient's KYC records.
+
+No wallet currently warns users about destination address privacy. Sparrow flags your own address reuse but not the recipient's. This is a gap - wallets could integrate this check, but until they do, am-i.exposed provides it as a standalone tool.
+
+**Implementation:** New tab/mode on the main UI - "Check Address Before Sending." Same client-side architecture, same API calls. Minimal new code - reuses existing address analysis logic with a different presentation focused on send-time risk assessment.
+
+**UX:** Paste address → instant report card:
+- "This address has been used X times" (with severity color)
+- "Cluster size: Y addresses" (if H14 is available)
+- "Risk level: LOW/MEDIUM/HIGH/CRITICAL"
+- Actionable advice: "Ask the recipient for a fresh address" / "This appears to be an exchange deposit address"
+
+---
+
+### First-Degree Cluster Analysis (CIOH Graph Walk)
+
+**Status:** Implemented
+
+**Technical description**
+
+Given a Bitcoin address, build a cluster of all addresses linked through one hop of Common Input Ownership:
+
+1. Fetch all transactions involving the target address
+2. For each transaction where the target address appears as an input alongside other addresses, add all co-input addresses to the cluster (CIOH - H3)
+3. For change outputs identified via H2, follow the change address and repeat step 2 for that address only (one additional hop via change)
+
+This is a **one-hop** analysis. It does not recursively walk the entire graph (that would require a backend/indexer). But one hop is enough to reveal:
+
+- How many addresses the target entity controls (minimum lower bound)
+- The total balance across the cluster
+- Whether the entity has used CoinJoin (cluster will be smaller/fragmented)
+- Whether the entity consolidates UTXOs (cluster will be large)
+
+```
+function build_first_degree_cluster(target_address):
+  cluster = {target_address}
+  txs = fetch_address_transactions(target_address)
+
+  for tx in txs:
+    input_addresses = [inp.address for inp in tx.inputs]
+    if target_address in input_addresses:
+      // CIOH: all inputs in same tx are same entity
+      cluster.update(input_addresses)
+
+    // Optional: follow change output one hop
+    change_output = detect_change(tx)  // uses H2 sub-heuristics
+    if change_output and change_output.address not in cluster:
+      change_txs = fetch_address_transactions(change_output.address)
+      for ctx in change_txs:
+        ctx_input_addresses = [inp.address for inp in ctx.inputs]
+        if change_output.address in ctx_input_addresses:
+          cluster.update(ctx_input_addresses)
+
+  // Filter out CoinJoin transactions (H4) to avoid false clustering
+  // CoinJoin inputs are NOT same entity despite being in same tx
+  cluster = filter_coinjoin_false_positives(cluster, txs)
+
+  return cluster
+```
+
+**Rate limiting considerations:**
+
+Client-side cluster analysis requires multiple API calls. For a target address with N transactions, the following are needed:
+- 1 call to fetch address transactions
+- Up to N calls to fetch full transaction details (if not already fetched)
+- Up to M calls to follow change outputs (where M = number of change outputs identified)
+
+For addresses with many transactions, this can hit mempool.space rate limits. Mitigations:
+- Cap at 50 transactions analyzed (most recent)
+- Batch requests where possible
+- Show partial results with "analyzing..." progress
+- Cache results in memory during the session
+
+**Deep version (future - requires backend):**
+
+The one-hop version reveals the minimum cluster size. A full graph walk - following every cluster member through all their transactions, recursively - would reveal the true cluster size. This is what Chainalysis does. It requires:
+- An Electrum/Fulcrum server or direct node access
+- A graph database (Neo4j or similar) or in-memory graph
+- Significant compute time for large clusters (exchanges can have millions of addresses)
+
+This is Phase 3+ territory. For now, one-hop gives users more information than any free tool currently provides.
+
+**Why it matters for privacy**
+
+Cluster analysis is THE core technique of chain surveillance. Showing users their cluster size - even a lower-bound estimate - makes the abstract threat concrete. "Your address belongs to a cluster of 47 addresses" is far more impactful than "you used multiple inputs once."
+
+Combined with the Pre-Send Destination Check, users can see not just their own exposure but the exposure of addresses they're about to send to. "The address you're sending to belongs to a cluster of 200+ addresses - this is likely an exchange or service."
+
+**Scoring impact:** Informational in Phase 2 (displayed but not scored). In future phases, cluster size could modify the privacy score:
+- Cluster size 1 (no CIOH exposure): +0
+- Cluster size 2-5: -5
+- Cluster size 6-20: -10
+- Cluster size 21-50: -15
+- Cluster size 50+: -20
+
+**References**
+- Meiklejohn et al., "A Fistful of Bitcoins" (2013) - foundational clustering methodology
+- Ron and Shamir, "Quantitative Analysis of the Full Bitcoin Transaction Graph" (2013)
+- Harrigan and Fretter, "The Unreasonable Effectiveness of Address Clustering" (2016)
+
+---
+
+## Non-Heuristics
+
+Some privacy techniques are deliberately excluded from the analysis engine. This section explains why.
+
+### PayJoin (BIP78 / P2EP)
+
+**Why PayJoin is not a heuristic**
+
+PayJoin (Pay-to-EndPoint, BIP78) is a protocol where the recipient contributes one or more inputs to the payment transaction. The result is a transaction that looks indistinguishable from a normal payment - two or more inputs, two outputs, nothing unusual.
+
+That indistinguishability is the entire point. PayJoin's security model is that it poisons the Common Input Ownership Heuristic (H3) silently. If all inputs in a multi-input transaction are assumed to belong to the same entity, and in fact one input belongs to the recipient, then every clustering algorithm that relies on CIOH produces a false positive. The sender's addresses get incorrectly clustered with the recipient's addresses. Chain surveillance firms cannot tell this has happened.
+
+**If you can detect it, it is not a PayJoin.** A properly constructed PayJoin transaction has no on-chain signature that distinguishes it from an ordinary payment. There are no extra outputs, no unusual value patterns, no script type anomalies, no identifiable metadata. Any "PayJoin detector" that fires on a transaction is either wrong (false positive on a normal transaction) or the PayJoin implementation is broken (leaking information it should not).
+
+Previous versions of this tool included a PayJoin detection heuristic. It was removed because the premise is contradictory - claiming to detect something that is designed to be undetectable either discredits the tool or discredits PayJoin, and PayJoin works as designed. The heuristic matched a narrow pattern (exactly 2 inputs, 2 outputs, with an output address matching an input address) that is far more likely to be a self-spend or consolidation than an actual PayJoin.
+
+**PayJoin remains one of the best privacy techniques available.** It is recommended in the remediation guidance. Use BTCPay Server, Sparrow Wallet, or any BIP78-compatible wallet to construct PayJoin transactions. The fact that am-i.exposed cannot detect them is exactly why they work.
+
+**References**
+- BIP78 - Pay-to-EndPoint (PayJoin)
+- Belcher, C. "PayJoin" - design rationale and protocol specification
+- Bitcoin Wiki, "PayJoin" - protocol overview
+
+---
+
+## Known Gaps / Future Work
+
+### Stonewall Detection (Implemented)
+
+**Feature note:** Stonewall detection is fully implemented in `analyzeCoinJoin()` within `coinjoin.ts`.
+
+Stonewall is a simulated 2-party CoinJoin constructed by a single wallet. Structure: 2+ inputs, 4 outputs (2 equal-value + 2 change). The equal outputs create ambiguity about which input funded which equal output, increasing entropy without requiring a second participant.
+
+**STONEWALLx2** is the collaborative version where inputs actually come from two different wallets, providing real (not simulated) CoinJoin privacy.
+
+Detection pattern: exactly 4 outputs, 2 equal-value pairs going to distinct addresses, 2-4 inputs. The finding (`h4-stonewall`) reports the number of distinct input addresses so users can assess whether it is likely a single-wallet Stonewall or a collaborative STONEWALLx2. Score impact: +15.
+
+---
+
+## References
+
+### Foundational Research
+- LaurentMT. "Bitcoin Transactions & Privacy" (Parts 1-3, ~2015) - Defined transaction entropy E = log2(N), link probability matrices, and the Boltzmann framework. gist.github.com/LaurentMT
+- LaurentMT. "Introducing Boltzmann" (Medium, 2017) - First implementation of entropy analysis for Bitcoin transactions.
+- LaurentMT/boltzmann - Reference implementation. github.com/Samourai-Wallet/boltzmann
+- Maxwell, G. "CoinJoin: Bitcoin privacy for the real world." BitcoinTalk, 2013. bitcointalk.org/index.php?topic=279249.0
+- Kristov Atlas. "CoinJoin Sudoku" - Deterministic link detection in CoinJoin transactions.
+
+### Academic Papers
+- Meiklejohn, S., et al. "A Fistful of Bitcoins: Characterizing Payments Among Men with No Names." IMC 2013.
+- Ron, D. and Shamir, A. "Quantitative Analysis of the Full Bitcoin Transaction Graph." Financial Cryptography 2013.
+- Reid, F. and Harriman, M. "An Analysis of Anonymity in the Bitcoin System." 2011.
+- Moser, M. and Narayanan, A. "Resurrecting Address Clustering in Bitcoin."
+- Kappos, G., et al. "How to Peel a Million: Validating and Expanding Bitcoin Clusters."
+- Nick, J. "Data-Driven De-Anonymization in Bitcoin." Master's thesis, ETH Zurich, 2015.
+- Erhardt, M. and Shigeya, S. "An Empirical Analysis of Privacy in the Lightning Network." 2020.
+- Nakamoto, S. "Bitcoin: A Peer-to-Peer Electronic Cash System." 2008. Section 10: Privacy.
+- Shannon, C. "A Mathematical Theory of Communication." 1948.
+
+### Educational Series
+- OXT Research / ErgoBTC. "Understanding Bitcoin Privacy with OXT" (Parts 1-4, 2021) - Comprehensive guide covering change detection, transaction graphs, wallet clustering, CIOH, and defensive measures.
+  - Part 1: archive.ph/1xAw7
+  - Part 2: archive.ph/TDvjy
+  - Part 3: archive.ph/suxyq
+  - Part 4: archive.ph/Aw6zC
+- Spiral BTC. "The Scroll #3: A Brief History of Wallet Clustering" - Historical survey of chain analysis evolution from 2011-2024.
+- privacidadbitcoin.com - Spanish-language Bitcoin privacy education, community entropy calculation reference.
+
+### Wallet Fingerprinting
+- Belcher, C. "Wallet Fingerprinting" research.
+- 0xB10C. "Wallet Fingerprinting" - empirical analysis of transaction structure patterns.
+
+### Protocol Specifications
+- Ficsor, A. (nopara73). "ZeroLink: The Bitcoin Fungibility Framework." 2017.
+- Belcher, C. "Design for a CoinJoin Implementation with Fidelity Bonds" - JoinMarket design.
+- BIP69 - Lexicographic Indexing of Transaction Inputs and Outputs.
+- BIP78 - Pay-to-EndPoint (PayJoin).
+- BIP125 - Opt-in Full Replace-by-Fee Signaling.
+- BIP141 - Segregated Witness (Consensus Layer).
+- BIP340 - Schnorr Signatures for secp256k1.
+- BIP341 - Taproot: SegWit version 1 spending rules.
+- BIP342 - Validation of Taproot Scripts.
+
+### Tools and Resources
+- Bitcoin Wiki. "Privacy." en.bitcoin.it/wiki/Privacy
+
+---
+
+*This document is part of the am-i.exposed project. It is public documentation intended for privacy researchers, cypherpunks, and anyone who wants to understand how on-chain Bitcoin privacy works - and how it fails. If you find an error or want to contribute a heuristic, open an issue or PR.*

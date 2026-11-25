@@ -1,0 +1,170 @@
+"use client";
+
+import { useEffect, useId, useRef, useState } from "react";
+import { useNetwork } from "@/context/NetworkContext";
+import { useTranslation } from "react-i18next";
+import { AlertTriangle, RefreshCw, X } from "lucide-react";
+import { NETWORK_CONFIG } from "@/lib/bitcoin/networks";
+import { UNSUPPORTED_CHAIN_LABEL } from "@/lib/api/backend-network";
+
+/**
+ * Blocking overlay shown when the app is running on a self-hosted backend
+ * (Umbrel, StartOS, or a manual install) but the local mempool API is unreachable,
+ * or when the backend (also a custom URL) serves a chain the app does not support.
+ *
+ * Covers the entire viewport so the user can't miss it.
+ * They can dismiss it (button or Escape) to poke around, but the warning is clear.
+ */
+export function MempoolDownDialog() {
+  const { isUmbrel, localApiStatus, unsupportedChain } = useNetwork();
+  const { t } = useTranslation();
+  const [dismissed, setDismissed] = useState(false);
+  const titleId = useId();
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const reloadRef = useRef<HTMLButtonElement>(null);
+  const down = isUmbrel && localApiStatus === "unavailable";
+  const open = (down || !!unsupportedChain) && !dismissed;
+  const chainName = unsupportedChain === "testnet3" || unsupportedChain === "regtest"
+    ? UNSUPPORTED_CHAIN_LABEL[unsupportedChain]
+    : t("backend.unknownChain", { defaultValue: "an unrecognized chain" });
+
+  useEffect(() => {
+    if (!open) return;
+    const previous = document.activeElement as HTMLElement | null;
+    reloadRef.current?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setDismissed(true);
+      if (e.key !== "Tab") return;
+      // Keep focus on the dialog's buttons while it is modal.
+      const buttons = dialogRef.current?.querySelectorAll("button");
+      if (!buttons?.length) return;
+      const first = buttons[0];
+      const last = buttons[buttons.length - 1];
+      if (!first || !last) return;
+      const active = document.activeElement;
+      const inside = dialogRef.current?.contains(active);
+      if (e.shiftKey && (active === first || !inside)) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && (active === last || !inside)) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      previous?.focus();
+    };
+  }, [open]);
+
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-[200] flex items-center justify-center bg-background/80 backdrop-blur-sm p-4">
+      <div
+        ref={dialogRef}
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        className="glass rounded-2xl border border-warning/30 max-w-md w-full p-6 space-y-4 shadow-lg shadow-warning/5">
+        <div className="flex items-center gap-3">
+          <div className="rounded-full bg-warning/15 p-2.5">
+            <AlertTriangle size={24} className="text-warning" />
+          </div>
+          <h2 id={titleId} className="text-lg font-semibold text-foreground">
+            {down
+              ? t("umbrel.mempoolDownTitle", { defaultValue: "Mempool Unreachable" })
+              : t("backend.unsupportedTitle", { defaultValue: "Unsupported Network" })}
+          </h2>
+        </div>
+
+        {!down ? (
+          <p className="text-sm text-muted leading-relaxed">
+            {t("backend.unsupportedBody", {
+              chain: chainName,
+              defaultValue:
+                "The connected backend serves {{chain}}, which is not supported. am-i.exposed works with Mainnet, Testnet4 and Signet backends. Switch the node to one of them, or use another backend.",
+            })}
+          </p>
+        ) : (<>
+        <p className="text-sm text-muted leading-relaxed">
+          {t("umbrel.mempoolDownBody", {
+            defaultValue:
+              "The local mempool instance is not responding. Privacy analysis requires a working mempool API to fetch blockchain data.",
+          })}
+        </p>
+
+        <div className="bg-surface-inset rounded-lg p-3 space-y-2">
+          <p className="text-xs font-medium text-foreground/80">
+            {t("umbrel.mempoolDownSteps", { defaultValue: "To fix this:" })}
+          </p>
+          <ol className="text-xs text-muted space-y-1 list-decimal list-inside">
+            <li>
+              {t("umbrel.mempoolDownStep1", {
+                defaultValue: "Open your server dashboard (Umbrel, StartOS, etc.)",
+              })}
+            </li>
+            <li>
+              {t("umbrel.mempoolDownStep2", {
+                defaultValue: "Go to the mempool app and restart it",
+              })}
+            </li>
+            <li>
+              {t("umbrel.mempoolDownStep3", {
+                defaultValue: "Wait for it to finish syncing, then reload this page",
+              })}
+            </li>
+          </ol>
+        </div>
+        </>)}
+
+        <button
+          ref={reloadRef}
+          onClick={() => window.location.reload()}
+          className="w-full inline-flex items-center justify-center gap-2 text-sm font-medium bg-warning/15 hover:bg-warning/25 text-warning rounded-lg px-4 py-3 transition-colors cursor-pointer"
+        >
+          <RefreshCw size={14} />
+          {t("umbrel.mempoolDownReload", { defaultValue: "Reload Page" })}
+        </button>
+        <button
+          onClick={() => setDismissed(true)}
+          className="w-full text-sm text-muted hover:text-foreground rounded-lg px-4 py-2 transition-colors cursor-pointer"
+        >
+          {t("common.dismiss", { defaultValue: "Dismiss" })}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** Small notice when a self-hosted backend could not report its network, so it is assumed. */
+export function NetworkUnverifiedNotice() {
+  const { networkUnverified, network, isUmbrel, localApiStatus } = useNetwork();
+  const { t } = useTranslation();
+  const [dismissed, setDismissed] = useState(false);
+  // Mempool down: MempoolDownDialog already says so
+  if (!networkUnverified || dismissed || (isUmbrel && localApiStatus === "unavailable")) return null;
+  return (
+    <div
+      role="status"
+      className="fixed bottom-4 left-4 right-4 max-w-sm mx-auto z-50 flex items-center gap-3 rounded-xl border border-warning/30 px-4 py-3 text-sm text-foreground"
+      style={{ background: "var(--card-bg)", boxShadow: "var(--glass-shadow)" }}
+    >
+      <AlertTriangle size={16} className="text-warning shrink-0" aria-hidden="true" />
+      <span className="flex-1">
+        {t("backend.networkUnverified", {
+          network: NETWORK_CONFIG[network].label,
+          defaultValue: "Network could not be verified; assuming {{network}}.",
+        })}
+      </span>
+      <button
+        onClick={() => setDismissed(true)}
+        aria-label={t("common.dismiss", { defaultValue: "Dismiss" })}
+        className="text-muted hover:text-foreground transition-colors cursor-pointer"
+      >
+        <X size={14} />
+      </button>
+    </div>
+  );
+}

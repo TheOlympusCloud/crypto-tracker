@@ -1,0 +1,279 @@
+# Boltzmann Entropy Research Reference
+
+This document summarizes the foundational research behind our entropy implementation (H5) and provides a comprehensive reference for Bitcoin transaction privacy analysis.
+
+## The Boltzmann Framework
+
+**Origin:** LaurentMT (~2015), creator of the OXT.me Boltzmann tool.
+
+The Boltzmann framework defines transaction entropy as:
+
+```
+E = log2(N)
+```
+
+where N is the number of valid interpretations (input-to-output mappings) of a transaction. Higher entropy means more ambiguity for an adversary attempting to trace fund flows.
+
+Key concepts:
+- **Intrinsic entropy**: The theoretical maximum entropy based on transaction structure alone
+- **Actual entropy**: The effective entropy after accounting for deterministic links (where an output can only be funded by one specific input)
+- **Link probability matrix**: For each (input, output) pair, the probability that the input funded that output, computed by summing over all valid interpretations
+
+LaurentMT's original implementation enumerated all valid sub-mappings, computed the probability matrix, and derived Shannon entropy from it. This was computationally expensive but exact.
+
+**Source:** LaurentMT, "Bitcoin Transactions & Privacy" (Parts 1-3), gist.github.com/LaurentMT
+
+---
+
+## The Partition Formula
+
+For equal-value CoinJoin transactions (where all n outputs have the same value), the number of valid interpretations can be computed exactly using integer partitions:
+
+```
+N = sum over all integer partitions (s1, s2, ..., sk) of n:
+    n!^2 / (prod(si!^2) * prod(mj!))
+```
+
+where:
+- `(s1, s2, ..., sk)` is a partition of n (the parts sum to n)
+- `mj` = multiplicity of each distinct part size
+
+### Worked Example: n=5 (Whirlpool)
+
+The 7 integer partitions of 5:
+
+| Partition | prod(si!^2) | Multiplicities | prod(mj!) | Term = 14400 / (prod * mult) |
+|---|---|---|---|---|
+| [5] | (5!)^2 = 14400 | {5:1} | 1! = 1 | 1 |
+| [4,1] | (4!)^2 * (1!)^2 = 576 | {4:1, 1:1} | 1 | 25 |
+| [3,2] | (3!)^2 * (2!)^2 = 144 | {3:1, 2:1} | 1 | 100 |
+| [3,1,1] | (3!)^2 * (1!)^4 = 36 | {3:1, 1:2} | 2! = 2 | 200 |
+| [2,2,1] | (2!)^4 * (1!)^2 = 16 | {2:2, 1:1} | 2! = 2 | 450 |
+| [2,1,1,1] | (2!)^2 * (1!)^6 = 4 | {2:1, 1:3} | 3! = 6 | 600 |
+| [1,1,1,1,1] | (1!)^10 = 1 | {1:5} | 5! = 120 | 120 |
+
+n!^2 = (5!)^2 = 14400.
+
+For partition [1,1,1,1,1] (5 parts of size 1):
+- prod(si!^2) = (1!)^10 = 1
+- Multiplicities: {1: 5}, so prod(mj!) = 5! = 120
+- Term = 14400 / (1 * 120) = 120
+
+For partition [2,1,1,1] (one part of 2, three parts of 1):
+- prod(si!^2) = (2!)^2 * (1!)^6 = 4
+- Multiplicities: {2: 1, 1: 3}, so prod(mj!) = 1! * 3! = 6
+- Term = 14400 / (4 * 6) = 600
+
+For partition [2,2,1]:
+- prod(si!^2) = (2!)^4 * (1!)^2 = 16
+- Multiplicities: {2: 2, 1: 1}, so prod(mj!) = 2! * 1! = 2
+- Term = 14400 / (16 * 2) = 450
+
+For partition [3,1,1]:
+- prod(si!^2) = (3!)^2 * (1!)^4 = 36
+- Multiplicities: {3: 1, 1: 2}, so prod(mj!) = 1! * 2! = 2
+- Term = 14400 / (36 * 2) = 200
+
+For partition [3,2]:
+- prod(si!^2) = (3!)^2 * (2!)^2 = 144
+- Multiplicities: {3: 1, 2: 1}, so prod(mj!) = 1
+- Term = 14400 / 144 = 100
+
+For partition [4,1]:
+- prod(si!^2) = (4!)^2 * (1!)^2 = 576
+- Multiplicities: {4: 1, 1: 1}, so prod(mj!) = 1
+- Term = 14400 / 576 = 25
+
+For partition [5]:
+- prod(si!^2) = (5!)^2 = 14400
+- Multiplicities: {5: 1}, so prod(mj!) = 1
+- Term = 14400 / 14400 = 1
+
+**Total N = 120 + 600 + 450 + 200 + 100 + 25 + 1 = 1,496**
+
+---
+
+## Reference Values Table
+
+| n | Interpretations (N) | Entropy E = log2(N) |
+|---|---|---|
+| 2 | 3 | 1.58 bits |
+| 3 | 16 | 4.00 bits |
+| 4 | 131 | 7.03 bits |
+| 5 | 1,496 | 10.55 bits |
+| 6 | 22,482 | 14.46 bits |
+| 7 | 426,833 | 18.70 bits |
+| 8 | 9,934,563 | 23.24 bits |
+| 9 | ~277,006,192 | ~28.05 bits |
+
+Note: The partition formula accounts for many-to-many mappings (one input funding multiple outputs). The classic permutation model (n!) only counts one-to-one mappings and significantly undercounts: e.g. for n=5, permutations give 120 vs. 1,496 from the partition formula.
+
+---
+
+## Implementation Notes
+
+Our implementation in `entropy.ts` uses `boltzmannEqualOutputs(n)` which generates all integer partitions of n and applies the formula above. This is exact for n <= 50 (at most ~204,226 partitions for n=50).
+
+For n > 50, we fall back to an asymptotic approximation.
+
+For mixed-value transactions (non-CoinJoin), we use assignment-based enumeration which is a lower bound but reasonable for typical transactions.
+
+---
+
+## Multi-Denomination CoinJoin Entropy (WabiSabi)
+
+### The Problem
+
+The Boltzmann partition formula assumes ALL outputs share one value. WabiSabi CoinJoins have 30+ denomination tiers (e.g., 20 outputs at 2M sats, 19 at 33M sats, 15 at 5M sats, etc.). Applying Boltzmann to just the largest tier ignores the other 29 tiers entirely.
+
+Community feedback from Arkad (March 2026) correctly identified this flaw: per-UTXO entropy for WabiSabi was reported as lower than JoinMarket because only 20 of 279 outputs contributed to the entropy calculation.
+
+### Why Exact Computation is Infeasible
+
+The exact multi-denomination entropy computation is NP-hard (constrained subset sum problem). The definitive work is Gavenda et al., "Analysis of Input-Output Mappings in CoinJoin Transactions with Arbitrary Values" (ESORICS 2025, arXiv 2510.17284):
+
+- Their approach uses constrained subset sum with "numeric mappings" (grouping by denomination class)
+- Execution times on real Wasabi CoinJoins: 0.07 seconds to 4.4 hours
+- Even their parallelized C++ implementation cannot handle median-sized CoinJoins
+- Found 10-50% anonymity set reduction vs. naive independence assumptions
+
+Client-side computation in a browser is out of the question.
+
+### Why boltzmannEqualOutputs(k) Cannot Be Used Per-Tier
+
+A tempting approach: compute `boltzmannEqualOutputs(k)` for each denomination tier independently and sum the entropies. This is mathematically wrong for two reasons:
+
+1. **`boltzmannEqualOutputs(k)` assumes all k inputs have the same value as the outputs.** In a multi-tier transaction, inputs have heterogeneous values. Most many-to-many flows that inflate the Boltzmann count beyond k! are physically impossible (an input of 50,000 sats cannot split to partially fund two 2,097,152-sat outputs).
+
+2. **Entropy subadditivity:** H(X,Y) <= H(X) + H(Y). Treating tiers as independent and summing their entropies gives an upper bound, not a lower bound. Cross-tier input sharing creates constraints that reduce joint entropy.
+
+The overcount ratio of `boltzmannEqualOutputs(k)` vs `k!` grows explosively:
+- k=5: 1,496 vs 120 (12.5x)
+- k=10: ~9 billion vs ~3.6 million (2,504x)
+- k=20: ~9.3 * 10^27 vs ~2.4 * 10^18 (~3.8 billion x)
+
+### Our Approach: Weighted-Average Per-Tier Permutation Entropy
+
+The key insight: entropy should measure **per-participant** privacy, not total transaction ambiguity. For Whirlpool (single tier), Boltzmann already gives per-participant entropy because all participants share one pool. For WabiSabi (multiple tiers), we need an aggregate that answers the same question: "how much entropy does a typical participant get?"
+
+**Per-tier computation:** Each denomination tier of k equal-valued outputs is treated as a mini-CoinJoin. Within a tier, k! permutations are valid (swapping equal-valued columns preserves the flow matrix), giving `log2(k!)` bits of per-tier entropy.
+
+**Eligible-input constraint:** Only inputs with value >= the denomination can fund a tier one-to-one. The effective k is `min(output_count, eligible_inputs)`.
+
+**Weighted average:** The per-tier entropies are averaged, weighted by tier size (number of outputs). Larger tiers contain more participants, so they contribute proportionally more to the expected participant entropy.
+
+```
+For each tier i with k_i >= 2 equal outputs:
+  eligible_i = count of inputs with value >= denomination_i
+  effective_k_i = min(k_i, eligible_i)
+  tier_entropy_i = log2(effective_k_i!)
+
+weighted_entropy = sum(k_i * tier_entropy_i) / sum(k_i)
+```
+
+**Why not sum?** Summing across tiers answers "how hard is it to deanonymize ALL participants simultaneously?" - a useless question. No single participant benefits from all 30 tiers. An adversary targets one participant, not the whole transaction.
+
+**Why not min?** Taking the minimum (weakest tier) is too conservative. Small 2-output tiers may be coordinator change or edge cases. The weighted average represents expected privacy for a randomly chosen participant.
+
+This is labeled "multi-tier permutation estimate" in the output.
+
+### Alternative Considered: Wasabi's Anonymity Score
+
+Wasabi 2.0 replaced Boltzmann with a per-UTXO "anonymity score" based on k-anonymity counting per denomination tier. This requires client knowledge of which inputs/outputs belong to "you" - an external observer cannot compute it. Since am-i.exposed is an observer tool (not a wallet), this approach is not applicable as a primary metric. The anonymity-set heuristic already reports per-tier k-anonymity separately.
+
+### References
+
+- Gavenda et al., "Analysis of Input-Output Mappings in CoinJoin Transactions with Arbitrary Values" (ESORICS 2025, arXiv 2510.17284)
+- Wasabi Wallet Blog, "Anonymity Set vs Anonymity Score"
+- Maurer et al., "Anonymous CoinJoin Transactions with Arbitrary Values" (IEEE TrustCom 2017)
+- Ficsor et al., "WabiSabi: Centrally Coordinated CoinJoins with Variable Amounts" (2021, ePrint 2021/206)
+
+---
+
+## Deterministic Links
+
+A deterministic link exists when an output can only be funded by one specific input (or set of inputs). CoinJoin Sudoku (Kristov Atlas) showed that even in CoinJoin transactions, some input-output links may have probability 1.0, meaning the CoinJoin provides zero privacy for those specific participants.
+
+Detection: If the link probability matrix has any entry LP = 1.0, that link is deterministic. Our current implementation does not compute the full link probability matrix, but the entropy calculation implicitly accounts for deterministic links (they reduce the number of valid interpretations).
+
+### Single-input and single-output transactions (reference entry-point rule)
+
+LaurentMT's original Boltzmann (`Samourai-Wallet/boltzmann`, `boltzmann/utils/tx_processor.py`, `process_tx`) filters out txos with value <= 0 (`filter_txos`: zero-value OP_RETURN outputs and the like) and then, before running the linker:
+
+```python
+if (len(filtered_ins) <= 1) or (len(filtered_outs) == 1):
+    # When entropy = 0, all inputs and outputs are linked and matrix is filled with 1.
+    mat_lnk = None
+    nb_cmbn = 1
+```
+
+The linker itself (`TxosLinker._match_agg_by_val`) lets an input aggregate match the empty output aggregate when its value is at most the fee: a "fee-only" block that funds no output. On a single-output transaction that reading would count a second interpretation whenever some inputs sum to no more than the fee. For consolidation `40b88e16...` (5 inputs, 1 output, fee 157,002 sats, one input of 31,209 sats) the bare linker gives 2 interpretations with that input at 50%, while `process_tx` gives 1 interpretation, every link 1.0. With one output, every input funds it: the fee-only reading is not a different fund flow.
+
+am-i.exposed applies the same rule everywhere a matrix is produced: boltzmann-rs (`analyze::is_single_interpretation`, used by `analyze`, the chunked and ranged WASM entry points, JoinMarket and WabiSabi modes), `computeBoltzmann` before any worker is started (`isSingleInterpretation` / `singleInterpretationResult` in `boltzmann-detection.ts`), and the JS linkability matrix (`chain/linkability.ts`). Transactions with 2+ outputs keep the fee-only reading, as in the reference: for inputs [100,000, 60,000, 300] and outputs [95,000, 58,000] (fee 7,300) both give 5 interpretations and the 300-sat input is linked in only 2 of them.
+
+For ordinary transactions this changes no score: single-output and single-input transactions are already scored as zero entropy by H5 (`h5-zero-entropy`, `h5-zero-entropy-sweep`, `h5-low-entropy` with `_variant: "single_input"`), the WASM result never overrides those (`boltzmann-enhance` skips `nbCmbn <= 1`), and the `linkability-*` findings skip one-interpretation and one-output transactions.
+
+Two narrow cases do change, both toward the reference and H5 (which already ignores zero-value txos): a transaction with one valued output plus a zero-value spendable output (for example a P2A anchor), and a transaction with one valued input plus a zero-value input. The chain linkability matrix used to count the zero-value txo as a party and could emit `linkability-deterministic` (-3 or -6); it now sees one interpretation and emits nothing.
+
+Because one interpretation needs no enumeration, it is computed at any size: a 100-input consolidation or a 1-input payout to hundreds of outputs shows "1 interpretation, 0 bits" instead of "too complex".
+
+---
+
+## Steganographic Transactions
+
+LaurentMT's essay "Hell is Other People" introduced the concept of steganographic transactions - transactions designed to look like something they're not:
+
+- **PayJoin (BIP78)**: Looks like a normal payment but the receiver contributes an input, breaking CIOH
+- **Stonewall**: Simulated 2-party CoinJoin from a single wallet (4 outputs: 2 equal + 2 change)
+- **STONEWALLx2**: Real collaborative CoinJoin with the Stonewall structure
+- **Ricochet**: Adds intermediate hops to increase the distance between CoinJoin and exchange deposit
+
+These techniques exploit the fact that chain analysis relies on heuristics. If a transaction is designed to violate the assumptions of those heuristics, the analysis produces false results.
+
+---
+
+## The Asymmetric Game
+
+Privacy-Enhancing Technologies (PETs) face a harder challenge than chain analysts:
+
+- Analysts benefit from **Bayesian updating**: each new heuristic narrows the possibility space
+- Privacy tools must defeat **all** heuristics simultaneously - one slip undoes everything
+- A single participant in a CoinJoin with poor OPSEC can compromise other participants' privacy
+- Temporal analysis, network-level surveillance, and exchange KYC provide independent correlation channels
+
+This asymmetry is why entropy alone is insufficient as a privacy metric. High entropy is necessary but not sufficient for privacy.
+
+---
+
+## Wallet Fingerprinting History
+
+Chain analysis evolved from naive CIOH clustering (2011-2013) through increasingly sophisticated techniques:
+
+1. **2011-2013**: Reid & Harriman, Ron & Shamir - first academic address clustering via CIOH
+2. **2013**: Maxwell proposes CoinJoin as a countermeasure
+3. **2015**: LaurentMT defines the Boltzmann framework; Meiklejohn et al. scale clustering
+4. **2017**: Wallet fingerprinting via nLockTime, nSequence emerges (Bitcoin Core's anti-fee-sniping)
+5. **2019**: Low-R signature grinding (Bitcoin Core 0.17+) becomes a reliable fingerprint
+6. **2020s**: ML-based clustering, BIP69 detection, Taproot adoption begins neutralizing fingerprints
+
+**Sources:**
+- Spiral BTC, "The Scroll #3: A Brief History of Wallet Clustering"
+- OXT Research / ErgoBTC, "Understanding Bitcoin Privacy with OXT" (Parts 1-4)
+- 0xB10C, wallet fingerprinting empirical analysis
+
+---
+
+## Credits
+
+This implementation and research compilation would not be possible without:
+
+- **LaurentMT** - Creator of the Boltzmann entropy framework
+- **Greg Maxwell** - Inventor of CoinJoin (2013)
+- **OXT Research / ErgoBTC** - Educational series on Bitcoin privacy
+- **Kristov Atlas** - CoinJoin Sudoku research
+- **Spiral BTC** - Historical survey of chain analysis
+- **privacidadbitcoin.com** - Spanish-language Bitcoin privacy education
+
+---
+
+*This document is part of the am-i.exposed project. See also: `privacy-engine.md` for the full heuristic reference, `archive/README.md` for archived research articles.*

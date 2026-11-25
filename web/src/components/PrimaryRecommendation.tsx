@@ -1,0 +1,92 @@
+"use client";
+
+import { ExternalLink, AlertTriangle, Clock, CheckCircle, ArrowRight } from "lucide-react";
+import { useTranslation } from "react-i18next";
+import type { PrimaryRec } from "@/lib/recommendations/primary-recommendation";
+
+const URGENCY_CONFIG = {
+  immediate: {
+    icon: AlertTriangle,
+    bgClass: "bg-severity-critical/10 border-severity-critical/30",
+    iconClass: "text-severity-critical",
+    labelKey: "primaryRec.urgency.immediate",
+    labelDefault: "Act now",
+  },
+  soon: {
+    icon: Clock,
+    iconClass: "text-severity-medium",
+    bgClass: "bg-severity-medium/10 border-severity-medium/30",
+    labelKey: "primaryRec.urgency.soon",
+    labelDefault: "Address soon",
+  },
+  "when-convenient": {
+    icon: CheckCircle,
+    iconClass: "text-severity-low",
+    bgClass: "bg-severity-low/10 border-severity-low/30",
+    labelKey: "primaryRec.urgency.whenConvenient",
+    labelDefault: "When convenient",
+  },
+} as const;
+
+export function RecCard({ rec }: { rec: PrimaryRec }) {
+  const { t } = useTranslation();
+  const cfg = URGENCY_CONFIG[rec.urgency];
+  const Icon = cfg.icon;
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-start gap-3">
+        <div className={`flex-shrink-0 p-1.5 rounded-lg border ${cfg.bgClass}`}>
+          <Icon size={18} className={cfg.iconClass} aria-hidden="true" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className={`text-xs font-medium px-2 py-0.5 rounded-full border ${cfg.bgClass} ${cfg.iconClass}`}>
+              {t(cfg.labelKey, { defaultValue: cfg.labelDefault })}
+            </span>
+          </div>
+          <h3 className="text-base font-semibold text-foreground mt-1.5 leading-snug">
+            {t(rec.headlineKey, { defaultValue: rec.headlineDefault, ...rec.tParams })}
+          </h3>
+          <p className="text-sm text-muted mt-1 leading-relaxed">
+            {t(rec.detailKey, { defaultValue: rec.detailDefault, ...rec.tParams })}
+          </p>
+          <div className="flex items-center gap-3 mt-2 flex-wrap">
+            {rec.tools && rec.tools.map((tool) => (
+              <a
+                key={tool.name}
+                href={tool.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 text-sm text-accent hover:text-accent/80 transition-colors py-0.5 -my-0.5"
+              >
+                {tool.name}
+                <ExternalLink size={13} aria-hidden="true" />
+              </a>
+            ))}
+            {rec.tool && !rec.tools && (
+              <a
+                href={rec.tool.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 text-sm text-accent hover:text-accent/80 transition-colors py-0.5 -my-0.5"
+              >
+                {rec.tool.name}
+                <ExternalLink size={13} aria-hidden="true" />
+              </a>
+            )}
+            {rec.guideLink && (
+              <a
+                href={rec.guideLink}
+                className="inline-flex items-center gap-1 text-xs text-muted hover:text-foreground transition-colors py-1 -my-1"
+              >
+                {t("primaryRec.learnMore", { defaultValue: "Learn more in the privacy guide" })}
+                <ArrowRight size={12} />
+              </a>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

@@ -1,0 +1,532 @@
+import { SVG_COLORS } from "../shared/svgConstants";
+import { calcVsize } from "@/lib/format";
+import { matchEntitySync } from "@/lib/analysis/entity-filter/entity-match";
+import { analyzeCoinJoin, isCoinJoinFinding } from "@/lib/analysis/heuristics/coinjoin";
+import { analyzeMultisigDetection } from "@/lib/analysis/heuristics/multisig-detection";
+import { NODE_W, NODE_H, COL_GAP, ROW_GAP, MARGIN, ENTITY_CATEGORY_COLORS, HEAT_TIERS, HEAT_FLOOR_COLOR, EXPANDED_NODE_W, MIN_ZOOM } from "./constants";
+import { calcExpandedHeight } from "./portLayout";
+import type { GraphNode, LayoutNode, LayoutEdge, NodeFilter, ViewTransform } from "./types";
+import type { MempoolTransaction } from "@/lib/api/types";
+import type { EntityMatch } from "@/lib/analysis/entity-filter/types";
+import type { FindingId } from "@/lib/analysis/finding-metadata";
+import type { Finding } from "@/lib/types";
+import type { GraphLayoutMode } from "@/lib/graph/saved-graph-types";
+
+/** Detect CoinJoin type from findings. */
+export function getCoinJoinType(findings: Finding[]): string | undefined {
+  const cjFinding = findings.find((f) => isCoinJoinFinding(f));
+  if (!cjFinding) return undefined;
+  if (cjFinding.id === "h4-whirlpool") return "Whirlpool";
+  if (cjFinding.id === "h4-joinmarket") return "JoinMarket";
+  if (cjFinding.id === "h4-stonewall") return "Stonewall";
+  if (cjFinding.id === "h4-simplified-stonewall") return "Stonewall";
+  if (cjFinding.id === "h4-coinjoin") {
+    // The detector's flags, not the (localizable) title: a Wasabi 1.x round is not WabiSabi
+    if (cjFinding.params?.isWabiSabi === 1) return "WabiSabi";
+    if (cjFinding.params?.isWasabi1 === 1) return "Wasabi 1.x";
+    return "CoinJoin";
+  }
+  return "CoinJoin";
+}
+
+/** Map heuristic finding IDs to entity-like labels for graph visualization. */
+const HEURISTIC_ENTITY_MAP: Partial<Record<FindingId, { entityName: string; category: EntityMatch["category"] }>> = {
+  "h17-hodlhodl": { entityName: "HodlHodl", category: "p2p" },
+  "h17-bisq": { entityName: "Bisq", category: "p2p" },
+  "h17-bisq-deposit": { entityName: "Bisq", category: "p2p" },
+};
+
+/** Derive an entity match from heuristic findings (e.g. multisig detection). */
+function entityFromHeuristics(tx: MempoolTransaction): EntityMatch | null {
+  const { findings } = analyzeMultisigDetection(tx);
+  for (const f of findings) {
+    const mapped = HEURISTIC_ENTITY_MAP[f.id];
+    if (mapped) {
+      return {
+        address: tx.txid,
+        entityName: mapped.entityName,
+        category: mapped.category,
+        ofac: false,
+        confidence: "high",
+      };
+    }
+  }
+  return null;
+}
+
+/** Get the best entity match from all tx addresses (inputs + outputs). */
+export function getBestEntityMatch(tx: MempoolTransaction): EntityMatch | null {
+  let best: EntityMatch | null = null;
+
+  // Check output addresses
+  for (const o of tx.vout) {
+    if (!o.scriptpubkey_address) continue;
+    const m = matchEntitySync(o.scriptpubkey_address);
+    if (m && (!best || m.ofac || (m.confidence === "high" && best.confidence !== "high"))) {
+      best = m;
+    }
+  }
+
+  // Check input prevout addresses
+  for (const v of tx.vin) {
+    if (v.is_coinbase || !v.prevout?.scriptpubkey_address) continue;
+    const m = matchEntitySync(v.prevout.scriptpubkey_address);
+    if (m && (!best || m.ofac || (m.confidence === "high" && best.confidence !== "high"))) {
+      best = m;
+    }
+  }
+
+  return best;
+}
+
+/** Per-txid cache for expensive CoinJoin + entity analysis (cleared when node map identity changes). */
+let _layoutCacheNodes: Map<string, GraphNode> | null = null;
+const _layoutCache = new Map<string, { isCJ: boolean; coinJoinType: string | undefined; entityMatch: EntityMatch | null }>();
+
+function getCachedAnalysis(graphNodes: Map<string, GraphNode>, tx: MempoolTransaction, txid: string) {
+  // Invalidate cache when the underlying map reference changes (new nodes added/removed)
+  if (_layoutCacheNodes !== graphNodes) {
+    _layoutCacheNodes = graphNodes;
+    _layoutCache.clear();
+  }
+  let cached = _layoutCache.get(txid);
+  if (!cached) {
+    const cjResult = analyzeCoinJoin(tx);
+    const isCJ = cjResult.findings.some(isCoinJoinFinding);
+    cached = {
+      isCJ,
+      coinJoinType: isCJ ? getCoinJoinType(cjResult.findings) : undefined,
+      entityMatch: getBestEntityMatch(tx) ?? entityFromHeuristics(tx),
+    };
+    _layoutCache.set(txid, cached);
+  }
+  return cached;
+}
+
+/** A column of the chronological layout: its block height (null = unconfirmed). */
+export interface TimeColumn {
+  x: number;
+  width: number;
+  height: number | null;
+  /** Block timestamp (unix seconds) of the column's first confirmed tx. */
+  time?: number;
+  /** Blocks since the previous column's height (0 for the first or unconfirmed column). */
+  gap: number;
+}
+
+const blockHeightOf = (tx: MempoolTransaction): number =>
+  tx.status?.confirmed && tx.status.block_height != null ? tx.status.block_height : Infinity;
+
+/**
+ * Chronological column key per node: (block height, intra-block level), where the
+ * level is the longest chain of in-graph parents confirmed in the same block.
+ * Unconfirmed txs share height Infinity, so they sort last, ordered by parent chain.
+ */
+export function timeColumnKeys(graphNodes: Map<string, GraphNode>): Map<string, { height: number; level: number }> {
+  const level = new Map<string, number>();
+  const levelOf = (node: GraphNode): number => {
+    const memo = level.get(node.txid);
+    if (memo !== undefined) return memo;
+    level.set(node.txid, 0); // guards a malformed self-loop
+    const h = blockHeightOf(node.tx);
+    let l = 0;
+    for (const v of node.tx.vin) {
+      const parent = v.is_coinbase ? undefined : graphNodes.get(v.txid);
+      if (parent && parent !== node && blockHeightOf(parent.tx) === h) l = Math.max(l, levelOf(parent) + 1);
+    }
+    level.set(node.txid, l);
+    return l;
+  };
+  const keys = new Map<string, { height: number; level: number }>();
+  for (const node of graphNodes.values()) keys.set(node.txid, { height: blockHeightOf(node.tx), level: levelOf(node) });
+  return keys;
+}
+
+/** Lay out graph nodes in columns (by depth, or chronologically), build edges from parent/child relationships. */
+export function layoutGraph(
+  graphNodes: Map<string, GraphNode>,
+  rootTxid: string,
+  filter: NodeFilter,
+  rootTxids?: Set<string>,
+  expandedNodeTxid?: string | null,
+  /** Reserve left padding so backward expansions don't shift nodes (fullscreen pan/zoom mode). */
+  reserveBackwardSpace?: boolean,
+  /** User-defined position overrides (from node dragging). */
+  positionOverrides?: Map<string, { x: number; y: number }>,
+  layoutMode: GraphLayoutMode = "hops",
+  /** Txids left out like filtered ones (manual hides, outside an isolate). */
+  excluded?: ReadonlySet<string>,
+): { layoutNodes: LayoutNode[]; edges: LayoutEdge[]; width: number; height: number; nodePositions: Map<string, { x: number; y: number; w: number; h: number }>; timeColumns?: TimeColumn[] } {
+  const layoutNodes: LayoutNode[] = [];
+  const edges: LayoutEdge[] = [];
+  const timeMode = layoutMode === "time";
+
+  const isRootTx = (txid: string) => rootTxids ? rootTxids.has(txid) : txid === rootTxid;
+  // Filter and exclusions (never the root, never the expanded node)
+  const isFiltered = (node: GraphNode) => {
+    if (isRootTx(node.txid) || node.txid === expandedNodeTxid) return false;
+    if (excluded?.has(node.txid)) return true;
+    const { isCJ, entityMatch } = getCachedAnalysis(graphNodes, node.tx, node.txid);
+    if (isCJ) return !filter.showCoinJoin;
+    if (entityMatch) return !filter.showEntity;
+    return !filter.showStandard;
+  };
+
+  // Column of each node: its depth, or (time mode) the rank of its (height, level) key.
+  // Time mode builds columns from visible nodes only, so a filtered block leaves no empty column.
+  const colOf = new Map<string, number>();
+  let timeKeys: Map<string, { height: number; level: number }> | undefined;
+  if (timeMode) {
+    timeKeys = timeColumnKeys(graphNodes);
+    const distinct = new Map<string, { height: number; level: number }>();
+    for (const node of graphNodes.values()) {
+      if (isFiltered(node)) continue;
+      const k = timeKeys.get(node.txid)!;
+      distinct.set(`${k.height}:${k.level}`, k);
+    }
+    const ranked = [...distinct.entries()].sort(([, a], [, b]) => a.height - b.height || a.level - b.level);
+    const rank = new Map(ranked.map(([id], i) => [id, i]));
+    for (const node of graphNodes.values()) {
+      const k = timeKeys.get(node.txid)!;
+      const r = rank.get(`${k.height}:${k.level}`);
+      if (r !== undefined) colOf.set(node.txid, r);
+    }
+  } else {
+    for (const node of graphNodes.values()) colOf.set(node.txid, node.depth);
+  }
+
+  // Group by column
+  const depthGroups = new Map<number, GraphNode[]>();
+  for (const [, node] of graphNodes) {
+    const col = colOf.get(node.txid);
+    if (col === undefined) continue;
+    const group = depthGroups.get(col) ?? [];
+    group.push(node);
+    depthGroups.set(col, group);
+  }
+
+  const depths = [...depthGroups.keys()].sort((a, b) => a - b);
+
+  // Determine which column contains the expanded node
+  const expandedDepth = expandedNodeTxid ? colOf.get(expandedNodeTxid) : undefined;
+
+  // Calculate per-column widths (expanded column is wider)
+  const colWidths = new Map<number, number>();
+  for (const depth of depths) {
+    const hasExpanded = depth === expandedDepth;
+    colWidths.set(depth, hasExpanded ? EXPANDED_NODE_W : NODE_W);
+  }
+
+  // Calculate cumulative x positions.
+  // Reserve space to the left of the root column so backward expansions don't shift
+  // existing nodes. In pan/zoom mode, reserve ~half viewport width so the root
+  // can be centered and backward expansions fill the left side naturally.
+  // As columns are added before the root, the reserved space shrinks to match.
+  const viewportHalf = typeof window !== "undefined" ? Math.round(window.innerWidth / 2) : 700;
+  const rootCol = timeMode ? (colOf.get(rootTxid) ?? 0) : 0;
+  const existingBackwardWidth = depths.filter((d) => d < rootCol).length * (NODE_W + COL_GAP);
+  const backwardPadding = reserveBackwardSpace
+    ? Math.max(0, viewportHalf - existingBackwardWidth)
+    : 0;
+
+  const colX = new Map<number, number>();
+  let cumX = MARGIN.left + backwardPadding;
+  for (const depth of depths) {
+    colX.set(depth, cumX);
+    cumX += colWidths.get(depth)! + COL_GAP;
+  }
+
+  // Layout each column with variable node heights
+  const nodePositions = new Map<string, { x: number; y: number; w: number; h: number }>();
+
+  for (const depth of depths) {
+    const group = depthGroups.get(depth)!;
+    const x = colX.get(depth)!;
+    let yOffset = MARGIN.top;
+
+    group.forEach((node) => {
+      if (isFiltered(node)) return;
+      const { isCJ, coinJoinType, entityMatch } = getCachedAnalysis(graphNodes, node.tx, node.txid);
+      const isRoot = isRootTx(node.txid);
+      const isExpanded = node.txid === expandedNodeTxid;
+      const nodeW = isExpanded ? EXPANDED_NODE_W : NODE_W;
+      const nodeH = isExpanded ? calcExpandedHeight(node.tx) : NODE_H;
+
+      nodePositions.set(node.txid, { x, y: yOffset, w: nodeW, h: nodeH });
+
+      const vsize = calcVsize(node.tx.weight);
+      const feeRate = vsize > 0 ? (node.tx.fee / vsize).toFixed(1) : "0";
+
+      layoutNodes.push({
+        txid: node.txid,
+        tx: node.tx,
+        x,
+        y: yOffset,
+        width: nodeW,
+        height: nodeH,
+        depth: node.depth,
+        isRoot,
+        isCoinJoin: isCJ,
+        coinJoinType,
+        entityLabel: entityMatch?.entityName,
+        entityCategory: entityMatch?.category,
+        entityOfac: entityMatch?.ofac,
+        entityConfidence: entityMatch?.confidence,
+        inputCount: node.tx.vin.length,
+        outputCount: node.tx.vout.length,
+        fee: node.tx.fee,
+        feeRate,
+        confirmed: node.tx.status?.confirmed ?? false,
+      });
+
+      yOffset += nodeH + ROW_GAP;
+    });
+  }
+
+  // Apply user-defined position overrides (node dragging)
+  if (positionOverrides) {
+    for (const [txid, pos] of positionOverrides) {
+      const existing = nodePositions.get(txid);
+      if (!existing) continue;
+      existing.x = pos.x;
+      existing.y = pos.y;
+      // Also update the layoutNode
+      const ln = layoutNodes.find((n) => n.txid === txid);
+      if (ln) { ln.x = pos.x; ln.y = pos.y; }
+    }
+  }
+
+  // Build edges from parent/child relationships
+  const edgeSet = new Set<string>();
+
+  for (const [, node] of graphNodes) {
+    if (node.parentEdge) {
+      const eKey = `${node.parentEdge.fromTxid}->${node.txid}`;
+      if (edgeSet.has(eKey)) continue;
+      edgeSet.add(eKey);
+      const fromPos = nodePositions.get(node.parentEdge.fromTxid);
+      const toPos = nodePositions.get(node.txid);
+      if (fromPos && toPos) {
+        const parentVins = node.tx.vin.filter((v) => v.txid === node.parentEdge!.fromTxid);
+        const cc = parentVins.length;
+        edges.push({
+          fromTxid: node.parentEdge.fromTxid,
+          toTxid: node.txid,
+          x1: fromPos.x + fromPos.w,
+          y1: fromPos.y + fromPos.h / 2,
+          x2: toPos.x,
+          y2: toPos.y + toPos.h / 2,
+          isBackward: false,
+          consolidationCount: cc,
+          outputIndices: parentVins.map((v) => v.vout),
+        });
+      }
+    }
+    if (node.childEdge) {
+      const eKey = `${node.txid}->${node.childEdge.toTxid}`;
+      if (edgeSet.has(eKey)) continue;
+      edgeSet.add(eKey);
+      const fromPos = nodePositions.get(node.txid);
+      const toPos = nodePositions.get(node.childEdge.toTxid);
+      if (fromPos && toPos) {
+        const childNode = graphNodes.get(node.childEdge.toTxid);
+        const childVins = childNode
+          ? childNode.tx.vin.filter((v) => v.txid === node.txid)
+          : [];
+        const cc = childVins.length || 1;
+        edges.push({
+          fromTxid: node.txid,
+          toTxid: node.childEdge.toTxid,
+          x1: fromPos.x + fromPos.w,
+          y1: fromPos.y + fromPos.h / 2,
+          x2: toPos.x,
+          y2: toPos.y + toPos.h / 2,
+          isBackward: true,
+          consolidationCount: cc,
+          outputIndices: childVins.length > 0 ? childVins.map((v) => v.vout) : undefined,
+        });
+      }
+    }
+  }
+
+  // Any other on-chain link between two nodes in the graph. A node holds one
+  // edge per direction, so e.g. a connection path's pivot funded from both sides
+  // would otherwise show only one of its links.
+  for (const [, node] of graphNodes) {
+    for (const v of node.tx.vin) {
+      if (v.is_coinbase || !graphNodes.has(v.txid)) continue;
+      const eKey = `${v.txid}->${node.txid}`;
+      if (edgeSet.has(eKey)) continue;
+      edgeSet.add(eKey);
+      const fromPos = nodePositions.get(v.txid);
+      const toPos = nodePositions.get(node.txid);
+      if (!fromPos || !toPos) continue;
+      const vins = node.tx.vin.filter((w) => w.txid === v.txid);
+      edges.push({
+        fromTxid: v.txid,
+        toTxid: node.txid,
+        x1: fromPos.x + fromPos.w,
+        y1: fromPos.y + fromPos.h / 2,
+        x2: toPos.x,
+        y2: toPos.y + toPos.h / 2,
+        isBackward: false,
+        consolidationCount: vins.length,
+        outputIndices: vins.map((w) => w.vout),
+      });
+    }
+  }
+
+  // Calculate total dimensions (extra padding for pan/zoom drag surface)
+  const extraPadding = reserveBackwardSpace ? 400 : 0;
+  const maxX = Math.max(...layoutNodes.map((n) => n.x + n.width), 0) + extraPadding;
+  const maxY = Math.max(...layoutNodes.map((n) => n.y + n.height), 0) + extraPadding;
+
+  // Time mode: one header per column, from any of its nodes (they share a height)
+  let timeColumns: TimeColumn[] | undefined;
+  if (timeKeys) {
+    timeColumns = [];
+    let prevHeight: number | null = null;
+    for (const col of depths) {
+      const first = depthGroups.get(col)![0]!;
+      const h = timeKeys.get(first.txid)!.height;
+      const height = Number.isFinite(h) ? h : null;
+      timeColumns.push({
+        x: colX.get(col)!,
+        width: colWidths.get(col)!,
+        height,
+        time: first.tx.status?.block_time,
+        gap: height !== null && prevHeight !== null ? height - prevHeight : 0,
+      });
+      prevHeight = height;
+    }
+  }
+
+  return {
+    layoutNodes,
+    edges,
+    width: maxX + MARGIN.right,
+    height: maxY + MARGIN.bottom,
+    nodePositions,
+    timeColumns,
+  };
+}
+
+/** Get the fill color for a node based on its type or heat map score. */
+export function getNodeColor(node: LayoutNode, heatScore?: number): string {
+  // Heat map mode: color by score
+  if (heatScore !== undefined) {
+    for (const tier of HEAT_TIERS) {
+      if (heatScore >= tier.min) return tier.color;
+    }
+    return HEAT_FLOOR_COLOR;
+  }
+  if (node.isRoot) return SVG_COLORS.bitcoin;
+  if (node.isCoinJoin) return SVG_COLORS.good;
+  if (node.entityLabel) {
+    return ENTITY_CATEGORY_COLORS[node.entityCategory ?? "unknown"];
+  }
+  return SVG_COLORS.low;
+}
+
+// ─── Viewport fitting ───────────────────────────────────────────
+
+/** Minimum horizontal margin on each side for small screens. */
+const MIN_MARGIN_X = 16;
+/** Cap on the window-based horizontal padding fallback (px). */
+const MAX_FALLBACK_PAD_X = 48;
+/** Window-based horizontal padding fallback, as a fraction of the window width. */
+const FALLBACK_PAD_X_RATIO = 0.08;
+/** Fallback vertical padding when no container ref is available. */
+const FALLBACK_PAD_Y = 160;
+/** Fit-to-view never zooms in past this scale (small graphs stay readable, not huge). */
+const MAX_FIT_SCALE = 1.5;
+
+type ContainerDims = { width: number; height: number };
+
+/**
+ * Compute the usable viewport dimensions.
+ * Uses measured container dims from ParentSize (via onLayoutComplete) when available.
+ */
+export function getViewportDims(dims?: ContainerDims) {
+  if (dims && dims.width > 0 && dims.height > 0) {
+    return { cw: dims.width, ch: dims.height };
+  }
+  // Last resort: use window dimensions with padding
+  const padX = Math.max(MIN_MARGIN_X * 2, Math.min(MAX_FALLBACK_PAD_X, window.innerWidth * FALLBACK_PAD_X_RATIO));
+  return { cw: window.innerWidth - padX, ch: window.innerHeight - FALLBACK_PAD_Y };
+}
+
+/** A laid-out node box, as reported in layoutGraph's nodePositions. */
+export type Box = { x: number; y: number; w: number; h: number };
+
+/** Screen padding kept around fitted nodes (room for the +/x buttons overhanging node edges). */
+const FIT_PAD = 28;
+
+/**
+ * Compute a ViewTransform that fits all boxes within the viewport with
+ * FIT_PAD on every side, never zooming in past maxScale.
+ */
+export function computeFitView(boxes: Box[], dims?: ContainerDims, maxScale = MAX_FIT_SCALE): ViewTransform | null {
+  if (boxes.length === 0) return null;
+  const { cw, ch } = getViewportDims(dims);
+  const minX = Math.min(...boxes.map((n) => n.x));
+  const minY = Math.min(...boxes.map((n) => n.y));
+  const nodesW = Math.max(...boxes.map((n) => n.x + n.w)) - minX;
+  const nodesH = Math.max(...boxes.map((n) => n.y + n.h)) - minY;
+  const fit = Math.min((cw - 2 * FIT_PAD) / nodesW, (ch - 2 * FIT_PAD) / nodesH, maxScale);
+  const s = Math.max(MIN_ZOOM, fit);
+  // At the zoom floor the graph can still overflow: then keep its left edge in view
+  const x = nodesW * s > cw - 2 * FIT_PAD ? FIT_PAD - minX * s : (cw - nodesW * s) / 2 - minX * s;
+  return { x, y: (ch - nodesH * s) / 2 - minY * s, scale: s };
+}
+
+/** Below this scale an automatic fit is unreadable, so only the focus boxes are framed. */
+const MIN_AUTO_FIT_SCALE = 0.45;
+
+/**
+ * Automatic framing after the graph changes: fit everything without zooming in
+ * past 1:1; when that would be unreadably small, frame just `focus` (the roots
+ * plus the newly added nodes) instead.
+ */
+export function computeAutoFitView(boxes: Box[], focus: Box[], dims?: ContainerDims): ViewTransform | null {
+  const all = computeFitView(boxes, dims, 1);
+  if (!all || all.scale >= MIN_AUTO_FIT_SCALE || focus.length === 0) return all;
+  return computeFitView(focus, dims, 1);
+}
+
+// ─── Seeding positions for newly expanded nodes ─────────────────
+
+/** Horizontal offset of a backward-expanded node from its trigger node. */
+export const SEED_BACKWARD_DX = 280;
+/** Gap between a trigger node's right edge and a forward-expanded node. */
+export const SEED_FORWARD_GAP = COL_GAP;
+/** Vertical slot one collapsed node occupies. */
+const SEED_SLOT_H = NODE_H + ROW_GAP;
+/** Only nodes this close horizontally count as occupying the target column. */
+const SEED_X_TOLERANCE = 300;
+/** Give up nudging down after this many slots. */
+const SEED_MAX_ATTEMPTS = 50;
+
+/**
+ * Find a y position near targetY that doesn't overlap nodes in nearby columns,
+ * nudging down one slot at a time.
+ */
+export function findFreeY(
+  targetX: number,
+  targetY: number,
+  positionSources: Iterable<[string, { x: number; y: number }]>[],
+  excludeTxid?: string,
+): number {
+  const occupied: number[] = [];
+  for (const source of positionSources) {
+    for (const [txid, pos] of source) {
+      if (txid !== excludeTxid && Math.abs(pos.x - targetX) < SEED_X_TOLERANCE) occupied.push(pos.y);
+    }
+  }
+  let y = targetY;
+  for (let attempts = 0; attempts < SEED_MAX_ATTEMPTS; attempts++) {
+    if (!occupied.some((oy) => Math.abs(oy - y) < SEED_SLOT_H)) return y;
+    y += SEED_SLOT_H;
+  }
+  return y;
+}

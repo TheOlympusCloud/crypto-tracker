@@ -1,0 +1,198 @@
+#!/usr/bin/env node
+// Fetches real mempool.space API responses for reference transactions
+// and saves them as JSON fixtures for deterministic offline testing.
+// Usage: node scripts/capture-fixtures.mjs          (everything)
+//        node scripts/capture-fixtures.mjs --home   (home-card fixtures only)
+
+import { writeFileSync, mkdirSync } from "fs";
+
+const API = "https://mempool.space/api";
+const DIR = "src/lib/analysis/heuristics/__tests__/fixtures/api-responses";
+
+const TX_CASES = [
+  { name: "whirlpool-coinjoin", txid: "323df21f0b0756f98336437aa3d2fb87e02b59f1946b714a7b09df04d429dec2" },
+  { name: "wabisabi-coinjoin", txid: "fb596c9f675471019c60e984b569f9020dac3b2822b16396042b50c890b45e5e" },
+  { name: "joinmarket-coinjoin", txid: "4f112abd2eefe3484a7bbf7c1731f784cba19de677468835145e9c448fb18b7d" },
+  { name: "taproot-op-return", txid: "0bf67b1f05326afbd613e11631a2b86466ac7e255499f6286e31b9d7d889cee7" },
+  { name: "bare-multisig", txid: "60a20bd93aa49ab4b28d514ec10b06e1829ce6818ec06cd3aabd013ebcdc4bb1" },
+  { name: "op-return-charley", txid: "8bae12b5f4c088d940733dcd1455efc6a3a69cf9340e17a981286d3778615684" },
+  { name: "simple-legacy-p2pkh", txid: "0b6461de422c46a221db99608fcbe0326e4f2325ebf2a47c9faf660ed61ee6a4" },
+  { name: "batch-withdrawal-143", txid: "3d81a6b95903dd457d45a2fc998acc42fe96f59ef01157bdcbc331fe451c8d9e" },
+  { name: "dust-attack-555", txid: "655c533bf059721cec9d3d70b3171a07997991a02fedfa1c9b593abc645e1cc5" },
+  { name: "taproot-script-path", txid: "37777defed8717c581b4c0509329550e344bdc14ac38f71fc050096887e535c8" },
+  // Example-set transactions (sweep, consolidation, reuse, dust, batch, coinbase, CoinJoins)
+  { name: "sweep-1in1out", txid: "8cbe332206ffc1ea3f3ffb6aeb5ac7306310bd991260de0e09845a45f70af85a" },
+  { name: "consolidation-5in1out", txid: "40b88e16fe9881eb89df76265ccf2d46abfd1071a94dae8e413efc0d83d3df18" },
+  { name: "address-reuse-change", txid: "4c18b982836006cbe54661942f632f10b9cc0072e97a32feeea77abd8c7c8c3c" },
+  { name: "dust-attack-564", txid: "65551b775ea3bf580667c12629fa776514f9a76a57f04dd735e878dba76dbbdc" },
+  { name: "batch-payment", txid: "aefda8a740b3afd49b23412eaae746224977db24be31706c050e24e950e96271" },
+  { name: "coinbase-6c7edc23", txid: "6c7edc23fde3cd48aa7aaa5ed3c2a64cf605f4d3364d820d3be54a721b64b92a" },
+  { name: "wabisabi-large", txid: "95799bd39aea897c9b1bdbebd79d4c7bf7d0a7b02425636e8df5283ae6bee144" },
+  { name: "joinmarket-6cb2433f", txid: "6cb2433f28177a3b07073a0eb34a527ba6d7dd7483cccb394f88321373c0ed20" },
+  { name: "whirlpool-ashigaru", txid: "5f0080e3f0acfde005b9c7149f12880be273eea01ca3a3b867f642ac9bf273cc" },
+];
+
+// Everyday transactions from block 850000 (one per input/output shape and
+// script type). Stored with raw hex so hex-based heuristics are exercised.
+// Consumed by src/lib/analysis/__tests__/golden-corpus.test.ts.
+const CORPUS_TXIDS = [
+  "242b2de161deac31f77238b898e85a5e4760c5aa004ede2e2cc355202f84e6aa", // 1-1 p2wpkh
+  "1a0198d5942a511109a3a726a20e381bdbfbeecc6c98fde20ce8a571dfb5757c", // 1-2 p2wpkh
+  "d98f14d555b9db58e2fb5597fe17223b3042cd2ab431233cf5b4828e94fbac7e", // 1-3 p2wpkh
+  "635b025b146d760d613244f6b1f7a28519104628d2ff8a76076e4fb204db3600", // 1-13 p2wpkh
+  "60848192841f6daccc451db71e18d816c217c09f04a8ffa05e216705c06280fe", // 2-2 p2wpkh
+  "21797d49e0de12428b30feed413e04b8142bd65f0a93be29caa4321b8c1be13f", // 2-4 p2wpkh
+  "68b76a9f359782d75f6acbbf88b172859eb5f38167a8d87c2f5836124dd2e731", // 3-3 p2wpkh
+  "9e65c23dc39d5c3e112404bef8425c6563366d9a484e8845054398b6388e3a3c", // 4-2 p2wpkh
+  "2d2dcc80195541dd44209dcfeb25393c8c8710f262360368a618b7ff3fa3f08c", // 5-1 p2wpkh
+  "2494d26de43697c5dd84917225c2daddd44b23c2ac6be2e2ca8c0a56746dd0ae", // 2-2 p2tr
+  "bb8e57e42ab0e028e56a170f65f9013d5c77b324b067838b0199ddec1b547511", // 1-3 p2tr
+  "53d885d1aa07f481ae4d5e1976fc3b8a230c8dafe0f94167dfc02ebc2b9b071a", // 9-9 p2tr
+  "d3a0efbe90835b524ca34484cc80d67eab608d41d2aa96da0830e8d157943f1d", // 1-2 p2pkh
+  "a3d271e5377c35a27711b8e967964cc110b799b6c3a42f9ce5f4e66a26f2ebd5", // 2-2 p2pkh
+  "8ce796fe58a9292770178b199f1368adfeb6671a63dae3243b06b9e52769ec47", // 3-1 p2sh
+  "58a7b1b7ef1e0c3bdce1c5df5ca4ff5120e49ae64f16e8945993fbad71818240", // 1-2 p2wsh
+  "b10c0000004da5a9d1d9b4ae32e09f0b3e62d21a5cce5428d4ad714fb444eb5d", // 10-9 every script type
+  "ebe3d1ad3798ec45d9be5dcff476fe54ff36ddc0c9ac8ff9d5acb08d485d340e", // 2-12 one address, 10x 546 back to it
+];
+
+const ADDR_CASES = [
+  { name: "satoshi-genesis", address: "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa" },
+];
+
+// Home-page example cards (e2e/home-examples.spec.ts). Each fixture maps API
+// path -> response, holding the chain data the scan needs to reach its live
+// score offline: the paths were found by recording a live scan and dropping
+// every response the score does not depend on. Anything not listed is served
+// by the e2e mock's defaults (404 for txs, all-unspent outspends).
+const tx = (id) => `/tx/${id}`;
+const txOut = (id) => [`/tx/${id}`, `/tx/${id}/outspends`];
+const HOME_CASES = [
+  { name: "whirlpool-ashigaru", paths: [tx("5f0080e3f0acfde005b9c7149f12880be273eea01ca3a3b867f642ac9bf273cc")] },
+  {
+    name: "sweep",
+    paths: [
+      ...txOut("8cbe332206ffc1ea3f3ffb6aeb5ac7306310bd991260de0e09845a45f70af85a"),
+      tx("0ed531e738a48eac37669facc0fc69c45a95ed2ed4d0c274f0f484fab3cf9121"),
+      ...txOut("2da7ac667e1b33fad7d5a1ec97dccda19eb5079ed209595ca4a984c35cfbd938"),
+      ...txOut("6b70b7cac1f3a10ce05c878ab5611d34091cc200c0d816f5c75a1714a38e1b17"),
+      ...txOut("d7d4340ca4a413e14d099c7ca14b98cb5725b50c6a4c5e08ff358ccfc9fd00e6"),
+    ],
+  },
+  {
+    name: "consolidation",
+    paths: [
+      ...txOut("40b88e16fe9881eb89df76265ccf2d46abfd1071a94dae8e413efc0d83d3df18"),
+      tx("0db4e42ce3c017469761428c986187b900fc5bd1ad4fef1ce8197de19799339e"),
+      tx("2a8a8b3f4cb650a0caa6bbc3a5614dbe9067e570e28fd777c5394c341467b79e"),
+      ...txOut("3a87bb2fa928a588787b1fffe8408c9d3c74fcbf7b4afe4240c9438703983aec"),
+      ...txOut("3c32cc3cb86b14d34873419aeb5b8bf6ff657a544d41f2ddf7c322db4b518c2d"),
+      tx("b964908a969732a91b94a05387b3f84677cd3f5f55e8f5f2de6a1dfc63c9538e"),
+      ...txOut("d299226f6382a522221500322392539125e77f54083137a5537fb86d85655a68"),
+      tx("e34955216f028d019dade2c80a2e6bb3bcea96eed966e8b47cb0ed3992bac3cb"),
+      tx("f286322e319aa80fd3156f236274a09abc4b14dd6ecea6348c26e754c335f205"),
+    ],
+  },
+  { name: "address-reuse", paths: [tx("4c18b982836006cbe54661942f632f10b9cc0072e97a32feeea77abd8c7c8c3c")] },
+];
+
+mkdirSync(`${DIR}/home`, { recursive: true });
+for (const { name, paths } of HOME_CASES) {
+  const recorded = {};
+  for (const p of paths) {
+    const res = await fetch(`${API}${p}`);
+    if (!res.ok) throw new Error(`${p}: HTTP ${res.status}`);
+    recorded[p] = await res.json();
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  writeFileSync(`${DIR}/home/${name}.json`, JSON.stringify(recorded) + "\n");
+  console.log(`Saved home/${name}`);
+}
+if (process.argv.includes("--home")) process.exit(0);
+
+mkdirSync(DIR, { recursive: true });
+
+for (const { name, txid } of TX_CASES) {
+  const res = await fetch(`${API}/tx/${txid}`);
+  if (!res.ok) {
+    console.error(`Failed to fetch ${name}: HTTP ${res.status}`);
+    continue;
+  }
+  const json = await res.json();
+  writeFileSync(`${DIR}/${name}.json`, JSON.stringify(json, null, 2));
+  console.log(`Saved ${name}`);
+  await new Promise((r) => setTimeout(r, 500)); // rate limit courtesy
+}
+
+async function fetchJson(url) {
+  const res = await fetch(url);
+  if (!res.ok) {
+    const text = await res.text();
+    console.warn(`  Warning: ${url} returned ${res.status}: ${text.slice(0, 100)}`);
+    return null;
+  }
+  return res.json();
+}
+
+for (const { name, address } of ADDR_CASES) {
+  const addr = await fetchJson(`${API}/address/${address}`);
+  const utxos = await fetchJson(`${API}/address/${address}/utxo`);
+  const txs = await fetchJson(`${API}/address/${address}/txs`);
+
+  if (addr) writeFileSync(`${DIR}/${name}-address.json`, JSON.stringify(addr, null, 2));
+  writeFileSync(`${DIR}/${name}-utxos.json`, JSON.stringify(utxos ?? [], null, 2));
+  if (txs) writeFileSync(`${DIR}/${name}-txs.json`, JSON.stringify(txs, null, 2));
+  console.log(`Saved ${name} (address + utxos + txs)`);
+}
+
+mkdirSync(`${DIR}/corpus`, { recursive: true });
+for (const txid of CORPUS_TXIDS) {
+  const tx = await fetchJson(`${API}/tx/${txid}`);
+  const hexRes = await fetch(`${API}/tx/${txid}/hex`);
+  if (!tx || !hexRes.ok) {
+    console.error(`Failed to fetch corpus tx ${txid}`);
+    continue;
+  }
+  const hex = await hexRes.text();
+  writeFileSync(`${DIR}/corpus/${txid}.json`, JSON.stringify({ tx, hex }, null, 2));
+  console.log(`Saved corpus ${txid.slice(0, 12)}`);
+  await new Promise((r) => setTimeout(r, 500));
+}
+
+// Forward-trace data for chain-forward-peel tests: outspends, every spending
+// child, and for each peel-shaped child (1 in, 2 out) the tx spending its
+// larger output. Consumed by src/lib/analysis/chain/__tests__/forward.test.ts.
+const FORWARD_CASES = [
+  { name: "sweep-1in1out", txid: "8cbe332206ffc1ea3f3ffb6aeb5ac7306310bd991260de0e09845a45f70af85a" },
+  { name: "consolidation-5in1out", txid: "40b88e16fe9881eb89df76265ccf2d46abfd1071a94dae8e413efc0d83d3df18" },
+  { name: "batch-payment", txid: "aefda8a740b3afd49b23412eaae746224977db24be31706c050e24e950e96271" },
+];
+const pause = () => new Promise((r) => setTimeout(r, 700));
+mkdirSync(`${DIR}/forward`, { recursive: true });
+for (const { name, txid } of FORWARD_CASES) {
+  const outspends = await fetchJson(`${API}/tx/${txid}/outspends`);
+  if (!outspends) continue;
+  const children = [];
+  const grandchildren = [];
+  for (const os of outspends) {
+    if (!os.spent || children.some((c) => c.txid === os.txid)) continue;
+    await pause();
+    const child = await fetchJson(`${API}/tx/${os.txid}`);
+    if (!child) continue;
+    children.push(child);
+    const addressed = child.vout.filter((o) => o.scriptpubkey_address);
+    if (child.vin.length !== 1 || addressed.length !== 2) continue;
+    const larger = child.vout.indexOf(addressed[0].value >= addressed[1].value ? addressed[0] : addressed[1]);
+    await pause();
+    const childOutspends = await fetchJson(`${API}/tx/${child.txid}/outspends`);
+    const next = childOutspends?.[larger];
+    if (!next?.spent) continue;
+    await pause();
+    const grandchild = await fetchJson(`${API}/tx/${next.txid}`);
+    if (grandchild) grandchildren.push(grandchild);
+  }
+  writeFileSync(`${DIR}/forward/${name}.json`, JSON.stringify({ txid, outspends, children, grandchildren }, null, 2));
+  console.log(`Saved forward ${name}`);
+}
+
+console.log("\nAll fixtures saved to:", DIR);

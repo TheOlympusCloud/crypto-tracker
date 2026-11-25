@@ -1,0 +1,1273 @@
+use boltzmann_rs::analyze::analyze;
+use boltzmann_rs::joinmarket::analyze_joinmarket;
+
+/// Helper to assert a Boltzmann result matches expected values.
+fn assert_boltzmann(
+    label: &str,
+    inputs: &[i64],
+    outputs: &[i64],
+    fees: i64,
+    max_cj_intrafees_ratio: f64,
+    expected_nb_cmbn: u64,
+    expected_entropy: f64,
+    expected_mat_lnk: Option<&[&[u64]]>,
+) {
+    let result = analyze(inputs, outputs, fees, max_cj_intrafees_ratio, 60_000);
+
+    assert_eq!(
+        result.nb_cmbn, expected_nb_cmbn,
+        "{label}: nb_cmbn mismatch"
+    );
+
+    let entropy_diff = (result.entropy - expected_entropy).abs();
+    assert!(
+        entropy_diff < 1e-6,
+        "{label}: entropy mismatch: got {}, expected {} (diff {entropy_diff})",
+        result.entropy,
+        expected_entropy
+    );
+
+    if let Some(expected_mat) = expected_mat_lnk {
+        assert_eq!(
+            result.mat_lnk_combinations.len(),
+            expected_mat.len(),
+            "{label}: matrix row count mismatch"
+        );
+        for (o, row) in result.mat_lnk_combinations.iter().enumerate() {
+            assert_eq!(
+                row.len(),
+                expected_mat[o].len(),
+                "{label}: matrix col count mismatch at row {o}"
+            );
+            for (i, &val) in row.iter().enumerate() {
+                assert_eq!(
+                    val, expected_mat[o][i],
+                    "{label}: mat_lnk[{o}][{i}] mismatch: got {val}, expected {}",
+                    expected_mat[o][i]
+                );
+            }
+        }
+    }
+}
+
+// ==========================================================================
+// Test 1: Consolidation (6-in, 2-out, zero entropy)
+// Tx: dcba20fdfe34fe240fa6eacccfb2e58468ba2feafcfff99706145800d09a09a6
+// ==========================================================================
+#[test]
+fn test_consolidation_zero_entropy() {
+    assert_boltzmann(
+        "Test 1: Consolidation",
+        &[5_300_000_000, 2_020_000_000, 4_975_000_000, 5_000_000_000, 5_556_000_000, 7_150_000_000],
+        &[1_000_000, 30_000_000_000],
+        0,
+        0.0,
+        1,
+        0.0,
+        Some(&[
+            &[1, 1, 1, 1, 1, 1],
+            &[1, 1, 1, 1, 1, 1],
+        ]),
+    );
+}
+
+// ==========================================================================
+// Test 2: Simple equal-value swap (2-in, 2-out)
+// Tx: 8c5feb901f3983b0f28d996f9606d895d75136dbe8d77ed1d6c7340a403a73bf
+// ==========================================================================
+#[test]
+fn test_equal_value_swap() {
+    assert_boltzmann(
+        "Test 2: Equal-value swap",
+        &[4_900_000_000, 100_000_000],
+        &[4_900_000_000, 100_000_000],
+        0,
+        0.0,
+        2,
+        1.0,
+        Some(&[
+            &[2, 1],
+            &[1, 2],
+        ]),
+    );
+}
+
+// ==========================================================================
+// Test 3: DarkWallet CoinJoin (2-in, 4-out) - THE canonical example
+// Tx: 8e56317360a548e8ef28ec475878ef70d1371bee3526c017ac22ad61ae5740b8
+// ==========================================================================
+#[test]
+fn test_darkwallet_coinjoin() {
+    assert_boltzmann(
+        "Test 3: DarkWallet CoinJoin",
+        &[10_000_000, 1_380_000],
+        &[100_000, 9_850_000, 100_000, 1_270_000],
+        60_000,
+        0.0,
+        3,
+        1.584962500721156,
+        Some(&[
+            &[3, 1],
+            &[1, 3],
+            &[2, 2],
+            &[2, 2],
+        ]),
+    );
+}
+
+// ==========================================================================
+// Test 4a: CoinJoin 4 participants without intrafees (5-in, 7-out)
+// Tx: 7d588d52d1cece7a18d663c977d6143016b5b326404bbf286bc024d5d54fcecb
+// ==========================================================================
+#[test]
+fn test_coinjoin_4_participants_no_intrafees() {
+    assert_boltzmann(
+        "Test 4a: CoinJoin 4p no intrafees",
+        &[260_994_463, 98_615_817, 84_911_243, 20_112_774, 79_168_410],
+        &[14_868_890, 84_077_613, 84_077_613, 15_369_204, 177_252_160, 84_077_613, 84_077_613],
+        2001,
+        0.0,
+        1,
+        0.0,
+        Some(&[
+            &[1, 1, 1, 1, 1],
+            &[1, 1, 1, 1, 1],
+            &[1, 1, 1, 1, 1],
+            &[1, 1, 1, 1, 1],
+            &[1, 1, 1, 1, 1],
+            &[1, 1, 1, 1, 1],
+            &[1, 1, 1, 1, 1],
+        ]),
+    );
+}
+
+// ==========================================================================
+// Test 4b: CoinJoin 4 participants WITH intrafees
+// ==========================================================================
+#[test]
+fn test_coinjoin_4_participants_with_intrafees() {
+    assert_boltzmann(
+        "Test 4b: CoinJoin 4p with intrafees",
+        &[260_994_463, 98_615_817, 84_911_243, 20_112_774, 79_168_410],
+        &[14_868_890, 84_077_613, 84_077_613, 15_369_204, 177_252_160, 84_077_613, 84_077_613],
+        2001,
+        0.005,
+        95,
+        6.569855608330948,
+        Some(&[
+            &[95, 9, 25, 11, 11],
+            &[35, 38, 46, 33, 33],
+            &[35, 38, 46, 33, 33],
+            &[35, 38, 46, 33, 33],
+            &[35, 38, 46, 33, 33],
+            &[9, 27, 43, 73, 73],
+            &[11, 73, 21, 27, 27],
+        ]),
+    );
+}
+
+// ==========================================================================
+// Test 5: Synthetic equal inputs, mixed outputs (testCaseA)
+// ==========================================================================
+#[test]
+fn test_case_a() {
+    assert_boltzmann(
+        "Test 5: testCaseA",
+        &[10, 10],
+        &[8, 2, 3, 7],
+        0,
+        0.0,
+        3,
+        1.584962500721156,
+        Some(&[
+            &[2, 2],
+            &[2, 2],
+            &[2, 2],
+            &[2, 2],
+        ]),
+    );
+}
+
+// ==========================================================================
+// Test 6: Symmetric equal inputs/outputs (testCaseB)
+// ==========================================================================
+#[test]
+fn test_case_b() {
+    assert_boltzmann(
+        "Test 6: testCaseB",
+        &[10, 10],
+        &[8, 2, 2, 8],
+        0,
+        0.0,
+        5,
+        2.321928094887362,
+        Some(&[
+            &[3, 3],
+            &[3, 3],
+            &[3, 3],
+            &[3, 3],
+        ]),
+    );
+}
+
+// ==========================================================================
+// Test 7: Perfect CoinJoin 2x2 (testCaseP2)
+// ==========================================================================
+#[test]
+fn test_perfect_cj_2x2() {
+    assert_boltzmann(
+        "Test 7: P2",
+        &[5, 5],
+        &[5, 5],
+        0,
+        0.0,
+        3,
+        1.584962500721156,
+        Some(&[
+            &[2, 2],
+            &[2, 2],
+        ]),
+    );
+}
+
+// ==========================================================================
+// Test 8: Perfect CoinJoin 3x3 (testCaseP3)
+// ==========================================================================
+#[test]
+fn test_perfect_cj_3x3() {
+    assert_boltzmann(
+        "Test 8: P3",
+        &[5, 5, 5],
+        &[5, 5, 5],
+        0,
+        0.0,
+        16,
+        4.0,
+        Some(&[
+            &[8, 8, 8],
+            &[8, 8, 8],
+            &[8, 8, 8],
+        ]),
+    );
+}
+
+// ==========================================================================
+// Test 9: Perfect CoinJoin 4x4 (testCaseP4)
+// ==========================================================================
+#[test]
+fn test_perfect_cj_4x4() {
+    assert_boltzmann(
+        "Test 9: P4",
+        &[5, 5, 5, 5],
+        &[5, 5, 5, 5],
+        0,
+        0.0,
+        131,
+        7.03342300153745,
+        Some(&[
+            &[53, 53, 53, 53],
+            &[53, 53, 53, 53],
+            &[53, 53, 53, 53],
+            &[53, 53, 53, 53],
+        ]),
+    );
+}
+
+// ==========================================================================
+// Test 10: Perfect CoinJoin 5x5 (testCaseP5 / Whirlpool-like)
+// ==========================================================================
+#[test]
+fn test_perfect_cj_5x5() {
+    assert_boltzmann(
+        "Test 10: P5",
+        &[5, 5, 5, 5, 5],
+        &[5, 5, 5, 5, 5],
+        0,
+        0.0,
+        1496,
+        10.546894459887637,
+        None, // Matrix is large, just check nb_cmbn and entropy
+    );
+}
+
+// ==========================================================================
+// Test 11: Perfect CoinJoin 6x6 (testCaseP6)
+// ==========================================================================
+#[test]
+fn test_perfect_cj_6x6() {
+    assert_boltzmann(
+        "Test 11: P6",
+        &[5, 5, 5, 5, 5, 5],
+        &[5, 5, 5, 5, 5, 5],
+        0,
+        0.0,
+        22482,
+        14.45648276305027,
+        None,
+    );
+}
+
+// ==========================================================================
+// Test 12: Perfect CoinJoin 7x7 (testCaseP7)
+// ==========================================================================
+#[test]
+fn test_perfect_cj_7x7() {
+    assert_boltzmann(
+        "Test 12: P7",
+        &[5, 5, 5, 5, 5, 5, 5],
+        &[5, 5, 5, 5, 5, 5, 5],
+        0,
+        0.0,
+        426833,
+        18.703312194872563,
+        None,
+    );
+}
+
+// ==========================================================================
+// Test 13: 3 inputs mixed (testCaseD)
+// ==========================================================================
+#[test]
+fn test_case_d() {
+    assert_boltzmann(
+        "Test 13: testCaseD",
+        &[10, 10, 2],
+        &[8, 2, 2, 8, 2],
+        0,
+        0.0,
+        28,
+        4.807354922057604,
+        Some(&[
+            &[16, 16, 7],
+            &[16, 16, 7],
+            &[13, 13, 14],
+            &[13, 13, 14],
+            &[13, 13, 14],
+        ]),
+    );
+}
+
+// ==========================================================================
+// Test 14: Complex nondeterministic (9-in, 4-out) with intrafees
+// Tx: 015d9cf0a12057d009395710611c65109f36b3eaefa3a694594bf243c097f404
+// ==========================================================================
+#[test]
+fn test_nondeterministic_9in_4out() {
+    assert_boltzmann(
+        "Test 14: Nondeterministic 9-in 4-out",
+        &[203486, 5_000_000, 11126, 9829, 9_572_867, 13796, 150000, 82835, 5_000_000],
+        &[791116, 907419, 9_136_520, 9_136_520],
+        72364,
+        0.005,
+        438,
+        8.774787059601174,
+        Some(&[
+            &[245, 245, 245, 245, 245, 131, 114, 113, 113],
+            &[245, 245, 245, 245, 245, 131, 114, 113, 113],
+            &[126, 364, 364, 126, 136, 163, 109, 111, 111],
+            &[364, 126, 126, 364, 354, 99, 119, 115, 115],
+        ]),
+    );
+}
+
+// ==========================================================================
+// Test 14b: Same tx as Test 14 - compare standard vs JoinMarket turbo
+// Stonewall tx should NOT use turbo mode; this test proves the difference
+// ==========================================================================
+#[test]
+fn test_stonewall_015d_standard_vs_jm_turbo() {
+    let inputs = [203486i64, 5_000_000, 11126, 9829, 9_572_867, 13796, 150000, 82835, 5_000_000];
+    let outputs = [791116i64, 907419, 9_136_520, 9_136_520];
+    let fee = 72364i64;
+
+    let standard = analyze(&inputs, &outputs, fee, 0.005, 60_000);
+    let turbo = analyze_joinmarket(&inputs, &outputs, fee, 9_136_520, 0.005, 60_000);
+
+    println!("STANDARD: nb_cmbn={}, entropy={:.6}", standard.nb_cmbn, standard.entropy);
+    for (o, row) in standard.mat_lnk_probabilities.iter().enumerate() {
+        let formatted: Vec<String> = row.iter().map(|p| format!("{:.1}%", p * 100.0)).collect();
+        println!("  out[{o}]: {}", formatted.join("  "));
+    }
+
+    println!("\nTURBO (JM): nb_cmbn={}, entropy={:.6}", turbo.nb_cmbn, turbo.entropy);
+    for (o, row) in turbo.mat_lnk_probabilities.iter().enumerate() {
+        let formatted: Vec<String> = row.iter().map(|p| format!("{:.1}%", p * 100.0)).collect();
+        println!("  out[{o}]: {}", formatted.join("  "));
+    }
+
+    // Standard should give 438 combinations (verified in Test 14)
+    assert_eq!(standard.nb_cmbn, 438, "Standard should have 438 combinations");
+
+    // Turbo gives DIFFERENT (wrong) results for this Stonewall tx
+    // This test documents the divergence to justify the exclusion
+    assert_ne!(
+        standard.nb_cmbn, turbo.nb_cmbn,
+        "Standard and turbo should differ for Stonewall (turbo is wrong here)"
+    );
+    assert_ne!(
+        standard.mat_lnk_combinations, turbo.mat_lnk_combinations,
+        "Matrices should differ - turbo assumes JM structure which is wrong for Stonewall"
+    );
+}
+
+// ==========================================================================
+// Test 15: "Hell is other people" from LaurentMT Part 3
+// ==========================================================================
+#[test]
+fn test_hell_is_other_people() {
+    // i1=1 BTC, i2=2 BTC -> o1=0.8, o2=0.2, o3=0.8, o4=1.2 BTC
+    // Same structure as DarkWallet example: should have 3 interpretations
+    assert_boltzmann(
+        "Test 15: Hell is other people",
+        &[100_000_000, 200_000_000],
+        &[80_000_000, 20_000_000, 80_000_000, 120_000_000],
+        0,
+        0.0,
+        3,
+        1.584962500721156,
+        None, // Verify nb_cmbn and entropy match DarkWallet structure
+    );
+}
+
+// ==========================================================================
+// Test 16: Trivial 1-in, 2-out
+// ==========================================================================
+#[test]
+fn test_trivial_1in_2out() {
+    let result = analyze(
+        &[200_000],
+        &[100_000, 90_000],
+        10_000,
+        0.0,
+        60_000,
+    );
+
+    assert_eq!(result.nb_cmbn, 1, "Trivial: nb_cmbn should be 1");
+    assert_eq!(result.entropy, 0.0, "Trivial: entropy should be 0");
+    // All links deterministic
+    assert_eq!(result.deterministic_links.len(), 2, "Trivial: should have 2 deterministic links");
+}
+
+// ==========================================================================
+// Test: testCaseB2 (2-in, 3-out)
+// ==========================================================================
+#[test]
+fn test_case_b2() {
+    assert_boltzmann(
+        "testCaseB2",
+        &[10, 10],
+        &[10, 2, 8],
+        0,
+        0.0,
+        3,
+        1.584962500721156,
+        None,
+    );
+}
+
+// ==========================================================================
+// Test: testCaseC (2-in, 4-out equal)
+// ==========================================================================
+#[test]
+fn test_case_c() {
+    assert_boltzmann(
+        "testCaseC",
+        &[10, 10],
+        &[5, 5, 5, 5],
+        0,
+        0.0,
+        7,
+        2.807354922057604,
+        None,
+    );
+}
+
+// ==========================================================================
+// Test: testCaseC2 (2-in, 3-out)
+// ==========================================================================
+#[test]
+fn test_case_c2() {
+    assert_boltzmann(
+        "testCaseC2",
+        &[10, 10],
+        &[10, 5, 5],
+        0,
+        0.0,
+        3,
+        1.584962500721156,
+        None,
+    );
+}
+
+// ==========================================================================
+// Test: P3 with fees (3-in, 3-out with fee=5)
+// ==========================================================================
+#[test]
+fn test_perfect_cj_3x3_with_fees() {
+    assert_boltzmann(
+        "P3WithFees",
+        &[5, 5, 5],
+        &[5, 3, 2],
+        5,
+        0.0,
+        28,
+        4.807354922057604,
+        None,
+    );
+}
+
+// ==========================================================================
+// Test: P3b (3-in, 3-out non-equal)
+// ==========================================================================
+#[test]
+fn test_perfect_cj_3x3_b() {
+    assert_boltzmann(
+        "P3b",
+        &[5, 5, 10],
+        &[5, 5, 10],
+        0,
+        0.0,
+        9,
+        3.169925001442312,
+        None,
+    );
+}
+
+// ==========================================================================
+// Test: Partition formula (unit test for boltzmann_equal_outputs)
+// ==========================================================================
+#[test]
+fn test_partition_formula() {
+    use boltzmann_rs::partition::boltzmann_equal_outputs;
+    assert_eq!(boltzmann_equal_outputs(2), 3);
+    assert_eq!(boltzmann_equal_outputs(3), 16);
+    assert_eq!(boltzmann_equal_outputs(4), 131);
+    assert_eq!(boltzmann_equal_outputs(5), 1496);
+    assert_eq!(boltzmann_equal_outputs(6), 22482);
+    assert_eq!(boltzmann_equal_outputs(7), 426833);
+}
+
+// ==========================================================================
+// JoinMarket Turbo Mode Tests
+// ==========================================================================
+
+// Synthetic 3-party JM: 2 makers + 1 taker
+// Maker 1: input 150 -> CJ 100 + change 49 (maker fee 1)
+// Maker 2: input 120 -> CJ 100 + change 19 (maker fee 1)
+// Taker:   input 106 -> CJ 100 (pays miner fee 8 - maker fees 2 = net 6)
+#[test]
+fn test_jm_turbo_3party() {
+    let inputs = [150i64, 120, 106];
+    let outputs = [100i64, 100, 100, 49, 19];
+    let fee = 8i64;
+
+    let turbo = analyze_joinmarket(&inputs, &outputs, fee, 100, 0.0, 60_000);
+
+    assert!(!turbo.timed_out, "JM turbo 3p: should not timeout");
+    assert!(turbo.nb_cmbn > 0, "JM turbo 3p: should have valid combinations");
+    assert_eq!(turbo.n_inputs, 3);
+    assert_eq!(turbo.n_outputs, 5);
+
+    // Change outputs should have deterministic links
+    // Sorted outputs desc: [100, 100, 100, 49, 19]
+    // Change 49 at out idx 3 -> matched to input 150 at in idx 0
+    // Change 19 at out idx 4 -> matched to input 120 at in idx 1
+    assert!(
+        turbo.model_links.contains(&(3, 0)),
+        "JM turbo 3p: change 49 should link to input 150"
+    );
+    assert!(
+        turbo.model_links.contains(&(4, 1)),
+        "JM turbo 3p: change 19 should link to input 120"
+    );
+}
+
+// Wrong denomination triggers fallback to standard Boltzmann
+#[test]
+fn test_jm_turbo_fallback_wrong_denom() {
+    let inputs = [150i64, 120, 106];
+    let outputs = [100i64, 100, 100, 49, 19];
+    let fee = 8i64;
+
+    let standard = analyze(&inputs, &outputs, fee, 0.0, 60_000);
+    let turbo = analyze_joinmarket(&inputs, &outputs, fee, 50, 0.0, 60_000);
+
+    assert_eq!(
+        turbo.nb_cmbn, standard.nb_cmbn,
+        "JM turbo fallback: nb_cmbn should match standard"
+    );
+    let entropy_diff = (turbo.entropy - standard.entropy).abs();
+    assert!(
+        entropy_diff < 1e-10,
+        "JM turbo fallback: entropy should match standard"
+    );
+}
+
+// Synthetic 5-party JM: 4 makers + 1 taker
+// Maker fees ~1000 sats each, miner fee covers the rest
+#[test]
+fn test_jm_turbo_5party() {
+    let inputs = [1_600_000i64, 1_300_000, 1_100_000, 1_050_000, 1_006_000];
+    let outputs = [
+        1_000_000i64, 1_000_000, 1_000_000, 1_000_000, 1_000_000,
+        599_000, 299_000, 99_000, 49_000,
+    ];
+    let fee = 10_000i64;
+
+    let turbo = analyze_joinmarket(&inputs, &outputs, fee, 1_000_000, 0.0, 60_000);
+
+    assert!(!turbo.timed_out, "JM turbo 5p: should not timeout");
+    assert!(turbo.nb_cmbn > 0, "JM turbo 5p: should have combinations");
+    assert_eq!(turbo.n_inputs, 5);
+    assert_eq!(turbo.n_outputs, 9);
+
+    // Sorted outputs desc: [1M x5, 599k, 299k, 99k, 49k]
+    // Change 599k (idx 5) -> input 1.6M (idx 0)
+    // Change 299k (idx 6) -> input 1.3M (idx 1)
+    // Change 99k  (idx 7) -> input 1.1M (idx 2)
+    // Change 49k  (idx 8) -> input 1.05M (idx 3)
+    assert!(turbo.model_links.contains(&(5, 0)), "JM turbo 5p: change 599k -> input 1.6M");
+    assert!(turbo.model_links.contains(&(6, 1)), "JM turbo 5p: change 299k -> input 1.3M");
+    assert!(turbo.model_links.contains(&(7, 2)), "JM turbo 5p: change 99k -> input 1.1M");
+    assert!(turbo.model_links.contains(&(8, 3)), "JM turbo 5p: change 49k -> input 1.05M");
+}
+
+// 10-party JM: formula shortcut (would timeout without it)
+#[test]
+fn test_jm_turbo_10party_formula() {
+    // 9 makers + 1 taker = 10 participants, 10 CJ outputs
+    let inputs = [
+        10_000_000i64, 7_500_000, 5_000_000, 4_000_000, 3_000_000,
+        2_500_000, 2_000_000, 1_500_000, 1_200_000, 1_015_000,
+    ];
+    let outputs = [
+        1_000_000i64, 1_000_000, 1_000_000, 1_000_000, 1_000_000,
+        1_000_000, 1_000_000, 1_000_000, 1_000_000, 1_000_000,
+        8_999_000, 6_499_000, 3_999_000, 2_999_000, 1_999_000,
+        1_499_000, 999_000, 499_000, 199_000,
+    ];
+    let fee: i64 = inputs.iter().sum::<i64>() - outputs.iter().sum::<i64>();
+
+    let turbo = analyze_joinmarket(&inputs, &outputs, fee, 1_000_000, 0.0, 5_000);
+
+    assert!(!turbo.timed_out, "JM turbo 10p: should not timeout with formula shortcut");
+    assert_eq!(turbo.nb_cmbn, 9_085_194_458, "JM turbo 10p: nb_cmbn should match partition formula");
+    assert_eq!(turbo.n_inputs, 10);
+    assert_eq!(turbo.n_outputs, 19);
+    assert!(turbo.elapsed_ms < 100, "JM turbo 10p: should complete in <100ms, got {}ms", turbo.elapsed_ms);
+
+    // Sorted outputs desc: [8.999M, 6.499M, 3.999M, 2.999M, 1.999M, 1.499M, 1M×10, 999K, 499K, 199K]
+    // Changes at sorted indices 0-5 and 16-18, CJ at 6-15
+    // Change 8.999M (idx 0) -> input 10M (idx 0): residual 9M - 8.999M = 1K
+    // Change 6.499M (idx 1) -> input 7.5M (idx 1): residual 6.5M - 6.499M = 1K
+    // Change 3.999M (idx 2) -> input 5M (idx 2): residual 4M - 3.999M = 1K
+    // Change 2.999M (idx 3) -> input 4M (idx 3): residual 3M - 2.999M = 1K
+    // Change 1.999M (idx 4) -> input 3M (idx 4): residual 2M - 1.999M = 1K
+    // Change 1.499M (idx 5) -> input 2.5M (idx 5): residual 1.5M - 1.499M = 1K
+    // Change 999K (idx 16)  -> input 2M (idx 6): residual 1M - 999K = 1K
+    // Change 499K (idx 17)  -> input 1.5M (idx 7): residual 500K - 499K = 1K
+    // Change 199K (idx 18)  -> input 1.2M (idx 8): residual 200K - 199K = 1K
+    let expected_det_links: Vec<(usize, usize)> = vec![
+        (0, 0), (1, 1), (2, 2), (3, 3), (4, 4), (5, 5),
+        (16, 6), (17, 7), (18, 8),
+    ];
+    for &(out_idx, in_idx) in &expected_det_links {
+        assert!(
+            turbo.model_links.contains(&(out_idx, in_idx)),
+            "JM turbo 10p: change at out[{out_idx}] should link to in[{in_idx}]"
+        );
+    }
+    assert_eq!(turbo.model_links.len(), 9, "JM turbo 10p: should have exactly 9 model links");
+    assert!(turbo.deterministic_links.is_empty(), "JM turbo 10p: model links are not deterministic");
+}
+
+// Turbo vs standard comparison on 3-party: CJ output cells should match
+#[test]
+fn test_jm_turbo_vs_standard_cj_cells() {
+    let inputs = [150i64, 120, 106];
+    let outputs = [100i64, 100, 100, 49, 19];
+    let fee = 8i64;
+
+    let standard = analyze(&inputs, &outputs, fee, 0.0, 60_000);
+    let turbo = analyze_joinmarket(&inputs, &outputs, fee, 100, 0.0, 60_000);
+
+    // CJ output rows (indices 0, 1, 2) - probabilities should be consistent
+    // The turbo mode solves the reduced problem exactly, so CJ linkage should match
+    // Turbo nb_cmbn may differ from standard since change links are forced deterministic
+    assert!(turbo.nb_cmbn > 0);
+    assert!(standard.nb_cmbn > 0);
+
+    // Verify CJ output probabilities are proportionally consistent:
+    // For each CJ row, the relative probabilities across inputs should be similar
+    for out_idx in 0..3 {
+        let turbo_row = &turbo.mat_lnk_probabilities[out_idx];
+        let std_row = &standard.mat_lnk_probabilities[out_idx];
+        // Both should have non-zero probabilities for CJ-relevant inputs
+        for in_idx in 0..3 {
+            assert!(
+                turbo_row[in_idx] > 0.0,
+                "Turbo CJ prob [{out_idx}][{in_idx}] should be > 0"
+            );
+            assert!(
+                std_row[in_idx] > 0.0,
+                "Standard CJ prob [{out_idx}][{in_idx}] should be > 0"
+            );
+        }
+    }
+}
+
+// Real JM tx: ae988772 - 10 inputs, 18 outputs, 9 equal at 1,067,547
+// User reported "raw is null" error in WASM
+#[test]
+fn test_jm_turbo_real_ae988772() {
+    let inputs = [
+        32_786_910i64, 1_100_260, 1_226_000, 267_116_955, 198_191_119,
+        1_083_917, 1_100_000, 13_243_963, 1_137_509, 3_536_926,
+    ];
+    let outputs = [
+        197_127_841i64, 1_067_547, 69_981, 36_722, 1_067_547,
+        158_475, 36_982, 266_049_515, 1_067_547, 1_067_547,
+        1_067_547, 1_067_547, 1_067_547, 12_176_575, 31_719_470,
+        1_067_547, 2_469_698, 1_067_547,
+    ];
+    let fee: i64 = inputs.iter().sum::<i64>() - outputs.iter().sum::<i64>();
+
+    let result = analyze_joinmarket(&inputs, &outputs, fee, 1_067_547, 0.005, 60_000);
+    assert!(result.nb_cmbn > 0, "ae988772: should produce valid result");
+    assert_eq!(result.n_inputs, 10);
+    assert_eq!(result.n_outputs, 18);
+}
+
+// Real JM tx: 70fb6dfe - 11 inputs, 20 outputs, 10 equal at 1,137,509
+// User reported 21 second compute time
+#[test]
+fn test_jm_turbo_real_70fb6dfe() {
+    let inputs = [
+        10_293_845i64, 82_353_594, 9_655_183, 1_165_442, 45_708_768,
+        528_184_515, 1_161_185, 230_907_429, 1_289_261, 112_790_126,
+        1_167_406,
+    ];
+    let outputs = [
+        28_225i64, 32_482, 527_051_545, 151_772, 1_137_509,
+        229_774_469, 44_575_792, 1_137_509, 1_137_509, 1_137_509,
+        1_137_509, 9_156_392, 1_137_509, 111_652_843, 1_137_509,
+        1_137_509, 81_216_199, 1_137_509, 1_137_509, 8_521_594,
+    ];
+    let fee: i64 = inputs.iter().sum::<i64>() - outputs.iter().sum::<i64>();
+
+    let result = analyze_joinmarket(&inputs, &outputs, fee, 1_137_509, 0.005, 30_000);
+    assert!(result.nb_cmbn > 0, "70fb6dfe: should produce valid result");
+    assert_eq!(result.n_inputs, 11);
+    assert_eq!(result.n_outputs, 20);
+}
+
+// Real tx: 08d91add - 11 inputs, 20 outputs, 10 equal at 136,363
+// User reported "unreachable executed" error - test standard path
+#[test]
+fn test_standard_real_08d91add() {
+    let inputs = [
+        3_542_448i64, 1_721_507, 168_359, 116_800, 1_795_508,
+        120_220, 422_302_747, 214_588, 173_099, 1_243_634,
+        500_877,
+    ];
+    let outputs = [
+        422_166_929i64, 1_659_445, 136_363, 136_363, 136_363,
+        136_363, 3_410_606, 32_541, 136_363, 136_363,
+        1_092_611, 36_739, 136_363, 78_228, 136_363,
+        1_590_904, 365_514, 101_202, 136_363, 136_363,
+    ];
+    let fee: i64 = inputs.iter().sum::<i64>() - outputs.iter().sum::<i64>();
+
+    // This tx should not crash - test with short timeout
+    let result = analyze(&inputs, &outputs, fee, 0.005, 10_000);
+    assert_eq!(result.n_inputs, 11);
+    assert_eq!(result.n_outputs, 20);
+}
+
+// Real tx: 08d91add - test via JM turbo path (what WASM actually calls)
+// With 20 outputs and matching failure, should gracefully return degenerate
+// result instead of crashing on standard analyze fallback
+#[test]
+fn test_jm_turbo_real_08d91add() {
+    let inputs = [
+        3_542_448i64, 1_721_507, 168_359, 116_800, 1_795_508,
+        120_220, 422_302_747, 214_588, 173_099, 1_243_634,
+        500_877,
+    ];
+    let outputs = [
+        422_166_929i64, 1_659_445, 136_363, 136_363, 136_363,
+        136_363, 3_410_606, 32_541, 136_363, 136_363,
+        1_092_611, 36_739, 136_363, 78_228, 136_363,
+        1_590_904, 365_514, 101_202, 136_363, 136_363,
+    ];
+    let fee: i64 = inputs.iter().sum::<i64>() - outputs.iter().sum::<i64>();
+
+    // Should not crash even if matching fails - returns degenerate for n_out > 18
+    let result = analyze_joinmarket(&inputs, &outputs, fee, 136_363, 0.005, 10_000);
+    assert_eq!(result.n_inputs, 11);
+    assert_eq!(result.n_outputs, 20);
+    assert!(result.nb_cmbn > 0, "08d91add JM turbo: should produce valid result");
+}
+
+// Real JM tx: 89633a49 - 10 inputs, 15 outputs, 8 equal at 1,035,806
+// Regression: unmatched change outputs were showing 100% for all unmatched inputs,
+// but a single input can't fund multiple unmatched changes simultaneously.
+#[test]
+fn test_jm_turbo_real_89633a49_no_false_deterministic() {
+    let inputs = [
+        3_676_408i64, 3_252_191, 2_594_240, 1_301_613, 1_067_547,
+        1_063_910, 1_017_842, 995_265, 940_638, 273_847,
+    ];
+    let outputs = [
+        2_646_252i64, 2_216_695, 1_558_640, 1_035_806, 1_035_806,
+        1_035_806, 1_035_806, 1_035_806, 1_035_806, 1_035_806,
+        1_035_806, 981_443, 265_829, 184_140, 32_246,
+    ];
+    let fee: i64 = inputs.iter().sum::<i64>() - outputs.iter().sum::<i64>();
+
+    let result = analyze_joinmarket(&inputs, &outputs, fee, 1_035_806, 0.005, 60_000);
+
+    assert_eq!(result.n_inputs, 10);
+    assert_eq!(result.n_outputs, 15);
+    assert!(result.nb_cmbn > 1, "89633a49: should have multiple interpretations");
+
+    // Key regression check: unmatched change outputs (981,443 and 184,140)
+    // should NOT show 100% probability for all unmatched inputs.
+    // Sorted outputs: [2646252, 2216695, 1558640, 1035806x8, 981443, 265829, 184140, 32246]
+    // Output index 11 = 981,443, output index 13 = 184,140
+    // These are the unmatched changes that couldn't be matched to any input's residual.
+    for &change_out_idx in &[11usize, 13] {
+        let row = &result.mat_lnk_probabilities[change_out_idx];
+        let deterministic_count = row.iter().filter(|&&p| (p - 1.0).abs() < 1e-10).count();
+        assert!(
+            deterministic_count <= 1,
+            "89633a49: unmatched change output[{change_out_idx}] has {deterministic_count} cells at 100% \
+             (should be at most 1 - a single input can't fund multiple changes)"
+        );
+    }
+
+    // Matched change outputs SHOULD still be deterministic (1:1 maker match)
+    // Output 0 (2,646,252) -> input 0 (3,676,408), residual 1,030,602 ~ change
+    assert!(
+        result.model_links.iter().any(|&(o, _)| o == 0),
+        "89633a49: matched change output 0 should have a deterministic link"
+    );
+}
+
+// Real JM tx: 14bf21be - 32 inputs, 33 outputs, 17 equal at 11,012,281
+// Large n_extra (15) triggers formula approximation path (DFS infeasible for 32 inputs)
+#[test]
+fn test_jm_turbo_real_14bf21be() {
+    let inputs = [
+        528_935_525i64, 65_048_511, 65_048_511, 25_966_292, 25_966_292,
+        16_087_041, 13_877_746, 12_694_620, 11_580_180, 11_114_766,
+        11_107_192, 10_408_828, 10_054_866, 9_643_199, 7_476_541,
+        7_323_478, 6_845_085, 5_009_708, 3_490_339, 2_368_635,
+        1_956_000, 1_594_247, 1_202_745, 991_664, 940_638,
+        825_071, 678_681, 354_248, 342_063, 221_657, 74_019, 70_803,
+    ];
+    let outputs = [
+        517_923_255i64, 54_037_215, 54_037_188, 14_955_112, 14_955_112,
+        11_012_281, 11_012_281, 11_012_281, 11_012_281, 11_012_281,
+        11_012_281, 11_012_281, 11_012_281, 11_012_281, 11_012_281,
+        11_012_281, 11_012_281, 11_012_281, 11_012_281, 11_012_281,
+        11_012_281, 11_012_281, 5_075_861, 3_788_839, 2_866_566,
+        1_682_669, 1_038_553, 821_180, 568_119, 102_738,
+        95_131, 81_019, 55_347,
+    ];
+    let fee: i64 = inputs.iter().sum::<i64>() - outputs.iter().sum::<i64>();
+
+    let result = analyze_joinmarket(&inputs, &outputs, fee, 11_012_281, 0.005, 60_000);
+
+    assert_eq!(result.n_inputs, 32);
+    assert_eq!(result.n_outputs, 33);
+    assert!(result.nb_cmbn > 1, "14bf21be: nb_cmbn should be > 1 (not degenerate)");
+    assert!(result.entropy > 0.0, "14bf21be: entropy should be positive");
+    assert!(!result.timed_out, "14bf21be: should not timeout");
+    assert!(result.elapsed_ms < 5000, "14bf21be: should complete quickly, got {}ms", result.elapsed_ms);
+
+    // CJ cell probabilities should be non-trivial (not 100% everywhere)
+    let cj_prob = result.mat_lnk_probabilities[5][0]; // First CJ output row, first input
+    assert!(cj_prob > 0.0, "14bf21be: CJ cell prob should be > 0");
+    assert!(cj_prob < 1.0, "14bf21be: CJ cell prob should be < 1 (not degenerate)");
+
+    // Should have deterministic change links (matched makers)
+    assert!(!result.model_links.is_empty(), "14bf21be: should have model change links");
+}
+
+// Stress test: very large synthetic JM (50 inputs, 25 CJ outputs)
+// Verifies the formula approximation path handles extreme sizes
+#[test]
+fn test_jm_turbo_50_inputs() {
+    let mut inputs = Vec::new();
+    // 24 makers with varied values above denomination
+    for i in 0..24 {
+        inputs.push(2_000_000i64 + (i as i64 + 1) * 50_000);
+    }
+    // 26 taker inputs (small values, collectively fund 1 CJ output)
+    for _ in 0..26 {
+        inputs.push(40_000);
+    }
+
+    let denomination = 1_000_000i64;
+    let mut outputs = Vec::new();
+    // 25 CJ denomination outputs
+    for _ in 0..25 {
+        outputs.push(denomination);
+    }
+    // 24 maker changes
+    for i in 0..24 {
+        outputs.push(inputs[i] - denomination - 500); // subtract maker fee
+    }
+    // 1 taker change
+    let taker_total: i64 = inputs[24..].iter().sum();
+    let total_fee = 5000i64;
+    outputs.push(taker_total - denomination - total_fee);
+
+    let fee: i64 = inputs.iter().sum::<i64>() - outputs.iter().sum::<i64>();
+
+    let result = analyze_joinmarket(&inputs, &outputs, fee, denomination, 0.005, 10_000);
+
+    assert_eq!(result.n_inputs, 50);
+    assert!(result.nb_cmbn > 1, "50-input JM: should not be degenerate");
+    assert!(result.entropy > 0.0, "50-input JM: should have positive entropy");
+    assert!(!result.timed_out, "50-input JM: should not timeout");
+    assert!(result.elapsed_ms < 5000, "50-input JM: should complete quickly");
+
+    // CJ cells should not be 100%
+    let cj_row_start = result.mat_lnk_probabilities.iter()
+        .position(|row| row.iter().all(|&p| p < 0.99))
+        .expect("Should have at least one CJ row with non-degenerate probabilities");
+    let cj_prob = result.mat_lnk_probabilities[cj_row_start][0];
+    assert!(cj_prob < 0.5, "50-input JM: CJ cell prob should be well below 50%, got {cj_prob}");
+}
+
+// Real JM tx 6cb2433f (home page example): 23 inputs, 10 x 198_732_961 + 9 changes.
+// Makers fund the denomination from 2-3 inputs (mostly 1 BTC UTXOs), so no
+// single input matches a change. It used to fall back to a degenerate result
+// (every cell 100%) here and to an exact DFS that never finished in the browser.
+#[test]
+fn test_jm_multi_input_makers_6cb2433f() {
+    let inputs = [
+        100_000_000i64, 99_714_485, 100_008_100, 100_000_000, 100_000_000, 100_000_000,
+        70_577_264, 99_690_093, 21_296_812, 99_712_169, 99_690_093, 100_005_800,
+        100_000_000, 28_764_098, 37_955_010, 100_000_000, 99_703_550, 100_000_000,
+        198_873_630, 100_000_000, 79_216_957, 100_000_000, 100_000_000,
+    ];
+    let denomination = 198_732_961i64;
+    let mut outputs = vec![denomination; 10];
+    outputs.extend([80_489_759i64, 29_453_272, 22_583_724, 9_819_186, 1_306_587, 1_278_915, 1_276_615, 985_300, 680_555]);
+    let fee = inputs.iter().sum::<i64>() - outputs.iter().sum::<i64>();
+    assert_eq!(fee, 4538);
+
+    let result = analyze_joinmarket(&inputs, &outputs, fee, denomination, 0.005, 60_000);
+
+    assert_eq!((result.n_inputs, result.n_outputs), (23, 19));
+    assert!(!result.timed_out);
+    assert!(result.elapsed_ms < 5000, "should complete quickly, got {}ms", result.elapsed_ms);
+    assert!(result.nb_cmbn > 1 && result.entropy > 0.0, "should not be degenerate");
+
+    // Sorted order: rows 0-9 CJ, 10.. changes by value; columns inputs by value.
+    // The maker model forces 80.5M <- 79.2M, 29.5M <- 28.8M, 22.6M <- 21.3M and
+    // 9.8M <- 70.6M + 38.0M, but Boltzmann does not: sub-tx {70.6M, 100.0058M,
+    // 100M, 38.0M, 198.9M} -> {2 x denom, 80.5M, 29.5M} (fee 2,751) with the
+    // other 18 inputs -> 15 outputs (fee 1,787) breaks four of them. So they are
+    // model links, never deterministic links.
+    assert_eq!(result.method, "joinmarket");
+    assert!(result.deterministic_links.is_empty(), "model links must not be claimed deterministic");
+    assert_eq!(result.model_links, vec![(10, 18), (11, 21), (12, 22), (13, 19), (13, 20)]);
+    let p = &result.mat_lnk_probabilities;
+    // Estimates never show certainty or impossibility
+    assert!(p.iter().flatten().all(|&x| (0.01..=0.99).contains(&x)));
+    for row in &p[..10] {
+        assert!(row.iter().all(|&x| x < 0.5), "CJ rows: ambiguous for every input");
+    }
+    // The 1.99 BTC input funds 29.5M or 680k (its maker's other input: ~1 BTC), not 80.5M
+    assert!((p[11][0] - 0.45).abs() < 0.01 && (p[18][0] - 0.51).abs() < 0.01 && p[10][0] == 0.01);
+    assert_eq!(p[10][18], 0.99);
+}
+
+// Boltzmann's counterexample to the model links above, checked by value:
+// both sub-transactions balance with a fee in [0, 4538].
+#[test]
+fn test_6cb2433f_model_links_are_not_deterministic() {
+    let denomination = 198_732_961i64;
+    let a_in = [70_577_264i64, 100_005_800, 100_000_000, 37_955_010, 198_873_630];
+    let a_out = [denomination, denomination, 80_489_759, 29_453_272];
+    let a_fee = a_in.iter().sum::<i64>() - a_out.iter().sum::<i64>();
+    assert!((0..=4538).contains(&a_fee), "sub-tx A fee {a_fee}");
+    // Sub-tx A holds 80.5M without 79.2M, 29.5M without 28.8M and neither of
+    // 9.8M's model inputs 70.6M/38.0M with 9.8M: all four model links break.
+    assert!(!a_in.contains(&79_216_957) && !a_in.contains(&28_764_098));
+}
+
+// ==========================================================================
+// Test: Stonewall transaction 19a79be3...
+// Tx: 19a79be39c05a0956c7d1f9f28ee6f1091096247b0906b6a8536dd7f400f2358
+// 3-in, 4-out Stonewall with 2 equal outputs (104,000 sats)
+// ==========================================================================
+#[test]
+fn test_stonewall_19a79be3() {
+    // Inputs: 205,000 + 100,000 + 46,834 = 351,834
+    // Outputs: 104,000 + 104,000 + 98,200 + 40,034 = 346,234
+    // Fee: 5,600
+    // 4 valid interpretations (verified by manual logical analysis)
+    let inputs = [205_000i64, 100_000, 46_834];
+    let outputs = [104_000i64, 104_000, 98_200, 40_034];
+    let fee = 5_600i64;
+
+    let result = analyze(&inputs, &outputs, fee, 0.0, 60_000);
+
+    assert_eq!(result.nb_cmbn, 4, "Stonewall should have exactly 4 interpretations");
+    assert!((result.entropy - 2.0).abs() < 0.001, "Entropy should be 2.0 bits");
+    assert_eq!(result.deterministic_links, vec![(3, 2)], "Out[3]=40034 deterministically linked to In[2]=46834");
+
+    // Verify exact matrix (sorted desc: inputs=[205k, 100k, 46834], outputs=[104k, 104k, 98200, 40034])
+    assert_eq!(result.mat_lnk_combinations, vec![
+        vec![3, 2, 3],  // out[0]=104000
+        vec![3, 2, 3],  // out[1]=104000
+        vec![3, 2, 1],  // out[2]=98200
+        vec![2, 3, 4],  // out[3]=40034 (deterministic: cell=nb_cmbn for in[2])
+    ]);
+}
+
+// Test: Stonewall WITH intrafees to compare
+#[test]
+fn test_stonewall_19a79be3_with_intrafees() {
+    let inputs = [205_000i64, 100_000, 46_834];
+    let outputs = [104_000i64, 104_000, 98_200, 40_034];
+    let fee = 5_600i64;
+
+    let result = analyze(&inputs, &outputs, fee, 0.005, 60_000);
+
+    println!("Stonewall 19a79be3 WITH intrafees:");
+    println!("  nb_cmbn = {}", result.nb_cmbn);
+    println!("  entropy = {:.6}", result.entropy);
+    println!("  intra_fees_maker = {}", result.intra_fees_maker);
+    println!("  intra_fees_taker = {}", result.intra_fees_taker);
+    println!("  deterministic_links = {:?}", result.deterministic_links);
+    println!("\n  mat_lnk_probabilities:");
+    for (o, row) in result.mat_lnk_probabilities.iter().enumerate() {
+        let formatted: Vec<String> = row.iter().map(|p| format!("{:.2}%", p * 100.0)).collect();
+        println!("    out[{o}]: {:?}", formatted);
+    }
+}
+
+// ==========================================================================
+// Test: Stonewall - compare analyze() with and without intrafees
+// Verifies no intrafees interference for this transaction
+// ==========================================================================
+#[test]
+fn test_stonewall_intrafees_comparison() {
+    let inputs = [205_000i64, 100_000, 46_834];
+    let outputs = [104_000i64, 104_000, 98_200, 40_034];
+    let fee = 5_600i64;
+
+    // Direct analyze (no intrafees)
+    let direct_no_intra = analyze(&inputs, &outputs, fee, 0.0, 60_000);
+    println!("DIRECT (no intra): nb_cmbn={}, entropy={:.6}", direct_no_intra.nb_cmbn, direct_no_intra.entropy);
+    for (o, row) in direct_no_intra.mat_lnk_combinations.iter().enumerate() {
+        println!("  mat[{o}]: {:?}", row);
+    }
+
+    // Direct analyze (with intrafees)
+    let direct_with_intra = analyze(&inputs, &outputs, fee, 0.005, 60_000);
+    println!("DIRECT (with intra): nb_cmbn={}, entropy={:.6}", direct_with_intra.nb_cmbn, direct_with_intra.entropy);
+    println!("  intra_fees_maker={}, intra_fees_taker={}", direct_with_intra.intra_fees_maker, direct_with_intra.intra_fees_taker);
+
+    for (o, row) in direct_with_intra.mat_lnk_combinations.iter().enumerate() {
+        println!("  mat_intra[{o}]: {:?}", row);
+    }
+
+    // Both should give 4 combinations
+    assert_eq!(direct_no_intra.nb_cmbn, 4, "No-intra should have 4 combinations");
+    assert_eq!(direct_with_intra.nb_cmbn, 4, "With-intra should have 4 combinations");
+
+    // Matrices should be identical (intrafees don't change result for this tx)
+    assert_eq!(
+        direct_no_intra.mat_lnk_combinations,
+        direct_with_intra.mat_lnk_combinations,
+        "Matrices should be identical"
+    );
+}
+
+// ==========================================================================
+// Test: Stonewall - exercise the chunked DFS API (same path as WASM)
+// to check for divergence from native analyze()
+// ==========================================================================
+#[test]
+fn test_stonewall_chunked_api() {
+    use boltzmann_rs::test_chunked_analyze;
+
+    let inputs = [205_000i64, 100_000, 46_834];
+    let outputs = [104_000i64, 104_000, 98_200, 40_034];
+    let fee = 5_600i64;
+
+    // Native result for reference
+    let native = analyze(&inputs, &outputs, fee, 0.005, 60_000);
+    println!("NATIVE: nb_cmbn={}, entropy={:.6}", native.nb_cmbn, native.entropy);
+    for (o, row) in native.mat_lnk_combinations.iter().enumerate() {
+        println!("  native mat[{o}]: {:?}", row);
+    }
+
+    // Chunked DFS path (mimics prepare_boltzmann + dfs_step loop + dfs_finalize)
+    let chunked = test_chunked_analyze(&inputs, &outputs, fee, 0.005);
+    println!("CHUNKED: nb_cmbn={}, entropy={:.6}", chunked.nb_cmbn, chunked.entropy);
+    for (o, row) in chunked.mat_lnk_combinations.iter().enumerate() {
+        println!("  chunked mat[{o}]: {:?}", row);
+    }
+
+    assert_eq!(chunked.nb_cmbn, native.nb_cmbn, "Chunked should match native nb_cmbn");
+    assert_eq!(
+        chunked.mat_lnk_combinations, native.mat_lnk_combinations,
+        "Chunked should match native matrix"
+    );
+}
+
+// Synthetic worst case for the participant model: interchangeable inputs make
+// the DP explode; the deadline must stop it close to the requested timeout
+// (checked inside each expansion and in the backward/link passes).
+#[test]
+fn test_jm_participant_model_honors_deadline() {
+    // 11 x 1 BTC + 14 x 0.5 BTC: every change is funded by 2057 input sets
+    let mut inputs = vec![100_000_000i64; 11];
+    inputs.extend(vec![50_000_000i64; 14]);
+    let denomination = 199_000_000i64;
+    let mut outputs = vec![denomination; 9];
+    outputs.extend((0..8).map(|k| 990_000i64 + k * 10));
+    let fee = inputs.iter().sum::<i64>() - outputs.iter().sum::<i64>();
+    assert!(fee > 0);
+
+    let started = std::time::Instant::now();
+    let result = boltzmann_rs::joinmarket::try_analyze_joinmarket(&inputs, &outputs, fee, denomination, 0.005, 300);
+    let elapsed = started.elapsed().as_millis();
+    println!("participant model stopped after {elapsed}ms");
+    assert!(elapsed < 800, "participant model overran its 300ms deadline: {elapsed}ms");
+    // Out of time and too large for exact: no result rather than a fabricated one
+    assert!(result.is_none());
+}
+
+// A timed-out enumeration has only partial counts (often nb_cmbn = 1 with every
+// cell at 1): it must not claim any deterministic link.
+#[test]
+fn test_timed_out_result_claims_no_deterministic_links() {
+    let inputs = vec![1_000_000i64; 10];
+    let outputs = vec![999_000i64; 10];
+    let fee = 10_000i64;
+    let result = analyze(&inputs, &outputs, fee, 0.0, 1);
+    assert!(result.timed_out, "10x10 perfect CoinJoin cannot finish in 1ms");
+    assert!(result.deterministic_links.is_empty(), "timed out, yet claimed {:?}", result.deterministic_links);
+}
+
+// 30-party JM: the interpretation count exceeds u64, so nb_cmbn is clamped
+// and must be flagged as saturated (a floor, not a count).
+#[test]
+fn test_jm_turbo_30party_saturates_u64() {
+    let mut inputs: Vec<i64> = (0..29).map(|k| 2_000_000 + k * 100_000).collect();
+    inputs.push(1_015_000);
+    let mut outputs: Vec<i64> = vec![1_000_000; 30];
+    outputs.extend((0..29).map(|k| 2_000_000 + k * 100_000 - 1_001_000));
+    let fee: i64 = inputs.iter().sum::<i64>() - outputs.iter().sum::<i64>();
+
+    let turbo = analyze_joinmarket(&inputs, &outputs, fee, 1_000_000, 0.0, 5_000);
+    assert!(turbo.entropy > 64.0, "30 equal outputs: entropy {} should exceed 64 bits", turbo.entropy);
+    assert!(turbo.nb_cmbn_saturated, "count above u64 must be flagged as saturated");
+    assert_eq!(turbo.nb_cmbn, u64::MAX);
+
+    let small = analyze_joinmarket(
+        &[10_000_000, 7_500_000, 5_000_000, 4_000_000, 3_000_000, 2_500_000, 2_000_000, 1_500_000, 1_200_000, 1_015_000],
+        &[
+            1_000_000, 1_000_000, 1_000_000, 1_000_000, 1_000_000, 1_000_000, 1_000_000, 1_000_000, 1_000_000, 1_000_000,
+            8_999_000, 6_499_000, 3_999_000, 2_999_000, 1_999_000, 1_499_000, 999_000, 499_000, 199_000,
+        ],
+        24_000, 1_000_000, 0.0, 5_000,
+    );
+    assert!(!small.nb_cmbn_saturated, "an exact u64 count is not saturated");
+}
+
+// ==========================================================================
+// Reference entry-point rule (LaurentMT, boltzmann/utils/tx_processor.py
+// process_tx): after dropping zero-value txos, a tx with <= 1 input or exactly
+// 1 output has one interpretation and every link is deterministic. The bare
+// linker would let an input block below the fee fund only the fee (the empty
+// output aggregate) and count a second interpretation. Expected values below
+// match process_tx(["PRECHECK", "LINKABILITY"]) with and without MERGE_INPUTS.
+// ==========================================================================
+
+/// Assert the single-interpretation result on the monolithic and chunked paths.
+fn assert_single_interpretation(label: &str, inputs: &[i64], outputs: &[i64], fee: i64, n_out: usize) {
+    use boltzmann_rs::test_chunked_analyze;
+    let n_in = inputs.len();
+    let all_ones: Vec<Vec<u64>> = vec![vec![1; n_in]; n_out];
+    for (path, r) in [
+        ("analyze", analyze(inputs, outputs, fee, 0.005, 60_000)),
+        ("chunked", test_chunked_analyze(inputs, outputs, fee, 0.005)),
+    ] {
+        assert_eq!(r.nb_cmbn, 1, "{label} ({path}): nb_cmbn");
+        assert_eq!(r.entropy, 0.0, "{label} ({path}): entropy");
+        assert_eq!(r.mat_lnk_combinations, all_ones, "{label} ({path}): matrix");
+        assert_eq!(r.deterministic_links.len(), n_in * n_out, "{label} ({path}): deterministic links");
+        assert_eq!((r.n_inputs, r.n_outputs), (n_in, n_out), "{label} ({path}): dimensions");
+        assert!(!r.timed_out, "{label} ({path}): timed out");
+    }
+}
+
+// 40b88e16fe9881eb89df76265ccf2d46abfd1071a94dae8e413efc0d83d3df18: the
+// 31,209-sat input is below the 157,002-sat fee. Bare linker: nb_cmbn 2,
+// links [2,2,2,2,1] (that input at 50%); process_tx: nb_cmbn 1.
+#[test]
+fn test_single_output_40b88e16_one_interpretation() {
+    assert_single_interpretation(
+        "40b88e16",
+        &[1_065_685, 2_343_648, 31_209, 3_762_429, 7_065_237],
+        &[14_111_206],
+        157_002,
+        1,
+    );
+}
+
+#[test]
+fn test_single_output_2in_dust_below_fee() {
+    assert_single_interpretation("2-in-1-out", &[100_000, 500], &[99_000], 1_500, 1);
+}
+
+#[test]
+fn test_single_input_fan_out() {
+    assert_single_interpretation("1-in-2-out", &[100_000], &[60_000, 39_000], 1_000, 2);
+}
+
+// A zero-value OP_RETURN is not an output for Boltzmann: 1 spendable output.
+#[test]
+fn test_single_output_plus_zero_value_op_return() {
+    assert_single_interpretation("1-out + OP_RETURN(0)", &[50_000, 400], &[49_000, 0], 1_400, 1);
+}
+
+// JoinMarket and WabiSabi entries apply the same rule.
+#[test]
+fn test_single_output_turbo_entries() {
+    let (ins, outs, fee) = ([1_065_685i64, 2_343_648, 31_209, 3_762_429, 7_065_237], [14_111_206i64], 157_002);
+    let jm = analyze_joinmarket(&ins, &outs, fee, 14_111_206, 0.005, 60_000);
+    let ws = boltzmann_rs::wabisabi::analyze_wabisabi(&ins, &outs, fee, 60_000);
+    for (path, r) in [("joinmarket", jm), ("wabisabi", ws)] {
+        assert_eq!(r.nb_cmbn, 1, "{path}: nb_cmbn");
+        assert_eq!(r.mat_lnk_combinations, vec![vec![1u64; 5]], "{path}: matrix");
+        assert_eq!(r.deterministic_links.len(), 5, "{path}: deterministic links");
+    }
+}
+
+// Multi-output txs keep the fee-only reading, as in the reference: the 300-sat
+// input can fund only the fee. process_tx: nb_cmbn 5, [[5,2,2],[2,5,2]] and
+// nb_cmbn 2, [[2,2,1],[2,2,1]].
+#[test]
+fn test_multi_output_dust_below_fee_unchanged() {
+    assert_boltzmann(
+        "3-in-2-out, dust below fee",
+        &[100_000, 60_000, 300], &[95_000, 58_000], 7_300, 0.0,
+        5, 5f64.log2(), Some(&[&[5, 2, 2], &[2, 5, 2]]),
+    );
+    assert_boltzmann(
+        "3-in-2-out, dust below fee (merged only)",
+        &[100_000, 50_000, 300], &[90_000, 58_000], 2_300, 0.0,
+        2, 1.0, Some(&[&[2, 2, 1], &[2, 2, 1]]),
+    );
+}

@@ -1,0 +1,260 @@
+"use client";
+
+import { useCallback, useMemo, useState, lazy, Suspense } from "react";
+import { motion } from "motion/react";
+import { useTranslation } from "react-i18next";
+import { ArrowLeft } from "lucide-react";
+import type { ScoringResult, TxAnalysisResult } from "@/lib/types";
+import type { MempoolTransaction, MempoolAddress, MempoolUtxo, MempoolOutspend } from "@/lib/api/types";
+import type { PreSendResult } from "@/lib/analysis/orchestrator";
+import { getTxHeuristicSteps, getAddressHeuristicSteps } from "@/lib/analysis/heuristic-steps";
+import type { TraceLayer } from "@/lib/analysis/chain/recursive-trace";
+import type { BoltzmannWorkerResult } from "@/hooks/useBoltzmann";
+import type { LocalTx } from "@/lib/input/local-tx";
+import type { AnalysisState } from "@/lib/analysis/analysis-state";
+import { backendClass, endpointHost } from "@/lib/api/backend-class";
+import { TX_BASE_SCORE, ADDRESS_BASE_SCORE } from "@/lib/scoring/score";
+import { matchEntitySync } from "@/lib/analysis/entity-filter/entity-match";
+import { buildResultViewModel } from "@/lib/view/tx-view-model";
+import { useNetwork } from "@/context/NetworkContext";
+import { useDevMode } from "@/hooks/useDevMode";
+import { InlineSearchBar } from "@/components/results/InlineSearchBar";
+import { ResultsFooter } from "@/components/results/ResultsFooter";
+import { useRevealTimeline } from "@/components/scan/useRevealTimeline";
+import { VerdictBand } from "./VerdictBand";
+import { ResultActions } from "./ResultActions";
+import { SectionNav } from "./SectionNav";
+import { TipRow } from "./TipRow";
+import { FindingsList } from "./FindingsList";
+import { EvidencePanel } from "./EvidencePanel";
+import { ExplainRail } from "./ExplainRail";
+import { AnalystWorkspace } from "./AnalystWorkspace";
+import { ContextSection } from "./ContextSection";
+import { ServiceCheck } from "@/components/services/ServiceCheck";
+import { selectTxids, ADDRESS_CAP } from "@/lib/services/wabisabi-attribution";
+import { isCoinJoinTx } from "@/lib/analysis/heuristics/coinjoin";
+const BroadcastDialog = lazy(() => import("@/components/flows/BroadcastDialog").then((m) => ({ default: m.BroadcastDialog })));
+const BeforeYouSend = lazy(() => import("@/components/flows/BeforeYouSend").then((m) => ({ default: m.BeforeYouSend })));
+
+export interface ResultsProps {
+  query: string;
+  inputType: "txid" | "address";
+  result: ScoringResult;
+  txData: MempoolTransaction | null;
+  addressData: MempoolAddress | null;
+  addressTxs: MempoolTransaction[] | null;
+  addressUtxos?: MempoolUtxo[] | null;
+  txBreakdown: TxAnalysisResult[] | null;
+  preSendResult?: PreSendResult | null;
+  onScan: (input: string) => void;
+  onBack: () => void;
+  durationMs?: number | null;
+  usdPrice?: number | null;
+  outspends?: MempoolOutspend[] | null;
+  backwardLayers?: TraceLayer[] | null;
+  forwardLayers?: TraceLayer[] | null;
+  boltzmannResult?: BoltzmannWorkerResult | null;
+  /** Play the Reveal (fresh scans); false for cached results. */
+  reveal: boolean;
+  /** PSBT / raw tx analyzed in memory: shows the Before you send panel, hides sharing and explorer links. */
+  local?: LocalTx | null;
+  /** Re-run a local analysis (the query is a label, not something to rescan). */
+  onRetryLocal?: () => void;
+  /** Consent lookup state for a local tx (null when not offered). */
+  localLookup?: AnalysisState["localLookup"];
+  localOutputTxCounts?: Map<string, number> | null;
+  onLocalLookup?: () => void;
+  /** A local tx was broadcast: hand over to the normal txid scan. Without it, no broadcast is offered. */
+  onBroadcastSuccess?: (txid: string) => void;
+}
+
+const entityName = (address: string) => matchEntitySync(address)?.entityName ?? null;
+
+/**
+ * Results: one progressive layout for everyone.
+ * L0 verdict, L1 evidence (transaction + findings), L2 explain rail,
+ * L3 analyst workspace. Everything reads from one view model.
+ */
+export function Results(props: ResultsProps) {
+  const {
+    query, inputType, result, txData, addressData, addressTxs, addressUtxos, txBreakdown,
+    preSendResult, onScan, onBack, durationMs, usdPrice, outspends, backwardLayers,
+    forwardLayers, boltzmannResult, reveal, local, onRetryLocal,
+    localLookup = null, localOutputTxCounts = null, onLocalLookup, onBroadcastSuccess,
+  } = props;
+  const { t } = useTranslation();
+  const { config, customApiUrl, isUmbrel } = useNetwork();
+  const { devMode } = useDevMode();
+  const [broadcastOpen, setBroadcastOpen] = useState(false);
+  const closeBroadcast = useCallback(() => setBroadcastOpen(false), []);
+  // Keyed by the local tx so a new scan starts clean; survives the dialog closing.
+  const [unknownFor, setUnknownFor] = useState<typeof local>(null);
+  const onUnknownChange = useCallback((u: boolean) => setUnknownFor(u ? local : null), [local]);
+
+  const baseScore = inputType === "address" ? ADDRESS_BASE_SCORE : TX_BASE_SCORE;
+  const serviceTxids = useMemo(
+    () => (inputType === "txid" ? (txData ? [txData.txid] : []) : selectTxids(addressTxs ?? [], ADDRESS_CAP)),
+    [inputType, txData, addressTxs],
+  );
+  const isLocalCoinJoin = useMemo(() => {
+    if (inputType === "txid") return () => !!txData && isCoinJoinTx(txData);
+    const set = new Set((addressTxs ?? []).filter(isCoinJoinTx).map((t) => t.txid));
+    return (txid: string) => set.has(txid);
+  }, [inputType, txData, addressTxs]);
+  const serviceTotal = addressData ? addressData.chain_stats.tx_count + addressData.mempool_stats.tx_count : undefined;
+  const vm = useMemo(
+    () => buildResultViewModel({ result, baseScore, tx: txData, outspends, entityName }),
+    [result, baseScore, txData, outspends],
+  );
+  const checkCount = useMemo(
+    () => (inputType === "address" ? getAddressHeuristicSteps() : getTxHeuristicSteps()).length,
+    [inputType],
+  );
+  const timeline = useRevealTimeline(vm.waterfall, checkCount, { enabled: reveal });
+
+  // Cross-highlighting between stage, waterfall, matrix and findings.
+  const [hoverId, setHoverId] = useState<string | null>(null);
+  const [openIds, setOpenIds] = useState<ReadonlySet<string>>(
+    () => new Set(vm.groups.leaks.slice(0, 1).map((f) => f.id as string)),
+  );
+  const toggle = useCallback((id: string) => {
+    setOpenIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
+  const openFinding = useCallback((id: string) => {
+    setOpenIds((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
+    // Wait a frame so a collapsed group can open before scrolling.
+    requestAnimationFrame(() => {
+      document.querySelector(`#findings [data-finding-id="${CSS.escape(id)}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+  }, []);
+
+  const explorerUrl = `${config.explorerUrl}/${inputType === "txid" ? "tx" : "address"}/${encodeURIComponent(query)}`;
+  const explorerLabel = customApiUrl
+    ? t("results.viewOnCustom", { hostname: new URL(config.explorerUrl).hostname, defaultValue: "View on {{hostname}}" })
+    : isUmbrel
+      ? t("results.viewOnLocal", { defaultValue: "View on local mempool" })
+      : t("results.viewOnMempool", { defaultValue: "View on mempool.space" });
+
+  const settled = !timeline.playing;
+
+  return (
+    <motion.div
+      data-testid="results-panel"
+      id="results-panel"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.25 }}
+      className="w-full"
+    >
+      <div className="mx-auto w-full max-w-[1360px] px-4 sm:px-6 lg:px-8 pt-5 pb-16 space-y-10">
+        {/* Rescan + actions */}
+        <div className="flex flex-col lg:flex-row lg:items-center gap-3">
+          <button
+            type="button"
+            onClick={onBack}
+            className="inline-flex items-center gap-1.5 text-sm text-muted hover:text-foreground transition-colors self-start lg:self-auto min-h-[44px]"
+          >
+            <ArrowLeft size={15} aria-hidden="true" />
+            {t("results.newScan", { defaultValue: "New scan" })}
+          </button>
+          <div className="flex-1 min-w-0"><InlineSearchBar onScan={onScan} initialValue={local ? "" : query} /></div>
+          {!local && <ResultActions query={query} inputType={inputType} result={result} vm={vm} />}
+        </div>
+
+        {local && <Suspense fallback={null}><BeforeYouSend local={local} txData={txData} result={result} lookup={localLookup} outputTxCounts={localOutputTxCounts} onLookup={onLocalLookup ?? (() => {})} endpoint={endpointHost(config.mempoolBaseUrl)} onBroadcast={onBroadcastSuccess ? () => setBroadcastOpen(true) : undefined} /></Suspense>}
+        {local && broadcastOpen && onBroadcastSuccess && (
+          <Suspense fallback={null}>
+            <BroadcastDialog local={local} tx={txData ?? local.tx} result={result} baseUrl={config.mempoolBaseUrl} cls={backendClass({ isUmbrel, customApiUrl })} onClose={closeBroadcast} onSuccess={onBroadcastSuccess} unknownSent={unknownFor === local} onUnknownChange={onUnknownChange} />
+          </Suspense>
+        )}
+
+        <VerdictBand local={!!local} query={query} inputType={inputType} vm={vm} txData={txData} reveal={timeline} checkCount={checkCount} onRetry={local ? (onRetryLocal ?? (() => {})) : () => onScan(query)} />
+
+        <SectionNav hasAnalyst={inputType === "txid" ? !!txData : true} inputType={inputType} grade={vm.grade} score={vm.score} />
+
+        <div className="grid gap-10 xl:grid-cols-[minmax(0,8fr)_minmax(0,4fr)] items-start">
+          <div className="min-w-0 space-y-10">
+            <EvidencePanel
+              inputType={inputType}
+              vm={vm}
+              result={result}
+              txData={txData}
+              addressData={addressData}
+              preSendResult={preSendResult}
+              usdPrice={usdPrice}
+              outspends={outspends}
+              boltzmannResult={boltzmannResult}
+              onScan={onScan}
+              onFindingClick={openFinding}
+              highlightId={hoverId}
+              reveal={timeline}
+            />
+            <motion.div initial={false} animate={{ opacity: settled ? 1 : 0.35 }} transition={{ duration: 0.4 }}>
+              <FindingsList
+                visible={vm.visible}
+                openIds={openIds}
+                onToggle={toggle}
+                highlightId={hoverId}
+                onHover={setHoverId}
+                onTxClick={onScan}
+              />
+            </motion.div>
+          </div>
+          <ExplainRail
+            vm={vm}
+            isRevealed={timeline.isRevealed}
+            highlightId={hoverId}
+            onHover={setHoverId}
+            onOpen={openFinding}
+          />
+        </div>
+
+        <AnalystWorkspace
+          local={!!local}
+          query={query}
+          inputType={inputType}
+          result={result}
+          txData={txData}
+          addressData={addressData}
+          addressTxs={addressTxs}
+          addressUtxos={addressUtxos}
+          txBreakdown={txBreakdown}
+          outspends={outspends}
+          backwardLayers={backwardLayers}
+          forwardLayers={forwardLayers}
+          boltzmannResult={boltzmannResult}
+          onScan={onScan}
+        />
+
+        {!local && serviceTxids.length > 0 && (
+          <ServiceCheck
+            txids={serviceTxids}
+            mode={inputType === "txid" ? "tx" : "wallet-like"}
+            totalAvailable={inputType === "txid" ? undefined : serviceTotal}
+            isLocalCoinJoin={isLocalCoinJoin}
+            onScan={onScan}
+          />
+        )}
+        <ContextSection local={!!local} query={query} inputType={inputType} vm={vm} txData={txData} devMode={devMode} />
+
+        <ResultsFooter
+          inputType={inputType}
+          result={result}
+          txBreakdown={txBreakdown}
+          durationMs={durationMs}
+          explorerUrl={local ? null : explorerUrl}
+          explorerLabel={explorerLabel}
+          mempoolBaseUrl={config.mempoolBaseUrl}
+          findingCount={vm.visible.length}
+          checkCount={checkCount}
+        />
+        <TipRow />
+      </div>
+    </motion.div>
+  );
+}

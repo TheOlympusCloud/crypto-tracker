@@ -1,0 +1,399 @@
+/**
+ * Wallet-Level Privacy Audit
+ *
+ * Aggregates analysis across all addresses derived from an xpub/descriptor
+ * to produce a holistic wallet privacy assessment.
+ *
+ * Checks:
+ * - Address reuse across the wallet
+ * - UTXO hygiene (dust, toxic change, mixed script types)
+ * - Spending patterns over time
+ * - Fingerprint consistency across transactions
+ * - Consolidation history (skipping spends already counted as merges)
+ * - Wallet-level heuristics: merges (post-mix, change), change exposure,
+ *   peel chains (docs/spec-wallet-heuristics.md)
+ */
+
+import type { Finding, Severity, Grade } from "@/lib/types";
+import { scoreToGrade } from "@/lib/scoring/score";
+import { sumImpact } from "@/lib/scoring/score";
+import { fmtN } from "@/lib/format";
+import { enrichFindingsWithMetadata } from "./finding-metadata";
+import { P2PKH_DUST_LIMIT, TOXIC_CHANGE_THRESHOLD } from "@/lib/constants";
+import type { MempoolAddress, MempoolTransaction, MempoolUtxo } from "@/lib/api/types";
+import type { DerivedAddress } from "@/lib/bitcoin/descriptor";
+import { buildWalletGraph, simplePayments, soloSpends, utxoOrigins, type OriginCounts } from "./wallet-behavior";
+import { buildClusters } from "./wallet-clusters";
+import { checkChangeExposure, checkMerges, checkNoMerge, checkPeelChains } from "./wallet-heuristics";
+
+// ---------- Types ----------
+
+export interface WalletAddressInfo {
+  derived: DerivedAddress;
+  addressData: MempoolAddress | null;
+  txs: MempoolTransaction[];
+  utxos: MempoolUtxo[];
+}
+
+export interface WalletAuditResult {
+  score: number;
+  grade: Grade;
+  findings: Finding[];
+  /** Total addresses with activity */
+  activeAddresses: number;
+  /** Total transactions across all addresses */
+  totalTxs: number;
+  /** Total UTXO count */
+  totalUtxos: number;
+  /** Total balance in sats */
+  totalBalance: number;
+  /** Number of addresses reused (received 2+ times) */
+  reusedAddresses: number;
+  /** Number of dust UTXOs below relay dust limit */
+  dustUtxos: number;
+  /** Unspent coins by origin class (count, sats) */
+  utxoOrigins: OriginCounts;
+}
+
+// ---------- Analysis functions ----------
+
+/** Check for address reuse across the wallet. */
+function checkAddressReuse(addresses: WalletAddressInfo[]): Finding[] {
+  const findings: Finding[] = [];
+  let reusedCount = 0;
+  let totalReceived = 0;
+
+  for (const addr of addresses) {
+    if (!addr.addressData) continue;
+    const fundedCount = addr.addressData.chain_stats.funded_txo_count + addr.addressData.mempool_stats.funded_txo_count;
+    if (fundedCount > 0) totalReceived++;
+    if (fundedCount > 1) reusedCount++;
+  }
+
+  if (reusedCount > 0 && totalReceived > 0) {
+    const ratio = reusedCount / totalReceived;
+    const severity: Severity = ratio > 0.5 ? "critical" : ratio > 0.2 ? "high" : "medium";
+    const impact = ratio > 0.5 ? -15 : ratio > 0.2 ? -10 : -5;
+
+    findings.push({
+      id: "wallet-address-reuse",
+      severity,
+      confidence: "deterministic",
+      title: `${reusedCount} of ${totalReceived} addresses reused`,
+      description:
+        `${reusedCount} addresses in this wallet received funds more than once. ` +
+        `Address reuse directly links transactions together and reveals spending patterns. ` +
+        `${Math.round(ratio * 100)}% of active addresses are reused.`,
+      recommendation:
+        "Never reuse Bitcoin addresses. Generate a new address for each incoming payment. " +
+        "Most modern wallets handle this automatically.",
+      scoreImpact: impact,
+      params: { reusedCount, totalReceived, ratio: Math.round(ratio * 100) },
+    });
+  }
+
+  return findings;
+}
+
+/** Check UTXO hygiene - dust, toxic change, mixed origins. */
+function checkUtxoHygiene(addresses: WalletAddressInfo[]): Finding[] {
+  const findings: Finding[] = [];
+
+  let dustCount = 0;
+  let dustValue = 0;
+  let totalUtxos = 0;
+  const scriptTypes = new Set<string>();
+  const utxoValues: number[] = [];
+
+  for (const addr of addresses) {
+    for (const utxo of addr.utxos) {
+      totalUtxos++;
+      utxoValues.push(utxo.value);
+      if (utxo.value < P2PKH_DUST_LIMIT) {
+        dustCount++;
+        dustValue += utxo.value;
+      }
+    }
+    if (addr.utxos.length > 0) {
+      const addrStr = addr.derived.address;
+      if (addrStr.startsWith("bc1q") || addrStr.startsWith("tb1q")) scriptTypes.add("p2wpkh");
+      else if (addrStr.startsWith("bc1p") || addrStr.startsWith("tb1p")) scriptTypes.add("p2tr");
+      else if (addrStr.startsWith("3") || addrStr.startsWith("2")) scriptTypes.add("p2sh");
+      else if (addrStr.startsWith("1") || addrStr.startsWith("m") || addrStr.startsWith("n")) scriptTypes.add("p2pkh");
+    }
+  }
+
+  // Dust UTXOs
+  if (dustCount > 0) {
+    findings.push({
+      id: "wallet-dust-utxos",
+      severity: dustCount > 5 ? "high" : "medium",
+      confidence: "deterministic",
+      title: `${dustCount} dust UTXO${dustCount > 1 ? "s" : ""} (${fmtN(dustValue)} sats)`,
+      description:
+        `The wallet contains ${dustCount} UTXO${dustCount > 1 ? "s" : ""} below the dust threshold (${P2PKH_DUST_LIMIT} sats). ` +
+        "Dust UTXOs are uneconomical to spend and can be used in dust attacks to track wallet activity.",
+      recommendation:
+        "Consolidate dust UTXOs into a larger output during low-fee periods, or ignore them entirely. " +
+        "Be cautious of unsolicited small amounts - these may be dust attacks.",
+      scoreImpact: dustCount > 5 ? -5 : -2,
+      params: { dustCount, dustValue },
+    });
+  }
+
+  // Mixed script types in UTXOs (reveals wallet migration history)
+  if (scriptTypes.size > 1) {
+    findings.push({
+      id: "wallet-mixed-script-utxos",
+      severity: "medium",
+      confidence: "high",
+      title: `UTXOs across ${scriptTypes.size} script types`,
+      description:
+        `Active UTXOs exist across ${scriptTypes.size} different script types (${[...scriptTypes].join(", ")}). ` +
+        "Mixing script types when spending reveals wallet migration history and makes transactions more identifiable.",
+      recommendation:
+        "Gradually migrate all UTXOs to a single script type (preferably P2WPKH or P2TR). " +
+        "Avoid mixing script types in the same transaction.",
+      scoreImpact: -3,
+      params: { scriptTypes: scriptTypes.size },
+    });
+  }
+
+  // UTXO count assessment
+  if (totalUtxos > 50) {
+    findings.push({
+      id: "wallet-utxo-bloat",
+      severity: "medium",
+      confidence: "high",
+      title: `${totalUtxos} UTXOs - consider consolidation`,
+      description:
+        `The wallet has ${totalUtxos} unspent outputs. A large UTXO set increases transaction fees ` +
+        "and exposes more privacy information when spending multiple inputs together.",
+      recommendation:
+        "Consolidate smaller UTXOs during low-fee periods. Use coin control to avoid " +
+        "merging UTXOs from different privacy contexts.",
+      scoreImpact: -2,
+      params: { totalUtxos },
+    });
+  }
+
+  // Check for very small change outputs (toxic change)
+  const toxicChange = utxoValues.filter(v => v > P2PKH_DUST_LIMIT && v < TOXIC_CHANGE_THRESHOLD);
+  if (toxicChange.length > 3) {
+    findings.push({
+      id: "wallet-toxic-change",
+      severity: "high",
+      confidence: "medium",
+      title: `${toxicChange.length} toxic change UTXOs detected`,
+      description:
+        `The wallet has ${toxicChange.length} UTXOs between ${P2PKH_DUST_LIMIT} and ${fmtN(TOXIC_CHANGE_THRESHOLD)} sats. ` +
+        "These 'toxic change' outputs are too small to spend economically but large enough " +
+        "to link transactions if used as inputs.",
+      recommendation:
+        "Use exact-match coin selection (BnB) to avoid creating change. If change is unavoidable, " +
+        "consider absorbing small amounts into the fee.",
+      scoreImpact: -4,
+      params: { toxicCount: toxicChange.length },
+    });
+  }
+
+  return findings;
+}
+
+/** Check spending patterns - consolidation, batch spending, timing. */
+function checkSpendingPatterns(addresses: WalletAddressInfo[], exclude: ReadonlySet<string>): Finding[] {
+  const findings: Finding[] = [];
+
+  // Collect all unique transactions where this wallet is the sender
+  const allTxIds = new Set<string>();
+  const consolidationTxs: MempoolTransaction[] = [];
+  const own = new Set(addresses.map((a) => a.derived.address));
+
+  for (const addr of addresses) {
+    for (const tx of addr.txs) {
+      if (allTxIds.has(tx.txid) || exclude.has(tx.txid)) continue;
+      allTxIds.add(tx.txid);
+
+      // A consolidation spends 3+ of this wallet's own coins into few outputs;
+      // someone else's consolidation that merely paid the wallet does not count
+      const ownInputs = tx.vin.filter((v) => v.prevout && own.has(v.prevout.scriptpubkey_address)).length;
+      if (ownInputs >= 3 && tx.vout.length <= 2) {
+        consolidationTxs.push(tx);
+      }
+    }
+  }
+
+  if (consolidationTxs.length > 0) {
+    findings.push({
+      id: "wallet-consolidation-history",
+      severity: consolidationTxs.length > 3 ? "high" : "medium",
+      confidence: "medium",
+      title: `${consolidationTxs.length} consolidation transaction${consolidationTxs.length > 1 ? "s" : ""} detected`,
+      description:
+        `Found ${consolidationTxs.length} transaction${consolidationTxs.length > 1 ? "s" : ""} that appear to be UTXO consolidations ` +
+        "(many inputs, few outputs). Consolidation reveals which addresses belong to the same wallet.",
+      recommendation:
+        "Minimize consolidation transactions. When necessary, consolidate through a CoinJoin " +
+        "or during high-traffic periods to blend with other transactions.",
+      scoreImpact: consolidationTxs.length > 3 ? -5 : -3,
+      params: { consolidationCount: consolidationTxs.length },
+    });
+  }
+
+  return findings;
+}
+
+/** Positive finding: no address reuse. */
+function checkGoodPractices(addresses: WalletAddressInfo[]): Finding[] {
+  const findings: Finding[] = [];
+
+  const active = addresses.filter(a =>
+    a.addressData &&
+    (a.addressData.chain_stats.tx_count + a.addressData.mempool_stats.tx_count) > 0,
+  );
+  const reused = active.filter(a => {
+    if (!a.addressData) return false;
+    const fundedCount = a.addressData.chain_stats.funded_txo_count + a.addressData.mempool_stats.funded_txo_count;
+    return fundedCount > 1;
+  });
+
+  if (active.length > 5 && reused.length === 0) {
+    findings.push({
+      id: "wallet-no-reuse",
+      severity: "good",
+      confidence: "deterministic",
+      title: "No address reuse detected",
+      description:
+        `All ${active.length} active addresses were used exactly once. ` +
+        "This is the correct practice for maintaining privacy.",
+      recommendation: "Keep following this practice.",
+      scoreImpact: 5,
+      params: { activeCount: active.length },
+    });
+  }
+
+  // Check if all UTXOs are same script type
+  const scriptTypes = new Set<string>();
+  for (const addr of addresses) {
+    if (addr.utxos.length > 0) {
+      const a = addr.derived.address;
+      if (a.startsWith("bc1q") || a.startsWith("tb1q")) scriptTypes.add("p2wpkh");
+      else if (a.startsWith("bc1p") || a.startsWith("tb1p")) scriptTypes.add("p2tr");
+      else if (a.startsWith("3") || a.startsWith("2")) scriptTypes.add("p2sh");
+      else scriptTypes.add("p2pkh");
+    }
+  }
+
+  const [onlyScriptType] = scriptTypes;
+  if (scriptTypes.size === 1 && onlyScriptType !== undefined && active.length > 3) {
+    findings.push({
+      id: "wallet-uniform-script",
+      severity: "good",
+      confidence: "deterministic",
+      title: `Uniform script type: ${onlyScriptType}`,
+      description:
+        "All wallet UTXOs use the same script type, which avoids revealing " +
+        "wallet migration history when spending.",
+      recommendation: "Continue using a consistent script type.",
+      scoreImpact: 3,
+      params: { scriptType: onlyScriptType },
+    });
+  }
+
+  return findings;
+}
+
+// ---------- Public API ----------
+
+/**
+ * Run a full wallet-level privacy audit on derived addresses.
+ *
+ * @param addresses - Array of derived address info (address data, txs, utxos)
+ * @param failedAddresses - Addresses whose fetch failed (the scan is partial when non-empty)
+ */
+export function auditWallet(addresses: WalletAddressInfo[], failedAddresses: string[] = []): WalletAuditResult {
+  const findings: Finding[] = [];
+
+  // Run all checks
+  findings.push(...checkAddressReuse(addresses));
+  findings.push(...checkUtxoHygiene(addresses));
+  const graph = buildWalletGraph(addresses);
+  const spends = soloSpends(graph);
+  const payments = simplePayments(graph, spends);
+  const merges = checkMerges(graph, spends, buildClusters(graph));
+  findings.push(...merges.findings);
+  findings.push(...checkChangeExposure(payments));
+  const peel = checkPeelChains(payments);
+  findings.push(...peel);
+  // A spend counted as a merge (W1/W2) is not counted again as a consolidation
+  const consolidations = checkSpendingPatterns(addresses, merges.merged);
+  findings.push(...consolidations);
+  findings.push(...checkGoodPractices(addresses));
+  // No "coins kept apart" credit next to a peel chain: the payments are linked anyway
+  findings.push(...checkNoMerge(spends.length, merges.merged.size > 0 || consolidations.length > 0 || peel.length > 0));
+  if (failedAddresses.length > 0) {
+    // Rendered via finding.wallet-scan-partial.* keys, English fallback here
+    const count = failedAddresses.length;
+    findings.push({
+      id: "wallet-scan-partial",
+      severity: "low",
+      confidence: "high",
+      title: `Wallet scan incomplete (${count} addresses failed)`,
+      description:
+        `${count} addresses could not be fetched (rate limit or network error) and are missing from this audit. ` +
+        "Used addresses beyond them may also have been missed.",
+      recommendation: "Wait a moment and scan again, or use a self-hosted API.",
+      scoreImpact: 0,
+      params: { count },
+    });
+  }
+  enrichFindingsWithMetadata(findings);
+
+  // Calculate aggregate stats
+  let activeAddresses = 0;
+  let totalTxs = 0;
+  let totalUtxos = 0;
+  let totalBalance = 0;
+  let reusedAddresses = 0;
+  let dustUtxos = 0;
+  const seenTxIds = new Set<string>();
+
+  for (const addr of addresses) {
+    // UTXOs count even without address stats, so the totals match the coin origins
+    for (const utxo of addr.utxos) {
+      totalUtxos++;
+      totalBalance += utxo.value;
+      if (utxo.value < P2PKH_DUST_LIMIT) dustUtxos++;
+    }
+    if (!addr.addressData) continue;
+    const txCount = addr.addressData.chain_stats.tx_count + addr.addressData.mempool_stats.tx_count;
+    if (txCount > 0) activeAddresses++;
+    const fundedCount = addr.addressData.chain_stats.funded_txo_count + addr.addressData.mempool_stats.funded_txo_count;
+    if (fundedCount > 1) reusedAddresses++;
+
+    for (const tx of addr.txs) {
+      if (!seenTxIds.has(tx.txid)) {
+        seenTxIds.add(tx.txid);
+        totalTxs++;
+      }
+    }
+  }
+
+  // Score: start at 70, apply impacts, clamp 0-100
+  const baseScore = 70;
+  const totalImpact = sumImpact(findings);
+  const score = Math.max(0, Math.min(100, baseScore + totalImpact));
+
+  return {
+    score,
+    grade: scoreToGrade(score),
+    findings,
+    activeAddresses,
+    totalTxs,
+    totalUtxos,
+    totalBalance,
+    reusedAddresses,
+    dustUtxos,
+    utxoOrigins: utxoOrigins(graph, addresses),
+  };
+}
