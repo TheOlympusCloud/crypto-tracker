@@ -1,5 +1,14 @@
 # Crypto tracker
 
+Built on [am-i-exposed](https://github.com/Copexit/am-i-exposed), the Bitcoin privacy
+scanner: a privacy score for any Bitcoin address, transaction, xpub or PSBT, Boltzmann
+entropy, CoinJoin detection, an entity index of 30M addresses and a transaction graph
+explorer. It is the front page, as upstream ships it plus a **Wallets** link in its menu.
+This app adds what am-i-exposed does not cover, under `/tracker/`: your own set of wallets
+on many chains, kept and synced by a server, and what ties them together. See
+[Built on am-i-exposed](#built-on-am-i-exposed) for how the two fit, and
+[Install on Proxmox](#install-on-proxmox) for the one-command install.
+
 Self-hosted view of everything you hold, and of what ties your wallets together. You
 list the wallets that are yours and mark as **public** the ones tied to your identity
 (withdrawals from a KYC exchange, addresses you gave to people). The app then shows:
@@ -85,6 +94,54 @@ uv run python -m tracker          # http://127.0.0.1:8000
 Under "Wallets & sync" add your wallets, tick "Also download open label sets" the first time (about 500,000
 labels, takes a minute), and press Sync.
 
+This runs the tracker alone, on the front page. With am-i-exposed in front, as the Docker
+image and the Proxmox install run it, build it once (Node 22 or newer):
+
+```sh
+git submodule update --init --depth 1
+cd am-i-exposed && git apply ../patches/am-i-exposed/*.patch
+corepack pnpm install --frozen-lockfile && corepack pnpm build && cd ..
+CT_EXPOSED=am-i-exposed/out uv run python -m tracker   # am-i-exposed on /, wallets on /tracker/
+```
+
+`git -C am-i-exposed checkout .` takes the patches out again.
+
+### Install on Proxmox
+
+On the Proxmox VE host, as root:
+
+```sh
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/TheOlympusCloud/crypto-tracker/main/proxmox/install.sh)"
+```
+
+It creates an unprivileged Debian 13 container (next free id, 2 cores, 4 GB, 16 GB disk,
+DHCP on `vmbr0`, started with the host), installs Docker from Debian's own packages, clones
+this repository into `/opt/crypto-tracker` and starts it with Docker Compose. The first
+build takes several minutes. At the end it prints the address, a generated password (shown
+once) and the commands for logs, settings, updates and removal.
+
+Change any default by setting it before the command, for example a static address:
+
+```sh
+LXC_IP=192.168.1.50/24,gw=192.168.1.1 bash -c "$(curl -fsSL https://raw.githubusercontent.com/TheOlympusCloud/crypto-tracker/main/proxmox/install.sh)"
+```
+
+| Variable | Default |
+|---|---|
+| `LXC_ID` | the next free id |
+| `LXC_HOSTNAME` | `crypto-tracker` |
+| `LXC_STORAGE` | the first storage that holds containers (`local-lvm`, `local-zfs`...) |
+| `LXC_TEMPLATE_STORAGE` | `local` |
+| `LXC_BRIDGE`, `LXC_IP` | `vmbr0`, `dhcp` |
+| `LXC_DISK`, `LXC_MEMORY`, `LXC_CORES` | `16` GB, `4096` MB (the build needs about 3 GB), `2` |
+| `REPO_URL`, `REPO_REF` | this repository, `main` (a branch or a tag) |
+
+The settings of the table below go in `/opt/crypto-tracker/.env` inside the container;
+the password is there already. Wallets, labels and history live in a Docker volume of the
+container, so they survive updates and go away only with the container. Back the container
+up with Proxmox's own backups (`vzdump`). The HTTPS advice of the next section, which the
+phone camera needs, applies here too, with the container's address.
+
 ### Install on a server
 
 On a Debian 12 or 13 host, from a copy of this repository:
@@ -92,6 +149,9 @@ On a Debian 12 or 13 host, from a copy of this repository:
 ```sh
 sudo ./install.sh
 ```
+
+This installs the tracker alone, on the front page, without am-i-exposed; for both, use
+Docker or the Proxmox install.
 
 It installs what is missing (Python, uv, the dependencies), creates the unprivileged
 user `crypto-tracker` and a systemd service that starts on boot and restarts on failure,
@@ -123,18 +183,25 @@ the app, and restart it. Keep the password.
 
 ### Docker
 
-With Docker (the image is not exercised by the test suite):
+The image builds am-i-exposed with the patches in `patches/am-i-exposed/` and serves it on
+the front page, the tracker on `/tracker/` (the image is not exercised by the test suite):
 
 ```sh
-docker build -t crypto-tracker .
-docker run -p 8000:8000 -v tracker-data:/data -e CT_PASSWORD=change-me crypto-tracker
+git clone --recurse-submodules --shallow-submodules https://github.com/TheOlympusCloud/crypto-tracker
+cd crypto-tracker
+echo "CT_PASSWORD=$(openssl rand -hex 16)" > .env    # and any variable of the table below
+docker compose up -d --build                         # http://<host>:8000/
 ```
+
+The database is in the Compose volume `data`. To update: `git pull && git submodule update
+--init --depth 1 && docker compose up -d --build`.
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `CT_HOST`, `CT_PORT` | `127.0.0.1`, `8000` | Listen address. Anything but loopback requires `CT_PASSWORD`; without a password the app only answers to `localhost`/`127.0.0.1`. |
 | `CT_PASSWORD` | unset | HTTP Basic password (any user name). Put TLS in front of it. After one good password the browser or app gets a cookie and is not asked again for 400 days; a new password signs every device out. |
 | `CT_DB` | `tracker.db` | SQLite file. |
+| `CT_EXPOSED` | unset (the image: its build) | Directory of am-i-exposed's static build. When set, it is the front page and the tracker moves to `/tracker/`; `/api/` is left to am-i-exposed. |
 | `CT_ESPLORA` | `https://blockstream.info/api` | Bitcoin indexer (Esplora API: Blockstream, mempool.space, your own). |
 | `CT_BLOCKSCOUT_KEY` | unset | Free Blockscout API key (`proapi_…`, from [dev.blockscout.com](https://dev.blockscout.com)); turns on Base, Arbitrum, Optimism and Polygon, token balances included. Set it in the environment, never in a file you commit. |
 | `CT_NODEREAL_KEY` | unset | Free NodeReal API key (from [nodereal.io](https://nodereal.io), MegaNode); turns on BNB Chain. Calls are paced to the free plan's limit, about one every two seconds. |
@@ -161,6 +228,8 @@ Install:
 1. Copy `crypto-tracker.apk` to the phone (Android 10 or newer) and open it. Android asks
    once to allow installing from that source.
 2. Type the server's address, for example `192.168.1.20:8000` or `https://tracker.example`.
+   Where am-i-exposed is in front (Docker, Proxmox), add `/tracker/` to open on your
+   wallets, e.g. `192.168.1.20:8000/tracker/`.
    - **Plain http** only works after ticking its box. Nothing is encrypted then: anyone on
      the same network can read your wallets and the password.
    - **Self-signed certificate**: tick its box. On first contact the app shows the
@@ -391,12 +460,47 @@ or at the hop limit, and says which.
 - An unlabelled exchange wallet looks like a stranger and can produce a false link;
   label it in the UI and the link disappears.
 
+## Built on am-i-exposed
+
+[am-i-exposed](https://github.com/Copexit/am-i-exposed) (MIT, © Copexit) is a static
+web app: it analyses Bitcoin in the browser and keeps nothing on a server. It is kept here
+as it is, so its updates keep coming:
+
+- `am-i-exposed/` is a git submodule following upstream's `main`, pinned to a release
+  (v0.43.3 now). Nothing of it is copied into this repository.
+- `patches/am-i-exposed/` holds the only changes to it, applied when it is built: a
+  **Wallets** link to `/tracker/` in its menu, and its service worker leaving `/tracker/`
+  alone, so wallet data is never cached.
+- The server (`tracker/`) serves am-i-exposed's build on `/` and this app on `/tracker/`,
+  behind the same password (`CT_EXPOSED`).
+- The two apps meet in their links: **Wallets** in am-i-exposed's menu, and
+  **Privacy score** on any Bitcoin address in the tracker (a wallet, a graph node, a
+  lookup), which opens am-i-exposed's analysis of it.
+
+Each part does what it is best at: am-i-exposed the depth on one Bitcoin address or
+transaction; the tracker the breadth across your own wallets on every chain, what ties them
+together, where their funds came from and what they are worth.
+
+To take a new am-i-exposed release:
+
+```sh
+git -C am-i-exposed fetch --depth 1 origin tag v0.44.0 && git -C am-i-exposed checkout v0.44.0
+(cd am-i-exposed && git apply --check ../patches/am-i-exposed/*.patch)   # refresh a patch if this fails
+git commit -am "build: update am-i-exposed to v0.44.0"
+```
+
+`git submodule update --remote am-i-exposed` takes its newest `main` instead of a release.
+
 ## Develop
 
 ```sh
 uv run pytest
 uv run ruff check . && uv run ruff format --check .
+shellcheck install.sh proxmox/install.sh
 ```
+
+The patched am-i-exposed is checked with its own tools, from `am-i-exposed/` after
+`git apply`: `corepack pnpm lint`, `corepack pnpm type-check`, `corepack pnpm test`.
 
 three.js 0.187.0 and Cytoscape.js 3.35.0 (both MIT) are vendored unmodified in
 `tracker/static/vendor/`, loaded as plain ES modules: no build step, nothing from the internet.
