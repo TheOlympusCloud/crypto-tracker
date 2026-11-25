@@ -21,7 +21,7 @@ const today = () => new Date().toISOString().split("T")[0];
  */
 export function lastMod(paths, { first = false } = {}) {
   try {
-    const log = execSync(`git log ${first ? "--reverse" : "-1"} --format=%cI -- ${paths} ':(exclude)**/__tests__/**'`, { encoding: "utf-8" }).trim();
+    const log = execSync(`git log ${first ? "--reverse" : "-1"} --format=%cI -- ${paths} ':(exclude)**/__tests__/**'`, { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim(); // no git (a Docker build): today's date, quietly
     const date = log.split("\n")[0];
     return date ? date.split("T")[0] : today();
   } catch {
