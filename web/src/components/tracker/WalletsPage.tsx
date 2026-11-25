@@ -52,7 +52,7 @@ function Shell() {
               </button>
             ))}
           </nav>
-          <div className="flex min-w-0 flex-1 items-center justify-end gap-2">
+          <div className="flex min-w-72 flex-1 items-center justify-end gap-2">
             <LookupBox />
             <AlertsBell />
           </div>
