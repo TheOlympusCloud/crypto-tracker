@@ -1,0 +1,252 @@
+"use client";
+
+import { useState, useMemo, useRef, useEffect } from "react";
+import { motion, AnimatePresence } from "motion/react";
+import { ChevronDown, ArrowUpRight, ArrowDownLeft, ArrowLeftRight, ArrowUpDown, Radar, Copy, Check, ExternalLink } from "lucide-react";
+import { useTranslation } from "react-i18next";
+import { TxSummary } from "./TxSummary";
+import { FindingCard } from "./FindingCard";
+import type { TxAnalysisResult } from "@/lib/types";
+import { GRADE_BADGE_COLORS, truncateId } from "@/lib/constants";
+import { copyToClipboard } from "@/lib/clipboard";
+
+interface TxBreakdownPanelProps {
+  breakdown: TxAnalysisResult[];
+  targetAddress: string;
+  totalTxCount: number;
+  onScan?: (input: string) => void;
+}
+
+const ROLE_CONFIG = {
+  sender: { labelKey: "breakdown.roleSent", labelDefault: "Sent", icon: ArrowUpRight, color: "text-severity-high" },
+  receiver: { labelKey: "breakdown.roleReceived", labelDefault: "Received", icon: ArrowDownLeft, color: "text-severity-good" },
+  both: { labelKey: "breakdown.roleSelf", labelDefault: "Self", icon: ArrowLeftRight, color: "text-bitcoin" },
+} as const;
+
+export function TxBreakdownPanel({
+  breakdown,
+  targetAddress,
+  totalTxCount,
+  onScan,
+}: TxBreakdownPanelProps) {
+  const { t } = useTranslation();
+  const [expandedTx, setExpandedTx] = useState<string | null>(null);
+  const [sortBy, setSortBy] = useState<"grade" | "time">("grade");
+  const [visibleCount, setVisibleCount] = useState(10);
+  const [copiedTxid, setCopiedTxid] = useState<string | null>(null);
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  useEffect(() => () => clearTimeout(copyTimerRef.current), []);
+  const copyTxid = (txid: string) => {
+    // copyToClipboard never rejects; it resolves false when copying failed
+    void copyToClipboard(txid).then((ok) => {
+      if (!ok) return;
+      setCopiedTxid(txid);
+      clearTimeout(copyTimerRef.current);
+      copyTimerRef.current = setTimeout(() => setCopiedTxid(null), 2000);
+    });
+  };
+
+  const sorted = useMemo(() => [...breakdown].sort((a, b) => {
+    if (sortBy === "grade") return a.score - b.score; // worst first
+    return 0; // keep API order (most recent first)
+  }), [breakdown, sortBy]);
+
+  const issues = breakdown.filter((item) => item.score < 50).length;
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ delay: 0.2 }}
+      className="w-full space-y-3"
+    >
+      <div className="flex items-center justify-between px-1">
+        <div className="space-y-1">
+          <h2 className="text-base font-medium text-muted uppercase tracking-wider">
+            {t("breakdown.heading", { count: breakdown.length, defaultValue: "Transaction History ({{count}})" })}
+          </h2>
+          <p className="text-xs text-muted">
+            {t("breakdown.scoreNote", { defaultValue: "Transaction grades reflect individual transaction privacy. The address grade reflects overall address hygiene." })}
+          </p>
+          <p className="text-xs text-muted">
+            {t("breakdown.quickScoreNote", { defaultValue: "These are quick scores from on-chain heuristics only, without chain analysis. Use a full scan of a transaction for its complete grade." })}
+          </p>
+        </div>
+        <div className="flex items-center gap-3">
+          {issues > 0 && (
+            <span className="text-xs text-severity-high">
+              {t("breakdown.withIssues", { count: issues, defaultValue: "{{count}} with issues" })}
+            </span>
+          )}
+          <button
+            onClick={() => setSortBy(sortBy === "grade" ? "time" : "grade")}
+            className="inline-flex items-center gap-1.5 text-sm text-muted hover:text-foreground bg-surface-elevated rounded-lg px-2.5 py-1.5 transition-colors cursor-pointer"
+          >
+            <ArrowUpDown size={14} />
+            {sortBy === "grade" ? t("breakdown.sortWorst", { defaultValue: "Sort: Worst first" }) : t("breakdown.sortRecent", { defaultValue: "Sort: Recent first" })}
+          </button>
+        </div>
+      </div>
+
+      {totalTxCount > breakdown.length && (
+        <p className="text-xs text-muted px-1">
+          {t("breakdown.showingRecent", { shown: breakdown.length, total: totalTxCount, defaultValue: "Showing {{shown}} most recent of {{total}} transactions." })}
+        </p>
+      )}
+
+      <div className="space-y-2.5">
+        {sorted.slice(0, visibleCount).map((item) => {
+          const isExpanded = expandedTx === item.txid;
+          const role = ROLE_CONFIG[item.role];
+          const RoleIcon = role.icon;
+          const issueCount = item.findings.filter((f) => f.scoreImpact < 0).length;
+          const goodCount = item.findings.filter(
+            (f) => f.scoreImpact > 0 || f.severity === "good",
+          ).length;
+
+          return (
+            <div
+              key={item.txid}
+              className="glass rounded-lg overflow-hidden"
+            >
+              <button
+                onClick={() => setExpandedTx(isExpanded ? null : item.txid)}
+                aria-expanded={isExpanded}
+                className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-surface-elevated/50 transition-colors cursor-pointer"
+              >
+                {/* Grade badge */}
+                <span
+                  className={`text-xs font-bold px-1.5 py-0.5 rounded ${GRADE_BADGE_COLORS[item.grade]}`}
+                >
+                  {item.grade}
+                </span>
+
+                {/* Txid - clickable to scan, with copy button */}
+                <span className="flex-1 flex items-center gap-1.5 min-w-0">
+                  {onScan ? (
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onScan(item.txid);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") { e.stopPropagation(); onScan(item.txid); }
+                      }}
+                      title={t("breakdown.scanTx", { defaultValue: "Scan this transaction" })}
+                      className="font-mono text-sm text-foreground hover:text-bitcoin transition-colors cursor-pointer truncate group/txid inline-flex items-center gap-1"
+                    >
+                      {truncateId(item.txid, 6)}
+                      <ExternalLink size={10} className="shrink-0 opacity-0 group-hover/txid:opacity-100 transition-opacity" />
+                    </span>
+                  ) : (
+                    <span className="font-mono text-sm text-foreground truncate">
+                      {truncateId(item.txid, 6)}
+                    </span>
+                  )}
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      copyTxid(item.txid);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.stopPropagation();
+                        copyTxid(item.txid);
+                      }
+                    }}
+                    aria-label={t("breakdown.copyTxid", { defaultValue: "Copy transaction ID" })}
+                    title={t("breakdown.copyTxid", { defaultValue: "Copy transaction ID" })}
+                    className="shrink-0 text-muted hover:text-foreground transition-colors cursor-pointer p-2"
+                  >
+                    {copiedTxid === item.txid ? (
+                      <Check size={12} className="text-severity-good" />
+                    ) : (
+                      <Copy size={12} />
+                    )}
+                  </span>
+                </span>
+
+                {/* Role */}
+                <span className={`inline-flex items-center gap-1 text-xs ${role.color}`}>
+                  <RoleIcon size={12} />
+                  {t(role.labelKey, { defaultValue: role.labelDefault })}
+                </span>
+
+                {/* Finding counts */}
+                <span className="text-xs text-muted whitespace-nowrap">
+                  {issueCount > 0 && (
+                    <span className="text-severity-high">{issueCount}↓ </span>
+                  )}
+                  {goodCount > 0 && (
+                    <span className="text-severity-good">{goodCount}↑</span>
+                  )}
+                </span>
+
+                <ChevronDown
+                  size={14}
+                  className={`text-muted transition-transform shrink-0 ${isExpanded ? "rotate-180" : ""}`}
+                />
+              </button>
+
+              <AnimatePresence>
+                {isExpanded && (
+                  <motion.div
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: "auto", opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    transition={{ duration: 0.2 }}
+                    className="overflow-hidden"
+                  >
+                    <div className="px-4 pb-4 space-y-3 border-t border-card-border pt-3">
+                      <TxSummary
+                        tx={item.tx}
+                        onAddressClick={onScan}
+                        highlightAddress={targetAddress}
+                      />
+
+                      {item.findings.length > 0 && (
+                        <div className="space-y-1.5">
+                          {item.findings.map((finding, i) => (
+                            <FindingCard
+                              key={finding.id}
+                              finding={finding}
+                              index={i}
+                            />
+                          ))}
+                        </div>
+                      )}
+
+                      {onScan && (
+                        <button
+                          onClick={() => onScan(item.txid)}
+                          className="inline-flex items-center gap-1.5 text-xs text-bitcoin hover:text-bitcoin-hover transition-colors cursor-pointer"
+                        >
+                          <Radar size={12} />
+                          {t("breakdown.fullScan", { defaultValue: "Full scan of this transaction" })}
+                        </button>
+                      )}
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+          );
+        })}
+      </div>
+
+      {visibleCount < sorted.length && (
+        <button
+          onClick={() => setVisibleCount((prev) => Math.min(prev + 10, sorted.length))}
+          className="w-full inline-flex items-center justify-center gap-1.5 py-3 min-h-[44px] text-sm text-muted hover:text-foreground glass rounded-lg transition-colors cursor-pointer"
+        >
+          <ChevronDown size={14} />
+          {t("breakdown.showMore", { count: sorted.length - visibleCount, defaultValue: "Show more ({{count}} remaining)" })}
+        </button>
+      )}
+    </motion.div>
+  );
+}

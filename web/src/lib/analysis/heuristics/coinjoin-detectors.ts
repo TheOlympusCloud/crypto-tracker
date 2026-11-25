@@ -1,0 +1,299 @@
+import { WHIRLPOOL_DENOMS, WHIRLPOOL_POOLS, type WhirlpoolPool } from "@/lib/constants";
+import { countOutputValues, inputAddressSet } from "./tx-utils";
+
+/** Minimum denomination for CoinJoin equal outputs (below this, likely noise/dust). */
+const MIN_COINJOIN_DENOM = 10_000;
+
+/** Fixed Wasabi 1.0 coordinator fee addresses used until early 2020. */
+const WASABI1_COORDINATOR_ADDRESSES = new Set([
+  "bc1qs604c7jv6amk4cxqlnvuxv26hv3e48cds4m0ew",
+  "bc1qa24tsgchvuxsaccp8vrnkfd85hrcpafg20kmjw",
+]);
+
+/**
+ * Detect a Wasabi 1.x (ZeroLink) CoinJoin.
+ *
+ * Wasabi 1.x rounds have one base denomination (~0.1 BTC) shared by many
+ * outputs, plus "mixing levels" for larger inputs: level 1 is just under 2x
+ * the base (fees are deducted), each further level exactly doubles the last.
+ * WabiSabi (Wasabi 2.0) uses exact standard denominations, so this
+ * just-under-2x step does not occur there. Rounds paying one of the fixed
+ * coordinator addresses match directly. Small rounds without a second level
+ * and without a known coordinator address stay generic.
+ */
+export function detectWasabi1(
+  spendableOutputs: { value: number; scriptpubkey_address?: string }[],
+): { denomination: number; equalCount: number; levels: number } | null {
+  const counts = countOutputValues(spendableOutputs);
+  let denomination = 0;
+  let equalCount = 0;
+  for (const [value, count] of counts) {
+    if (count > equalCount && value >= MIN_COINJOIN_DENOM) {
+      denomination = value;
+      equalCount = count;
+    }
+  }
+  if (equalCount < 10) return null;
+
+  // Follow the mixing levels: ~2x base, then exact doubling
+  let levels = 1;
+  let level = [...counts.keys()].find(
+    (v) => (counts.get(v) ?? 0) >= 2 && v >= denomination * 1.99 && v < denomination * 2,
+  );
+  while (level !== undefined) {
+    levels++;
+    level = (counts.get(level * 2) ?? 0) >= 2 ? level * 2 : undefined;
+  }
+
+  const paysCoordinator = spendableOutputs.some(
+    (o) => o.scriptpubkey_address && WASABI1_COORDINATOR_ADDRESSES.has(o.scriptpubkey_address),
+  );
+  if (levels < 2 && !paysCoordinator) return null;
+
+  return { denomination, equalCount, levels };
+}
+
+/**
+ * Detect Whirlpool CoinJoin pattern.
+ *
+ * Whirlpool mix txs have 5+ equal outputs at a known denomination.
+ * Classic: exactly 5 equal outputs (5-6 total with optional OP_RETURN).
+ * Post-Sparrow 1.7.6: 8 or 9 equal outputs at the same denominations.
+ * Coordinator fees are in the separate TX0 premix transaction, not in the mix.
+ */
+export function detectWhirlpool(values: number[]): { pool: WhirlpoolPool } | null {
+  if (values.length < 5 || values.length > 10) return null;
+
+  for (const pool of WHIRLPOOL_POOLS) {
+    const matchCount = values.filter((v) => v === pool.sats).length;
+    // Accept 5, 8, or 9 equal outputs at a Whirlpool denomination.
+    // Non-matching outputs (if any) must be OP_RETURN zero-value markers.
+    if ((matchCount === 5 || matchCount === 8 || matchCount === 9) && values.length - matchCount <= 1) {
+      return { pool };
+    }
+  }
+  return null;
+}
+
+/**
+ * Detect equal-output CoinJoin pattern.
+ *
+ * Counts occurrences of each output value and returns the most common
+ * value with 5+ occurrences (3 equal outputs is too weak - exchange
+ * batched withdrawals and payroll transactions routinely produce 3-4
+ * equal outputs).
+ */
+export function detectEqualOutputs(
+  values: number[],
+): { count: number; denomination: number; total: number } | null {
+  // Count occurrences of each output value
+  const counts = new Map<number, number>();
+  for (const v of values) {
+    counts.set(v, (counts.get(v) ?? 0) + 1);
+  }
+
+  // Find the most common value with 5+ occurrences
+  let bestValue = 0;
+  let bestCount = 0;
+  for (const [value, count] of counts) {
+    if (count > bestCount && count >= 5) {
+      bestCount = count;
+      bestValue = value;
+    }
+  }
+
+  if (bestCount < 5) return null;
+
+  return {
+    count: bestCount,
+    denomination: bestValue,
+    total: values.length,
+  };
+}
+
+/**
+ * JoinMarket participant arithmetic. Every participant (the taker and each
+ * maker) funds exactly one equal output from its own inputs and takes at most
+ * one change output, so n equal outputs need n input owners (at most the
+ * distinct input addresses) and leave at most 2n outputs. A tx that breaks
+ * this cannot be a JoinMarket round (e.g. one wallet's 2 inputs paying 5
+ * equal outputs, or a batch payout with one repeated amount).
+ */
+export function fitsJoinMarketParticipants(
+  distinctInputAddresses: number,
+  equalCount: number,
+  outputCount: number,
+): boolean {
+  return equalCount <= distinctInputAddresses && outputCount <= 2 * equalCount;
+}
+
+/**
+ * Detect JoinMarket CoinJoin pattern.
+ *
+ * JoinMarket uses a maker/taker model with 2-10 inputs, 3-8 spendable outputs,
+ * and 2-4 equal-valued outputs at a non-Whirlpool denomination above the dust
+ * threshold. Inputs must come from at least 2 distinct addresses, equal
+ * outputs must go to distinct addresses, and the counts must fit the
+ * participant arithmetic (fitsJoinMarketParticipants).
+ */
+export function detectJoinMarket(
+  vin: { prevout?: { scriptpubkey_address?: string; value?: number } | null }[],
+  spendableOutputs: { value: number; scriptpubkey_address?: string }[],
+): { equalCount: number; denomination: number; distinctInputAddresses: number } | null {
+  // JoinMarket: maker/taker model with 2-10 inputs, 3-8 spendable outputs
+  if (vin.length < 2 || vin.length > 10) return null;
+  if (spendableOutputs.length < 3 || spendableOutputs.length > 8) return null;
+
+  // Require inputs from at least 2 distinct addresses (multi-party evidence)
+  const inputAddresses = inputAddressSet(vin);
+  if (inputAddresses.size < 2) return null;
+
+  // Count output values - look for 2-4 equal-valued outputs
+  const counts = countOutputValues(spendableOutputs);
+
+  // Find equal output groups with 2-4 occurrences
+  let bestValue = 0;
+  let bestCount = 0;
+  for (const [value, count] of counts) {
+    if (count >= 2 && count <= 4 && count > bestCount) {
+      // Skip if the value matches a Whirlpool denomination (would be caught earlier)
+      if (WHIRLPOOL_DENOMS.includes(value)) continue;
+      bestCount = count;
+      bestValue = value;
+    }
+  }
+
+  // Need at least 2 equal outputs
+  if (bestCount < 2) return null;
+
+  // The equal outputs should not be the only outputs (need change outputs too)
+  if (bestCount === spendableOutputs.length) return null;
+
+  // Require that the equal output value is a meaningful amount (not dust)
+  if (bestValue < MIN_COINJOIN_DENOM) return null;
+
+  // Equal-valued outputs must go to distinct addresses (multi-party evidence).
+  // If they go to the same address, this is not a CoinJoin.
+  const equalAddresses = new Set<string>();
+  for (const o of spendableOutputs) {
+    if (o.value === bestValue && o.scriptpubkey_address) {
+      equalAddresses.add(o.scriptpubkey_address);
+    }
+  }
+  if (equalAddresses.size < bestCount) return null;
+
+  if (!fitsJoinMarketParticipants(inputAddresses.size, bestCount, spendableOutputs.length)) return null;
+
+  return {
+    equalCount: bestCount,
+    denomination: bestValue,
+    distinctInputAddresses: inputAddresses.size,
+  };
+}
+
+/**
+ * Detect Stonewall CoinJoin pattern.
+ *
+ * Stonewall: 2+ inputs, exactly 4 spendable outputs (2 equal + 2 change).
+ * Solo Stonewall typically has 2-3 inputs from one wallet.
+ * STONEWALLx2 can have inputs from 2 parties (2+ each).
+ * Either variant may consolidate many UTXOs, so no upper input limit is
+ * imposed - the 4-output pattern (1 equal pair + 2 distinct change) is
+ * already highly specific.
+ * Stonewall from Whirlpool: all inputs share a Whirlpool denomination.
+ */
+export function detectStonewall(
+  vin: { prevout?: { scriptpubkey_address?: string; value?: number } | null }[],
+  spendableOutputs: { value: number; scriptpubkey_address?: string }[],
+): { denomination: number; distinctInputAddresses: number; whirlpoolOrigin: boolean } | null {
+  if (vin.length < 2) return null;
+  if (spendableOutputs.length !== 4) return null;
+
+  // Check if all inputs share a Whirlpool denomination (Stonewall from Whirlpool).
+  // Only flag as Whirlpool-origin when there are 5+ inputs at the same Whirlpool
+  // denomination - with 2-4 inputs, coincidental matches are possible.
+  const inputValues = vin.map((v) => v.prevout?.value).filter((v): v is number => v != null);
+  const firstInputValue = inputValues[0];
+  const allSameValue = inputValues.length >= 2 && inputValues.every((v) => v === firstInputValue);
+  const isWhirlpoolOrigin = allSameValue && inputValues.length >= 5
+    && firstInputValue !== undefined && WHIRLPOOL_DENOMS.includes(firstInputValue);
+
+  // Count output values
+  const counts = countOutputValues(spendableOutputs);
+
+  // Need exactly 1 pair of equal outputs + 2 distinct change outputs
+  // counts.size === 3 means: one value twice, two other values once each
+  if (counts.size !== 3) return null;
+
+  let equalValue = 0;
+  for (const [value, count] of counts) {
+    if (count === 2) equalValue = value;
+  }
+  if (equalValue === 0) return null;
+
+  // Skip Whirlpool denominations (would be caught by Whirlpool detection)
+  if (WHIRLPOOL_DENOMS.includes(equalValue)) return null;
+
+  // Skip dust amounts
+  if (equalValue < MIN_COINJOIN_DENOM) return null;
+
+  // Equal-valued outputs must go to distinct addresses (multi-party evidence)
+  const equalAddresses = new Set<string>();
+  for (const o of spendableOutputs) {
+    if (o.value === equalValue && o.scriptpubkey_address) {
+      equalAddresses.add(o.scriptpubkey_address);
+    }
+  }
+  if (equalAddresses.size < 2) return null;
+
+  // Count distinct input addresses
+  const inputAddresses = inputAddressSet(vin);
+
+  return {
+    denomination: equalValue,
+    distinctInputAddresses: inputAddresses.size,
+    whirlpoolOrigin: isWhirlpoolOrigin,
+  };
+}
+
+/**
+ * Detect simplified Stonewall pattern.
+ *
+ * Simplified Stonewall: 2+ inputs, exactly 3 spendable outputs.
+ * 2 outputs with equal value (payment + decoy) + 1 change.
+ * Real Stonewall always has 2+ inputs (wallet constructs a self-spend structure).
+ */
+export function detectSimplifiedStonewall(
+  vin: { prevout?: { scriptpubkey_address?: string; value?: number } | null }[],
+  spendableOutputs: { value: number; scriptpubkey_address?: string }[],
+): { denomination: number } | null {
+  if (spendableOutputs.length !== 3) return null;
+  if (vin.length < 2) return null;
+
+  // Count output values - need exactly 1 pair
+  const counts = countOutputValues(spendableOutputs);
+
+  // counts.size === 2 means: one value twice + one value once
+  if (counts.size !== 2) return null;
+
+  let equalValue = 0;
+  for (const [value, count] of counts) {
+    if (count === 2) equalValue = value;
+  }
+  if (equalValue === 0) return null;
+
+  // Skip dust amounts and Whirlpool denominations
+  if (equalValue < MIN_COINJOIN_DENOM) return null;
+  if (WHIRLPOOL_DENOMS.includes(equalValue)) return null;
+
+  // Equal-valued outputs must go to distinct addresses
+  const equalAddresses = new Set<string>();
+  for (const o of spendableOutputs) {
+    if (o.value === equalValue && o.scriptpubkey_address) {
+      equalAddresses.add(o.scriptpubkey_address);
+    }
+  }
+  if (equalAddresses.size < 2) return null;
+
+  return { denomination: equalValue };
+}

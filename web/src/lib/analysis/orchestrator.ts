@@ -1,0 +1,158 @@
+import type { Finding, ScoringResult } from "@/lib/types";
+import { fmtN } from "@/lib/format";
+import type {
+  MempoolTransaction,
+  MempoolAddress,
+  MempoolUtxo,
+} from "@/lib/api/types";
+import type { TxContext } from "./heuristics/types";
+import { analyzeTemporalCorrelation } from "./chain/temporal";
+import { analyzeFingerprintEvolution } from "./chain/prospective";
+import { calculateScore, sumImpact } from "@/lib/scoring/score";
+import { matchEntitySync } from "./entity-filter/entity-match";
+import { getEntity } from "./entities";
+import { enrichFindingsWithMetadata } from "./finding-metadata";
+import { tick } from "./heuristic-registry";
+import { runTxHeuristics, finalizeTxResult } from "./tx-pipeline";
+import { runAddressHeuristics } from "./address-orchestrator";
+
+export { runTxHeuristics, finalizeTxResult } from "./tx-pipeline";
+
+export { analyzeTransactionsForAddress, analyzeDestination } from "./address-orchestrator";
+export type { PreSendResult } from "./address-orchestrator";
+export { getTxHeuristicSteps, getAddressHeuristicSteps, type HeuristicStep } from "./heuristic-steps";
+
+/**
+ * Run the tx heuristics and report each one to the diagnostic loader
+ * (onStep(id) then onStep(id, impact), with a tick in between).
+ * Returns raw (not finalized) findings.
+ */
+export async function runTxHeuristicSteps(
+  tx: MempoolTransaction,
+  rawHex?: string,
+  onStep?: (stepId: string, impact?: number) => void,
+  ctx?: TxContext,
+): Promise<Finding[]> {
+  const steps: [string, number][] = [];
+  const findings = runTxHeuristics(tx, rawHex, ctx, (id, f) => steps.push([id, sumImpact(f)]));
+  if (onStep) {
+    for (const [id, impact] of steps) {
+      onStep(id);
+      await tick();
+      onStep(id, impact);
+    }
+  }
+  return findings;
+}
+
+/**
+ * Run all transaction heuristics and return scored results (no chain data).
+ *
+ * The onStep callback drives the diagnostic loader UI.
+ */
+export async function analyzeTransaction(
+  tx: MempoolTransaction,
+  rawHex?: string,
+  onStep?: (stepId: string, impact?: number) => void,
+  ctx?: TxContext,
+): Promise<ScoringResult> {
+  return finalizeTxResult(await runTxHeuristicSteps(tx, rawHex, onStep, ctx));
+}
+
+/**
+ * Run all address heuristics and return scored results.
+ */
+export async function analyzeAddress(
+  address: MempoolAddress,
+  utxos: MempoolUtxo[],
+  txs: MempoolTransaction[],
+  onStep?: (stepId: string, impact?: number) => void,
+): Promise<ScoringResult> {
+  const allFindings = await runAddressHeuristics(address, utxos, txs, onStep, "analyzeAddress");
+
+  // Entity identification: check the target address against entity databases
+  const entityMatch = matchEntitySync(address.address);
+  if (entityMatch) {
+    const entityInfo = getEntity(entityMatch.entityName);
+    const isOfac = entityMatch.ofac || (entityInfo?.ofac ?? false);
+    const country = entityInfo?.country ?? "Unknown";
+    allFindings.unshift({
+      id: "address-entity-identified",
+      severity: isOfac ? "critical" : "medium",
+      confidence: entityMatch.confidence,
+      title: isOfac
+        ? `OFAC sanctioned entity: ${entityMatch.entityName}`
+        : `Identified entity: ${entityMatch.entityName}`,
+      params: {
+        entityName: entityMatch.entityName,
+        category: entityInfo?.category ?? entityMatch.category,
+        country,
+        status: entityInfo?.status ?? "unknown",
+        ofac: isOfac ? 1 : 0,
+        _variant: isOfac ? "ofac" : "known",
+        ...(country !== "Unknown" ? { context: "country" } : {}),
+      },
+      description: isOfac
+        ? `This address is associated with ${entityMatch.entityName}, an OFAC-sanctioned entity. ` +
+          "Transacting with sanctioned addresses may have legal consequences depending on jurisdiction."
+        : `This address is associated with ${entityMatch.entityName}` +
+          ` (${entityInfo?.category ?? entityMatch.category}${country !== "Unknown" ? ", " + country : ""})` +
+          ". Transactions involving known entities are traceable by chain analysis firms.",
+      recommendation: isOfac
+        ? "Exercise extreme caution. Consult legal counsel before transacting with this address."
+        : "Be aware that this entity can link your transactions to your identity. " +
+          "For privacy, use intermediate hops, CoinJoin, or Lightning Network before interacting with known entities.",
+      scoreImpact: isOfac ? -20 : -3,
+    });
+  }
+
+  // Temporal correlation analysis (uses tx history)
+  if (txs.length >= 3) {
+    const temporalFindings = analyzeTemporalCorrelation(txs);
+    allFindings.push(...temporalFindings);
+  }
+
+  // Prospective analysis - fingerprint evolution (uses tx history)
+  if (txs.length >= 2) {
+    const { findings: prospectiveFindings } = analyzeFingerprintEvolution(
+      address.address,
+      txs,
+    );
+    allFindings.push(...prospectiveFindings);
+  }
+
+  // Warn if we couldn't fetch all transactions for this address
+  const totalOnChain = address.chain_stats.tx_count + address.mempool_stats.tx_count;
+  if (txs.length === 0 && totalOnChain > 0) {
+    allFindings.push({
+      id: "partial-history-unavailable",
+      severity: "medium",
+      title: "Transaction history unavailable",
+      params: { totalOnChain },
+      description:
+        `This address has ${fmtN(totalOnChain)} transactions but transaction history could not be fetched. ` +
+        "Spending pattern analysis could not be performed, so the score may be incomplete.",
+      recommendation:
+        "Try again later, or use a custom API endpoint with higher rate limits.",
+      scoreImpact: 0,
+    });
+  } else if (txs.length > 0 && totalOnChain > txs.length) {
+    allFindings.push({
+      id: "partial-history-partial",
+      severity: "low",
+      title: `Partial history analyzed (${txs.length} of ${fmtN(totalOnChain)} transactions)`,
+      params: { totalOnChain, txsAnalyzed: txs.length },
+      description:
+        `This address has ${fmtN(totalOnChain)} total transactions but only the most recent ${txs.length} were analyzed. ` +
+        "Older transactions may contain additional privacy-relevant patterns not reflected in these results.",
+      recommendation:
+        "For a complete analysis of high-activity addresses, consider running a full node with a local Electrum server.",
+      scoreImpact: 0,
+    });
+  }
+
+  // Enrich with adversary tier and temporality metadata
+  enrichFindingsWithMetadata(allFindings);
+
+  return calculateScore(allFindings, "address");
+}

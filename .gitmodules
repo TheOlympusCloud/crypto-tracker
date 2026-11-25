@@ -1,5 +1,0 @@
-[submodule "am-i-exposed"]
-	path = am-i-exposed
-	url = https://github.com/Copexit/am-i-exposed
-	branch = main
-	shallow = true

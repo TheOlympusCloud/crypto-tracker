@@ -297,32 +297,35 @@ def test_api_wallets_labels_and_auth(db, monkeypatch):
     from tracker.app import app
 
     client = TestClient(app, base_url="http://localhost")
-    assert client.post("/api/wallets", json={"address": "nope"}).status_code == 422
+    assert client.post("/api/tracker/wallets", json={"address": "nope"}).status_code == 422
     assert client.post(
-        "/api/wallets", json={"address": A, "name": "hot", "public": True}
+        "/api/tracker/wallets", json={"address": A, "name": "hot", "public": True}
     ).is_success
     assert (
-        client.post("/api/labels", json={"address": B, "name": "x", "category": "?"}).status_code
+        client.post(
+            "/api/tracker/labels", json={"address": B, "name": "x", "category": "?"}
+        ).status_code
         == 422
     )
     assert client.post(
-        "/api/labels", json={"address": B, "name": "Kraken", "category": "cex"}
+        "/api/tracker/labels", json={"address": B, "name": "Kraken", "category": "cex"}
     ).is_success
-    (node,) = client.get("/api/graph").json()["nodes"]
+    (node,) = client.get("/api/tracker/graph").json()["nodes"]
     assert (node["address"], node["mine"], node["public"], node["name"]) == (A, 1, 1, "hot")
-    assert client.delete(f"/api/wallets/{A}").is_success
-    assert client.get("/api/graph").json()["nodes"][0]["mine"] == 0
-    assert client.get("/api/analysis").json()["verdicts"] == []
+    assert client.delete(f"/api/tracker/wallets/{A}").is_success
+    assert client.get("/api/tracker/graph").json()["nodes"][0]["mine"] == 0
+    assert client.get("/api/tracker/analysis").json()["verdicts"] == []
     # A page that rebinds its own domain to this port must not read the wallet list.
-    assert client.get("/api/graph", headers={"host": "evil.example"}).status_code == 403
-    assert client.get("/").status_code == 200
+    assert client.get("/api/tracker/graph", headers={"host": "evil.example"}).status_code == 403
 
     monkeypatch.setenv("CT_PASSWORD", "s3cret")
-    assert client.get("/api/graph").status_code == 401
-    assert client.get("/api/graph", auth=("any", "wrong")).status_code == 401
-    assert client.get("/api/graph", auth=("any", "s3cret")).status_code == 200
+    assert client.get("/api/tracker/graph").status_code == 401
+    assert client.get("/api/tracker/graph", auth=("any", "wrong")).status_code == 401
+    assert client.get("/api/tracker/graph", auth=("any", "s3cret")).status_code == 200
     remote = {"host": "tracker.example"}
-    assert client.get("/api/graph", auth=("any", "s3cret"), headers=remote).status_code == 200
+    assert (
+        client.get("/api/tracker/graph", auth=("any", "s3cret"), headers=remote).status_code == 200
+    )
 
 
 def test_one_good_password_keeps_a_phone_signed_in(db, monkeypatch, tmp_path):
@@ -332,14 +335,14 @@ def test_one_good_password_keeps_a_phone_signed_in(db, monkeypatch, tmp_path):
 
     monkeypatch.setenv("CT_PASSWORD", "s3cret")
     phone = TestClient(app, base_url="http://localhost")
-    assert phone.get("/api/graph", auth=("any", "wrong")).status_code == 401
+    assert phone.get("/api/tracker/graph", auth=("any", "wrong")).status_code == 401
     assert not phone.cookies  # a wrong password earns nothing
-    cookie = phone.get("/api/graph", auth=("any", "s3cret")).headers["set-cookie"]
+    cookie = phone.get("/api/tracker/graph", auth=("any", "s3cret")).headers["set-cookie"]
     assert "s3cret" not in cookie  # it proves the password without carrying it
     for flag in ("HttpOnly", "Path=/", "SameSite=lax", "Max-Age=34560000"):
         assert flag in cookie
     assert "Secure" not in cookie  # over plain http a Secure cookie would never come back
-    assert phone.get("/api/graph").status_code == 200  # the next launch: the cookie alone
+    assert phone.get("/api/tracker/graph").status_code == 200  # the next launch: the cookie alone
     # Behind TLS, also when a reverse proxy ends it, the cookie only travels encrypted.
     https = TestClient(app, base_url="https://localhost")
     assert "Secure" in https.get("/", auth=("any", "s3cret")).headers["set-cookie"]
@@ -352,30 +355,18 @@ def test_one_good_password_keeps_a_phone_signed_in(db, monkeypatch, tmp_path):
     )
     # A made-up cookie is refused, and a new password signs every device out.
     forged = TestClient(app, base_url="http://localhost", cookies={"ct_session": "0" * 64})
-    assert forged.get("/api/graph").status_code == 401
+    assert forged.get("/api/tracker/graph").status_code == 401
     # The cookie is keyed by a random secret of this install: it tells nothing about the
     # password, outlives a restart, and is worth nothing at another install.
     import tracker.app as server
 
     server.SECRETS.clear()  # a restart
-    assert phone.get("/api/graph").status_code == 200
+    assert phone.get("/api/tracker/graph").status_code == 200
     monkeypatch.setenv("CT_DB", str(tmp_path / "another-install.db"))
-    assert phone.get("/api/graph").status_code == 401
+    assert phone.get("/api/tracker/graph").status_code == 401
     monkeypatch.setenv("CT_DB", str(tmp_path / "t.db"))
     monkeypatch.setenv("CT_PASSWORD", "n3w")
-    assert phone.get("/api/graph").status_code == 401
-
-
-def test_an_update_reaches_the_browser_at_once(db):
-    """The page's files are rechecked on every load (a 304 when unchanged), so a browser or an
-    installed app never keeps running the code from before an update."""
-    from tracker.app import app
-
-    client = TestClient(app, base_url="http://localhost")
-    for path in ("/", "/app.js", "/kinds.js", "/sw.js", "/vendor/three.module.js"):
-        assert client.get(path).headers["cache-control"] == "no-cache", path
-    tag = client.get("/app.js").headers["etag"]
-    assert client.get("/app.js", headers={"if-none-match": tag}).status_code == 304
+    assert phone.get("/api/tracker/graph").status_code == 401
 
 
 def test_the_session_secret_does_not_break_the_label_refresh(db, monkeypatch):
@@ -552,9 +543,9 @@ def test_hd_wallet_is_discovered_grouped_and_treated_as_one_wallet(db, monkeypat
     client = TestClient(
         __import__("tracker.app", fromlist=["app"]).app, base_url="http://localhost"
     )
-    assert client.post("/api/wallets", json={"address": XPRV}).status_code == 422
+    assert client.post("/api/tracker/wallets", json={"address": XPRV}).status_code == 422
     made = client.post(
-        "/api/wallets", json={"address": ZPUB, "name": "Ledger", "public": True}
+        "/api/tracker/wallets", json={"address": ZPUB, "name": "Ledger", "public": True}
     ).json()
     wallet = db.execute("SELECT * FROM hdwallet").fetchone()
     assert wallet["id"] == made["wallet"] and wallet["id"].startswith("hd:")
@@ -604,18 +595,18 @@ def test_hd_wallet_is_discovered_grouped_and_treated_as_one_wallet(db, monkeypat
     assert card["wallet_balances"] == [
         {"chain": "bitcoin", "asset": "BTC", "token": "", "amount": pytest.approx(2900e-8)}
     ]
-    assert client.get("/api/analysis").json()["fiat"]["wallets"] == {
+    assert client.get("/api/tracker/analysis").json()["fiat"]["wallets"] == {
         card["address"]: pytest.approx(1.45)
     }
 
     # Making one of its addresses private speaks for the whole wallet; removing it forgets it.
-    client.post("/api/wallets", json={"address": first, "name": "Ledger", "public": False})
+    client.post("/api/tracker/wallets", json={"address": first, "name": "Ledger", "public": False})
     assert {r["public"] for r in db.execute("SELECT public FROM node WHERE mine")} == {0}
     assert (
-        "descriptor" not in str(client.get("/api/portfolio").json())
-        and ZPUB not in client.get("/api/portfolio").text
+        "descriptor" not in str(client.get("/api/tracker/portfolio").json())
+        and ZPUB not in client.get("/api/tracker/portfolio").text
     )
-    assert client.delete(f"/api/wallets/{wallet['id']}").is_success
+    assert client.delete(f"/api/tracker/wallets/{wallet['id']}").is_success
     assert db.execute("SELECT COUNT(*) FROM node WHERE mine").fetchone()[0] == 0
 
 
@@ -731,10 +722,10 @@ def test_prices_are_fetched_cached_and_survive_an_outage(db, monkeypatch):
     client = TestClient(
         __import__("tracker.app", fromlist=["app"]).app, base_url="http://localhost"
     )
-    assert client.get("/api/portfolio").json()["total"] == 2050.0
-    assert client.get("/api/alerts").json() == {"unread": 0, "items": []}
-    assert client.post("/api/alerts/seen").is_success
-    fiat = client.get("/api/analysis").json()["fiat"]
+    assert client.get("/api/tracker/portfolio").json()["total"] == 2050.0
+    assert client.get("/api/tracker/alerts").json() == {"unread": 0, "items": []}
+    assert client.post("/api/tracker/alerts/seen").is_success
+    fiat = client.get("/api/tracker/analysis").json()["fiat"]
     assert (fiat["currency"], fiat["total"], fiat["assets"], fiat["wallets"]) == (
         "EUR", 2050.0, {"ETH": 2000.0, "USDC": 50.0}, {A: 2050.0},
     )  # fmt: skip
@@ -1249,7 +1240,7 @@ def test_private_keys_are_named_as_such_and_never_echoed(db):
         database.parse(wif)
     client = TestClient(app, base_url="http://localhost")
     for secret in (wif, "correct horse battery staple"):
-        reply = client.post("/api/wallets", json={"address": secret})
+        reply = client.post("/api/tracker/wallets", json={"address": secret})
         assert reply.status_code == 422 and secret not in reply.text
 
 
@@ -1358,20 +1349,20 @@ def test_hd_wallet_can_be_toggled_and_rescanned_by_its_id(db, monkeypatch):
     db.commit()
     client = TestClient(app, base_url="http://localhost")
     assert client.post(
-        "/api/wallets", json={"address": "hd:x", "name": "Ledger", "public": True}
+        "/api/tracker/wallets", json={"address": "hd:x", "name": "Ledger", "public": True}
     ).is_success
     assert tuple(db.execute("SELECT name, public FROM hdwallet").fetchone()) == ("Ledger", 1)
-    assert client.get("/api/analysis").json()["verdicts"][0]["public"] is True
-    assert client.post("/api/wallets", json={"address": "hd:nope"}).status_code == 404
+    assert client.get("/api/tracker/analysis").json()["verdicts"][0]["public"] is True
+    assert client.post("/api/tracker/wallets", json={"address": "hd:nope"}).status_code == 404
 
     started = []
     monkeypatch.setattr(sync, "start", lambda *args: started.append(args) or True)
-    assert client.post("/api/sync", json={"addresses": ["hd:x"]}).is_success
-    assert client.post("/api/sync", json={"addresses": [A, "hd:x"], "depth": 1}).is_success
-    assert client.post("/api/sync", json={}).is_success
+    assert client.post("/api/tracker/sync", json={"addresses": ["hd:x"]}).is_success
+    assert client.post("/api/tracker/sync", json={"addresses": [A, "hd:x"], "depth": 1}).is_success
+    assert client.post("/api/tracker/sync", json={}).is_success
     assert started == [([], 0, False, ["hd:x"]), ([A], 1, False, ["hd:x"]), (None, 0, False, [])]
-    assert client.post("/api/sync", json={"addresses": ["nonsense"]}).status_code == 422
-    assert client.post("/api/sync", json={"addresses": ["hd:nope"]}).status_code == 404
+    assert client.post("/api/tracker/sync", json={"addresses": ["nonsense"]}).status_code == 422
+    assert client.post("/api/tracker/sync", json={"addresses": ["hd:nope"]}).status_code == 404
     assert len(started) == 3
 
 
@@ -1448,22 +1439,27 @@ def test_a_wallet_is_renamed_by_posting_it_again(db):
 
     client = TestClient(app, base_url="http://localhost")
     assert client.post(
-        "/api/wallets", json={"address": A, "name": "hot", "public": True}
+        "/api/tracker/wallets", json={"address": A, "name": "hot", "public": True}
     ).is_success
     assert client.post(
-        "/api/wallets", json={"address": A, "name": "  Daily\n spending\t ", "public": True}
+        "/api/tracker/wallets", json={"address": A, "name": "  Daily\n spending\t ", "public": True}
     ).is_success
     row = db.execute("SELECT name, public, mine FROM node WHERE address = ?", (A,)).fetchone()
     assert tuple(row) == ("Daily spending", 1, 1)  # one line, and still public
     assert client.post(
-        "/api/wallets", json={"address": A, "name": "x" * 200, "public": True}
+        "/api/tracker/wallets", json={"address": A, "name": "x" * 200, "public": True}
     ).is_success
     assert len(db.execute("SELECT name FROM node").fetchone()[0]) == 80
-    assert client.post("/api/wallets", json={"address": A, "name": "", "public": True}).is_success
+    assert client.post(
+        "/api/tracker/wallets", json={"address": A, "name": "", "public": True}
+    ).is_success
     assert (
-        client.get("/api/graph").json()["nodes"][0]["name"] == ""
+        client.get("/api/tracker/graph").json()["nodes"][0]["name"] == ""
     )  # no name: the address is shown
-    assert client.post("/api/wallets", json={"address": "nope", "name": "x"}).status_code == 422
+    assert (
+        client.post("/api/tracker/wallets", json={"address": "nope", "name": "x"}).status_code
+        == 422
+    )
 
     # An HD wallet is renamed as a whole, by one of its addresses or by its id.
     db.execute(
@@ -1477,9 +1473,9 @@ def test_a_wallet_is_renamed_by_posting_it_again(db):
         "INSERT INTO node(address, mine, name, wallet) VALUES (?, 1, 'Ledger', 'hd:x')", (C,)
     )
     db.commit()
-    assert client.post("/api/wallets", json={"address": B, "name": "Cold"}).is_success
+    assert client.post("/api/tracker/wallets", json={"address": B, "name": "Cold"}).is_success
     assert {r[0] for r in db.execute("SELECT name FROM node WHERE wallet = 'hd:x'")} == {"Cold"}
-    assert client.post("/api/wallets", json={"address": "hd:x", "name": "Vault"}).is_success
+    assert client.post("/api/tracker/wallets", json={"address": "hd:x", "name": "Vault"}).is_success
     names = {r[0] for r in db.execute("SELECT name FROM node WHERE wallet = 'hd:x'")}
     assert names == {"Vault"} and db.execute("SELECT name FROM hdwallet").fetchone()[0] == "Vault"
 

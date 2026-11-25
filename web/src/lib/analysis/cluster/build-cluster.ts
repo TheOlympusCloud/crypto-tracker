@@ -1,0 +1,192 @@
+import type { MempoolTransaction } from "@/lib/api/types";
+import type { ApiClient } from "@/lib/api/client";
+import { createRateLimiter } from "@/lib/api/rate-limiter";
+import { isCoinJoinTx } from "../heuristics/coinjoin";
+import { analyzeChangeDetection } from "../heuristics/change-detection";
+import { getSpendableOutputs } from "../heuristics/tx-utils";
+import { getAddressType } from "@/lib/bitcoin/address-type";
+
+export interface ClusterProgress {
+  phase: "inputs" | "change-follow";
+  current: number;
+  total: number;
+}
+
+export interface ClusterEdge {
+  /** Source address */
+  source: string;
+  /** Target address */
+  target: string;
+  /** Transaction that links them (co-input) */
+  txid: string;
+}
+
+export interface ClusterResult {
+  addresses: string[];
+  size: number;
+  txsAnalyzed: number;
+  coinJoinTxCount: number;
+  /** Edges representing co-input relationships for graph visualization */
+  edges: ClusterEdge[];
+}
+
+/**
+ * H14: First-Degree Cluster Analysis (CIOH Graph Walk)
+ *
+ * Builds a one-hop address cluster using:
+ * 1. CIOH on the target's transactions (collect co-input addresses)
+ * 2. Follow change outputs one hop (fetch change address txs, apply CIOH again)
+ *
+ * CoinJoin transactions are excluded from clustering.
+ * Capped at 50 most recent txs to avoid rate limiting.
+ */
+export async function buildFirstDegreeCluster(
+  targetAddress: string,
+  txs: MempoolTransaction[],
+  api: ApiClient,
+  signal?: AbortSignal,
+  onProgress?: (progress: ClusterProgress) => void,
+): Promise<ClusterResult> {
+  const cluster = new Set<string>();
+  cluster.add(targetAddress);
+
+  const edges: ClusterEdge[] = [];
+  const edgeSet = new Set<string>(); // dedup "addr1-addr2"
+
+  const throttle = createRateLimiter(200);
+  const cap = Math.min(txs.length, 50);
+  let coinJoinTxCount = 0;
+  let txsAnalyzed = 0;
+
+  // Phase 1: Direct CIOH - for each tx where target is an input, collect co-inputs
+  const changeAddresses: string[] = [];
+
+  for (const [i, tx] of txs.slice(0, cap).entries()) {
+    if (signal?.aborted) break;
+    onProgress?.({ phase: "inputs", current: i + 1, total: cap });
+
+    txsAnalyzed++;
+
+    // Check if this is a CoinJoin - skip CIOH if so
+    if (isCoinJoinTx(tx)) {
+      coinJoinTxCount++;
+      continue;
+    }
+
+    // Check if target address is an input
+    const targetIsInput = tx.vin.some(
+      (v) => v.prevout?.scriptpubkey_address === targetAddress,
+    );
+    if (!targetIsInput) continue;
+
+    // CIOH: collect all co-input addresses and build edges
+    const inputAddrs = tx.vin
+      .map((v) => v.prevout?.scriptpubkey_address)
+      .filter((a): a is string => !!a);
+
+    for (const addr of inputAddrs) {
+      cluster.add(addr);
+      // Create edges between all co-input pairs (star topology from target)
+      if (addr !== targetAddress) {
+        const key = [targetAddress, addr].sort().join("-");
+        if (!edgeSet.has(key)) {
+          edgeSet.add(key);
+          edges.push({ source: targetAddress, target: addr, txid: tx.txid });
+        }
+      }
+    }
+
+    // Detect change output for follow-up
+    const changeResult = analyzeChangeDetection(tx);
+    const changeFinding = changeResult.findings.find(
+      (f) => f.id === "h2-change-detected" && (f.params?.confidence === "medium" || f.params?.confidence === "high"),
+    );
+    const changeDetected = !!changeFinding;
+    const spendableOutputs = getSpendableOutputs(tx.vout).filter((v) => v.scriptpubkey_address);
+    if (changeDetected && spendableOutputs.length === 2) {
+      // If one output goes back to the target address (self-reuse / address reuse),
+      // the OTHER output is the payment recipient, not change. Skip this tx.
+      const selfSend = spendableOutputs.some(
+        (v) => v.scriptpubkey_address === targetAddress,
+      );
+      if (!selfSend) {
+        // For 2-output txs where target is a sender, identify the change output.
+        // Change goes back to the sender's wallet, so it should match the input
+        // address type. Pick the output matching the target's address type prefix.
+        const targetPrefix = getAddressType(targetAddress);
+        const candidates = spendableOutputs
+          .map((vout) => vout.scriptpubkey_address)
+          .filter((addr): addr is string => !!addr && getAddressType(addr) === targetPrefix);
+        // Only follow when exactly one output matches sender type.
+        // If both outputs match (sender and receiver use same wallet type),
+        // we can't reliably distinguish change from payment.
+        const [outAddr] = candidates;
+        if (candidates.length === 1 && outAddr !== undefined) {
+          if (!changeAddresses.includes(outAddr)) {
+            changeAddresses.push(outAddr);
+          }
+        }
+      }
+    }
+  }
+
+  // Phase 2: Follow change outputs one hop
+  const changeToFollow = changeAddresses.slice(0, 10); // Cap change follows
+  for (const [i, changeAddr] of changeToFollow.entries()) {
+    if (signal?.aborted) break;
+    onProgress?.({ phase: "change-follow", current: i + 1, total: changeToFollow.length });
+
+    // Add edge from target to change address (change output link)
+    const chKey = [targetAddress, changeAddr].sort().join("-");
+    if (!edgeSet.has(chKey)) {
+      edgeSet.add(chKey);
+      edges.push({ source: targetAddress, target: changeAddr, txid: "change" });
+    }
+    cluster.add(changeAddr);
+
+    try {
+      const changeTxs = await throttle(() => api.getAddressTxs(changeAddr), signal);
+      for (const ctx of changeTxs.slice(0, 20)) {
+        txsAnalyzed++;
+
+        // Skip CoinJoins
+        if (isCoinJoinTx(ctx)) {
+          coinJoinTxCount++;
+          continue;
+        }
+
+        // If change address is an input, apply CIOH
+        const isInput = ctx.vin.some(
+          (v) => v.prevout?.scriptpubkey_address === changeAddr,
+        );
+        if (isInput) {
+          for (const vin of ctx.vin) {
+            const addr = vin.prevout?.scriptpubkey_address;
+            if (addr) {
+              cluster.add(addr);
+              if (addr !== changeAddr) {
+                const key = [changeAddr, addr].sort().join("-");
+                if (!edgeSet.has(key)) {
+                  edgeSet.add(key);
+                  edges.push({ source: changeAddr, target: addr, txid: ctx.txid });
+                }
+              }
+            }
+          }
+        }
+      }
+    } catch {
+      // Rate limited or network error - continue with partial results
+    }
+  }
+
+  const addresses = [...cluster];
+  return {
+    addresses,
+    size: addresses.length,
+    txsAnalyzed,
+    coinJoinTxCount,
+    edges,
+  };
+}
+

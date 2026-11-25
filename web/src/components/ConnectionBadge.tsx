@@ -1,0 +1,93 @@
+"use client";
+
+import { useState, useRef, useEffect } from "react";
+import { Shield, ShieldAlert, ShieldCheck, ShieldQuestion } from "lucide-react";
+import { useNetwork } from "@/context/NetworkContext";
+import { useTranslation } from "react-i18next";
+
+/**
+ * Shows connection privacy status by checking the Tor Project API.
+ * Tappable on mobile to reveal a tooltip explaining the status.
+ */
+export function ConnectionBadge() {
+  const { t } = useTranslation();
+  const { torStatus, localApiStatus, isUmbrel, customApiUrl } = useNetwork();
+  const [showTip, setShowTip] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  // Close tooltip on outside click
+  useEffect(() => {
+    if (!showTip) return;
+    function handleClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setShowTip(false);
+      }
+    }
+    document.addEventListener("click", handleClick, true);
+    return () => document.removeEventListener("click", handleClick, true);
+  }, [showTip]);
+
+  // Umbrel detected - show "Local" badge with health-dependent styling
+  const config = isUmbrel
+    ? localApiStatus === "unavailable"
+      ? {
+          icon: <ShieldAlert size={16} className="text-warning" />,
+          label: <span className="text-warning text-xs hidden sm:inline">{t("common.local", { defaultValue: "Local" })}</span>,
+          tip: t("common.connectionLocalDown", { defaultValue: "Local mempool is unreachable - try restarting mempool from your Umbrel dashboard" }),
+        }
+      : {
+          icon: <ShieldCheck size={16} className="text-success" />,
+          label: <span className="text-success text-xs hidden sm:inline">{t("common.local", { defaultValue: "Local" })}</span>,
+          tip: t("common.connectionLocal", { defaultValue: "Connected to local mempool instance - all queries stay on your network" }),
+        }
+    : customApiUrl
+    // Tor detection is skipped with a custom API, so torStatus says nothing here.
+    ? {
+        icon: <Shield size={16} className="text-muted" />,
+        label: <span className="text-muted text-xs hidden sm:inline">{t("common.custom", { defaultValue: "Custom API" })}</span>,
+        tip: t("common.connectionCustom", { defaultValue: "Using a custom API - queries go to your configured server, not mempool.space" }),
+      }
+    : {
+        checking: {
+          icon: <Shield size={16} className="text-muted animate-pulse" />,
+          label: null,
+          tip: t("common.connectionChecking", { defaultValue: "Checking connection type..." }),
+        },
+        tor: {
+          icon: <Shield size={16} className="text-success" />,
+          label: <span className="text-success text-xs hidden sm:inline">{t("common.tor", { defaultValue: "Tor" })}</span>,
+          tip: t("common.connectionTor", { defaultValue: "Connected via Tor - your IP is hidden from API providers" }),
+        },
+        unknown: {
+          icon: <ShieldQuestion size={16} className="text-muted" />,
+          label: null,
+          tip: t("common.connectionUnknown", { defaultValue: "Connection privacy status could not be determined" }),
+        },
+        clearnet: {
+          icon: <ShieldAlert size={16} className="text-warning" />,
+          label: <span className="text-warning text-xs hidden sm:inline">{t("common.clearnet", { defaultValue: "Clearnet" })}</span>,
+          tip: t("common.connectionClearnet", { defaultValue: "Not using Tor - mempool.space can see your IP address" }),
+        },
+      }[torStatus];
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        onClick={() => setShowTip((v) => !v)}
+        onFocus={() => setShowTip(true)}
+        onBlur={() => setShowTip(false)}
+        className="inline-flex items-center justify-center gap-1.5 text-xs cursor-pointer py-2 min-h-[44px] min-w-11 px-3.5 -mx-3.5"
+        aria-label={config.tip}
+        aria-describedby={showTip ? "connection-tooltip" : undefined}
+      >
+        {config.icon}
+        {config.label}
+      </button>
+      {showTip && (
+        <div id="connection-tooltip" role="tooltip" className="absolute top-full right-0 mt-1 w-56 glass rounded-lg px-3 py-2 z-50 text-xs text-muted leading-relaxed">
+          {config.tip}
+        </div>
+      )}
+    </div>
+  );
+}

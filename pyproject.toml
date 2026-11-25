@@ -16,7 +16,7 @@ dev = ["pytest>=8", "ruff>=0.6"]
 
 [tool.ruff]
 line-length = 100
-extend-exclude = ["am-i-exposed"]  # upstream, checked by its own tools
+extend-exclude = ["web"]  # am-i-exposed, checked by its own tools
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

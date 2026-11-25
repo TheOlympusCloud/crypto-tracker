@@ -1,0 +1,287 @@
+"use client";
+
+import { useState, useCallback, useMemo, useRef, useEffect, memo } from "react";
+import { motion } from "motion/react";
+import { Clock, Star, Lightbulb, X, Download, Upload } from "lucide-react";
+import { useTranslation } from "react-i18next";
+import { RecentScans } from "./RecentScans";
+import { BookmarkList } from "./history/BookmarkList";
+import { HistoryTab } from "./history/HistoryTab";
+import { ExportWalletsPrompt } from "./history/ExportWalletsPrompt";
+import { ImportWalletsPrompt } from "./history/ImportWalletsPrompt";
+import { walletsInImport } from "@/hooks/useBookmarks";
+import type { RecentScan } from "@/hooks/useRecentScans";
+import type { Bookmark } from "@/hooks/useBookmarks";
+import { skippedMessage } from "./settings/WalletLockSettings";
+import type { ExampleItem } from "@/lib/constants";
+
+interface ScanHistoryProps {
+  scans: RecentScan[];
+  bookmarks: Bookmark[];
+  examples?: ExampleItem[];
+  onSelect: (input: string) => void;
+  onClearScans?: () => void;
+  onRemoveBookmark: (input: string) => void;
+  onClearBookmarks: () => void;
+  onExportBookmarks?: (opts?: { includeWallets?: boolean }) => void;
+  onImportBookmarks?: (json: string, opts?: { includeWallets?: boolean }) => { imported: number; error?: string; skippedWallets?: number };
+}
+
+type Tab = "recent" | "bookmarks" | "examples";
+
+export const ScanHistory = memo(function ScanHistory({
+  scans,
+  bookmarks,
+  examples = [],
+  onSelect,
+  onClearScans,
+  onRemoveBookmark,
+  onClearBookmarks,
+  onExportBookmarks,
+  onImportBookmarks,
+}: ScanHistoryProps) {
+  const { t } = useTranslation();
+
+  // Default tab: examples when no recents/bookmarks, else recent
+  const defaultTab: Tab =
+    scans.length === 0 && bookmarks.length === 0
+      ? "examples"
+      : scans.length === 0 && bookmarks.length > 0
+        ? "bookmarks"
+        : "recent";
+  const [tab, setTab] = useState<Tab>(defaultTab);
+
+  const [exportPrompt, setExportPrompt] = useState(false);
+  /** A file with wallet bookmarks, waiting for the privacy confirmation */
+  const [pendingImport, setPendingImport] = useState<{ json: string; wallets: number } | null>(null);
+  // Locked wallets are never in this export (their keys are sealed in the vault)
+  const walletCount = bookmarks.filter((b) => b.type === "wallet" && !b.locked).length;
+  const [importFeedback, setImportFeedback] = useState<{ type: "success" | "error"; message: string } | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const feedbackTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  useEffect(() => () => clearTimeout(feedbackTimerRef.current), []);
+
+  const runImport = useCallback((json: string, includeWallets: boolean) => {
+    if (!onImportBookmarks) return;
+    const result = onImportBookmarks(json, { includeWallets });
+    if (result.error === "storage_full") {
+      setImportFeedback({ type: "error", message: t("workspace.storageFull", { defaultValue: "Browser storage is full. Delete some bookmarks or saved graphs and try again." }) });
+    } else if (result.error) {
+      setImportFeedback({ type: "error", message: t("history.importError", { defaultValue: "Invalid bookmark file" }) });
+    } else {
+      const msg = t("history.importSuccess", { defaultValue: "{{count}} bookmarks imported", count: result.imported });
+      setImportFeedback({ type: "success", message: result.skippedWallets ? `${msg} ${skippedMessage(t, result.skippedWallets)}` : msg });
+    }
+    clearTimeout(feedbackTimerRef.current);
+    feedbackTimerRef.current = setTimeout(() => setImportFeedback(null), 3000);
+  }, [onImportBookmarks, t]);
+
+  const handleImportFile = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !onImportBookmarks) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const json = reader.result as string;
+      const wallets = walletsInImport(json);
+      if (wallets > 0) setPendingImport({ json, wallets });
+      else runImport(json, false);
+    };
+    reader.readAsText(file);
+    // Reset so same file can be re-imported
+    e.target.value = "";
+  }, [onImportBookmarks, runImport]);
+
+
+  const handleClear = () => {
+    if (tab === "recent" && onClearScans) {
+      onClearScans();
+    } else if (tab === "bookmarks") {
+      onClearBookmarks();
+    }
+  };
+
+  const showClear = tab === "recent" ? scans.length > 0 && onClearScans : tab === "bookmarks" ? bookmarks.length > 0 : false;
+
+  const tabListRef = useRef<HTMLDivElement>(null);
+  const availableTabs = useMemo<Tab[]>(() => examples.length > 0 ? ["recent", "bookmarks", "examples"] : ["recent", "bookmarks"], [examples.length]);
+
+  const handleTabKeyDown = useCallback((e: React.KeyboardEvent) => {
+    const idx = availableTabs.indexOf(tab);
+    let next: number | null = null;
+    if (e.key === "ArrowRight") next = (idx + 1) % availableTabs.length;
+    else if (e.key === "ArrowLeft") next = (idx - 1 + availableTabs.length) % availableTabs.length;
+    else if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = availableTabs.length - 1;
+    if (next !== null) {
+      e.preventDefault();
+      const nextTab = availableTabs[next];
+      if (!nextTab) return;
+      setTab(nextTab);
+      tabListRef.current?.querySelector<HTMLElement>(`#tab-${nextTab}`)?.focus();
+    }
+  }, [tab, availableTabs]);
+
+  // Shuffle examples once on mount so Whirlpool variants don't cluster together.
+  const [shuffledExamples, setShuffledExamples] = useState(examples);
+  const [showAllExamples, setShowAllExamples] = useState(false);
+  const [previewCount, setPreviewCount] = useState(4);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      const arr = [...examples];
+      for (let i = arr.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [arr[i], arr[j]] = [arr[j]!, arr[i]!]; // i, j < arr.length by loop bounds
+      }
+      setShuffledExamples(arr);
+
+      if (window.innerWidth < 400) setPreviewCount(2);
+      else if (window.innerWidth < 640) setPreviewCount(3);
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [examples]);
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ delay: 0.3 }}
+      className="w-full max-w-2xl"
+    >
+      {/* Tab bar */}
+      <div className="flex items-center justify-between gap-2 mb-2 px-1">
+        <div ref={tabListRef} className="flex items-center gap-3" role="tablist" aria-label={t("history.tabs", { defaultValue: "Scan history tabs" })} onKeyDown={handleTabKeyDown}>
+          <HistoryTab id="tab-recent" label={t("history.recent", { defaultValue: "Recent" })} icon={Clock} isActive={tab === "recent"} panelId="panel-recent" count={scans.length} onClick={() => setTab("recent")} />
+          {(bookmarks.length > 0 || onExportBookmarks) && (
+            <HistoryTab id="tab-bookmarks" label={t("history.bookmarks", { defaultValue: "Bookmarks" })} icon={Star} isActive={tab === "bookmarks"} panelId="panel-bookmarks" count={bookmarks.length} onClick={() => setTab("bookmarks")} />
+          )}
+          {examples.length > 0 && (
+            <HistoryTab id="tab-examples" label={t("history.examples", { defaultValue: "Examples" })} icon={Lightbulb} isActive={tab === "examples"} panelId="panel-examples" onClick={() => setTab("examples")} />
+          )}
+        </div>
+
+        <div className="flex items-center gap-2 shrink-0">
+          {tab === "bookmarks" && onImportBookmarks && (
+            <>
+              <input ref={fileInputRef} type="file" accept=".json" onChange={handleImportFile} className="hidden" aria-hidden="true" />
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                className="inline-flex items-center gap-1 text-xs text-muted hover:text-foreground transition-colors cursor-pointer p-1"
+                title={t("history.importBookmarks", { defaultValue: "Import bookmarks from JSON" })}
+                aria-label={t("history.importBookmarks", { defaultValue: "Import bookmarks from JSON" })}
+              >
+                <Upload size={14} />
+                <span className="hidden sm:inline">{t("history.import", { defaultValue: "Import" })}</span>
+              </button>
+            </>
+          )}
+          {tab === "bookmarks" && bookmarks.length > 0 && onExportBookmarks && (
+            <button
+              onClick={() => (walletCount > 0 ? setExportPrompt(true) : onExportBookmarks())}
+              className="inline-flex items-center gap-1 text-xs text-muted hover:text-foreground transition-colors cursor-pointer p-1"
+              title={t("history.exportBookmarks", { defaultValue: "Export bookmarks as JSON" })}
+              aria-label={t("history.exportBookmarks", { defaultValue: "Export bookmarks as JSON" })}
+            >
+              <Download size={14} />
+              <span className="hidden sm:inline">{t("history.export", { defaultValue: "Export" })}</span>
+            </button>
+          )}
+          {showClear && (
+            <button
+              onClick={handleClear}
+              className="inline-flex items-center gap-1 text-xs text-muted hover:text-foreground transition-colors cursor-pointer p-1"
+              title={tab === "recent"
+                ? t("history.clearRecent", { defaultValue: "Clear recent scans" })
+                : t("history.clearBookmarks", { defaultValue: "Clear bookmarks" })}
+              aria-label={tab === "recent"
+                ? t("history.clearRecent", { defaultValue: "Clear recent scans" })
+                : t("history.clearBookmarks", { defaultValue: "Clear bookmarks" })}
+            >
+              <X size={14} />
+              <span className="hidden sm:inline">{t("history.clear", { defaultValue: "Clear" })}</span>
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Tab content */}
+      {tab === "recent" && (
+        <div role="tabpanel" id="panel-recent" aria-labelledby="tab-recent">
+        {scans.length === 0 ? (
+          <p className="text-xs text-muted px-1">
+            {t("history.noRecent", { defaultValue: "No recent scans yet. Try an example to get started." })}
+          </p>
+        ) : (
+          <RecentScans scans={scans} onSelect={onSelect} hideHeader />
+        )}
+        </div>
+      )}
+
+      {tab === "bookmarks" && (
+        <div role="tabpanel" id="panel-bookmarks" aria-labelledby="tab-bookmarks">
+        {pendingImport && (
+          <div className="mb-2">
+            <ImportWalletsPrompt
+              walletCount={pendingImport.wallets}
+              onImport={(includeWallets) => { runImport(pendingImport.json, includeWallets); setPendingImport(null); }}
+              onCancel={() => setPendingImport(null)}
+            />
+          </div>
+        )}
+        {exportPrompt && onExportBookmarks && (
+          <div className="mb-2">
+            <ExportWalletsPrompt
+              walletCount={walletCount}
+              onExport={(includeWallets) => { onExportBookmarks({ includeWallets }); setExportPrompt(false); }}
+              onCancel={() => setExportPrompt(false)}
+            />
+          </div>
+        )}
+        {importFeedback && (
+          <p className={`text-xs mb-2 px-1 ${importFeedback.type === "error" ? "text-severity-critical" : "text-severity-good"}`} role="status">
+            {importFeedback.message}
+          </p>
+        )}
+        {bookmarks.length === 0 ? (
+          <p className="text-xs text-muted px-1">
+            {t("history.noBookmarks", { defaultValue: "No bookmarks yet. Save interesting scans from the results page." })}
+          </p>
+        ) : (
+          <BookmarkList bookmarks={bookmarks} onSelect={onSelect} onRemoveBookmark={onRemoveBookmark} />
+        )}
+        </div>
+      )}
+
+      {tab === "examples" && (
+        <div role="tabpanel" id="panel-examples" aria-labelledby="tab-examples">
+          <div className="flex flex-wrap gap-2">
+            {(showAllExamples ? shuffledExamples : shuffledExamples.slice(0, previewCount)).map((ex) => (
+              <button
+                key={ex.input}
+                onClick={() => onSelect(ex.input)}
+                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-surface-elevated/50
+                  border border-card-border hover:border-bitcoin/40 hover:bg-surface-elevated
+                  transition-all text-sm cursor-pointer group"
+              >
+                <span className="text-muted group-hover:text-foreground transition-colors whitespace-nowrap">
+                  {t(ex.labelKey, { defaultValue: ex.labelDefault })}
+                </span>
+                <span className={`text-xs font-bold ${ex.hintColor}`}>
+                  {ex.hintKey ? t(ex.hintKey, { defaultValue: ex.hint }) : ex.hint}
+                </span>
+              </button>
+            ))}
+            {!showAllExamples && shuffledExamples.length > previewCount && (
+              <button
+                onClick={() => setShowAllExamples(true)}
+                className="self-center text-xs text-muted hover:text-foreground transition-colors cursor-pointer px-2 py-1"
+              >
+                Show all {shuffledExamples.length} examples
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+    </motion.div>
+  );
+});

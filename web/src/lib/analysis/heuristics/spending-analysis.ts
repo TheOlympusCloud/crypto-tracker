@@ -1,0 +1,131 @@
+import type { AddressHeuristic } from "./types";
+import type { Finding } from "@/lib/types";
+import { fmtN } from "@/lib/format";
+import { isCoinJoinTx } from "./coinjoin";
+import { getAddressType } from "@/lib/bitcoin/address-type";
+import { isOpReturnOutput } from "./tx-utils";
+
+/**
+ * Spending Pattern Analysis (Address-level)
+ *
+ * Analyzes the spending behavior of an address:
+ * - Unspent vs spent ratio
+ * - Total transaction volume
+ * - Spending patterns that reveal usage type
+ *
+ * Impact: -3 to +2 (informational)
+ */
+export const analyzeSpendingPattern: AddressHeuristic = (address, _utxos, txs) => {
+  const findings: Finding[] = [];
+  const { chain_stats, mempool_stats } = address;
+
+  const totalTxs = chain_stats.tx_count + mempool_stats.tx_count;
+  const spentCount = chain_stats.spent_txo_count + mempool_stats.spent_txo_count;
+  const fundedCount = chain_stats.funded_txo_count + mempool_stats.funded_txo_count;
+
+  // High volume address
+  if (totalTxs >= 100) {
+    findings.push({
+      id: "spending-high-volume",
+      severity: "medium",
+      confidence: "deterministic",
+      title: `High transaction volume (${fmtN(totalTxs)} transactions)`,
+      params: { totalTxs },
+      description:
+        `This address has been involved in ${fmtN(totalTxs)} transactions. ` +
+        "High-volume addresses are more likely to be monitored by chain analysis firms " +
+        "and may be associated with services, exchanges, or businesses.",
+      recommendation:
+        "Use HD wallets to spread activity across many addresses. Avoid concentrating activity on a single address.",
+      scoreImpact: -3,
+    });
+  }
+
+  // Never spent (cold storage pattern)
+  if (spentCount === 0 && fundedCount > 0) {
+    findings.push({
+      id: "spending-never-spent",
+      severity: "good",
+      confidence: "deterministic",
+      title: "Address has never spent (cold storage)",
+      description:
+        "This address has received funds but never spent them. " +
+        "This is characteristic of cold storage, which is good for security. " +
+        "Since no spend transactions exist, no on-chain spending patterns can be analyzed.",
+      recommendation:
+        "When you do spend from this address, use coin control to select specific UTXOs. When possible, spend exact amounts to avoid change outputs. For stronger privacy, consider CoinJoin - but note that some exchanges may flag CoinJoin deposits.",
+      scoreImpact: 2,
+    });
+  }
+
+  // Mixed receive/send with transaction history to analyze
+  if (txs.length > 0 && spentCount > 0) {
+    // Count unique counterparties from transactions where this address is a sender.
+    // Exclude likely change outputs to avoid inflating the count.
+    const counterparties = new Set<string>();
+    const senderAddrType = getAddressType(address.address);
+
+    for (const tx of txs) {
+      // Only count counterparties when this address is an input (sender)
+      const isSender = tx.vin.some(
+        (v) => v.prevout?.scriptpubkey_address === address.address,
+      );
+      if (!isSender) continue;
+
+      // Skip CoinJoin transactions - their outputs are other participants,
+      // not true counterparties. Counting them would penalize CoinJoin users.
+      if (isCoinJoinTx(tx)) continue;
+
+      const outputAddrs = tx.vout.flatMap((v) =>
+        !isOpReturnOutput(v) && v.scriptpubkey_address && v.scriptpubkey_address !== address.address
+          ? [v.scriptpubkey_address]
+          : [],
+      );
+
+      // For 2-spendable-output txs (typical send), exclude the likely change output.
+      // Change usually matches the sender's address type.
+      const [addr0, addr1] = outputAddrs;
+      if (outputAddrs.length === 2 && addr0 && addr1) {
+        // Identify likely payment (non-change) by address type mismatch
+        const type0 = getAddressType(addr0);
+        const type1 = getAddressType(addr1);
+
+        if (type0 === senderAddrType && type1 !== senderAddrType) {
+          // Output 0 matches sender type (likely change), output 1 is the payment
+          counterparties.add(addr1);
+        } else if (type1 === senderAddrType && type0 !== senderAddrType) {
+          // Output 1 matches sender type (likely change), output 0 is the payment
+          counterparties.add(addr0);
+        } else {
+          // Same type or mixed - count both (can't reliably exclude change)
+          counterparties.add(addr0);
+          counterparties.add(addr1);
+        }
+      } else {
+        // Single non-self output (clear counterparty) or 3+ outputs (batch payment) - count all
+        for (const addr of outputAddrs) counterparties.add(addr);
+      }
+    }
+
+    if (counterparties.size >= 20) {
+      findings.push({
+        id: "spending-many-counterparties",
+        severity: "medium",
+        confidence: "medium",
+        title: `Transacted with ${counterparties.size}+ counterparties`,
+        params: { counterpartyCount: counterparties.size },
+        description:
+          `This address has sent or received funds involving ${counterparties.size}+ different addresses. ` +
+          "A large number of counterparties creates a wide exposure surface " +
+          "and makes the address easier to cluster with other known entities.",
+        recommendation:
+          "Use separate addresses for different transaction partners. HD wallets do this automatically.",
+        scoreImpact: -2,
+      });
+    }
+  }
+
+  return { findings };
+};
+
+

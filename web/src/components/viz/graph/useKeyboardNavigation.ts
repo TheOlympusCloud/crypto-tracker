@@ -1,0 +1,164 @@
+import { useCallback } from "react";
+import type { GraphNode } from "@/hooks/useGraphExpansion";
+import type { LayoutNode } from "./types";
+import { isOpReturnOutput } from "@/lib/analysis/heuristics/tx-utils";
+
+interface UseKeyboardNavigationParams {
+  focusedNode: string | null;
+  setFocusedNode: (txid: string | null) => void;
+  layoutNodes: LayoutNode[];
+  nodes: Map<string, GraphNode>;
+  rootTxid: string;
+  atCapacity: boolean;
+  expandedNodeTxid?: string | null;
+  onExpandInput: (txid: string, inputIndex: number) => void;
+  onExpandOutput: (txid: string, outputIndex: number) => void;
+  onCollapse: (txid: string) => void;
+  onToggleExpand?: (txid: string) => void;
+  /** Escape clears the selection or select mode (window handler) before collapsing ports. */
+  escapeHandledAbove?: boolean;
+  /** Shift+Enter/Space (or Enter/Space in select mode) toggles the focused node's selection. */
+  onToggleSelect?: (txid: string) => void;
+  selectMode?: boolean;
+}
+
+export function useKeyboardNavigation({
+  focusedNode,
+  setFocusedNode,
+  layoutNodes,
+  nodes,
+  rootTxid,
+  atCapacity,
+  expandedNodeTxid,
+  onExpandInput,
+  onExpandOutput,
+  onCollapse,
+  onToggleExpand,
+  escapeHandledAbove,
+  onToggleSelect,
+  selectMode,
+}: UseKeyboardNavigationParams): (e: React.KeyboardEvent) => void {
+  return useCallback((e: React.KeyboardEvent) => {
+    // Don't capture keys when typing in an input element
+    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+
+    const firstNode = layoutNodes[0];
+    if (!focusedNode && firstNode) {
+      setFocusedNode(firstNode.txid);
+      return;
+    }
+    if (!focusedNode) return;
+
+    const current = layoutNodes.find((n) => n.txid === focusedNode);
+    if (!current) return;
+
+    const sameDepth = layoutNodes.filter((n) => n.depth === current.depth);
+    const currentIdx = sameDepth.findIndex((n) => n.txid === focusedNode);
+    const gn = nodes.get(focusedNode);
+
+    switch (e.key) {
+      // ─── Navigation ──────────────────────
+      case "ArrowUp": {
+        e.preventDefault();
+        const prev = sameDepth[currentIdx - 1];
+        if (prev) setFocusedNode(prev.txid);
+        break;
+      }
+      case "ArrowDown": {
+        e.preventDefault();
+        const next = sameDepth[currentIdx + 1];
+        if (next) setFocusedNode(next.txid);
+        break;
+      }
+      case "ArrowLeft": {
+        e.preventDefault();
+        const prevDepth = layoutNodes
+          .filter((n) => n.depth < current.depth)
+          .sort((a, b) => b.depth - a.depth)[0];
+        if (prevDepth) setFocusedNode(prevDepth.txid);
+        break;
+      }
+      case "ArrowRight": {
+        e.preventDefault();
+        const nextDepth = layoutNodes
+          .filter((n) => n.depth > current.depth)
+          .sort((a, b) => a.depth - b.depth)[0];
+        if (nextDepth) setFocusedNode(nextDepth.txid);
+        break;
+      }
+
+      // ─── Actions ─────────────────────────
+      case "Enter":
+      case " ": {
+        // Toggle expand/collapse UTXO ports on focused node, or its selection
+        e.preventDefault();
+        if (onToggleSelect && (e.shiftKey || selectMode)) onToggleSelect(focusedNode);
+        else if (onToggleExpand) onToggleExpand(focusedNode);
+        break;
+      }
+      case "e": {
+        // Expand first available input (backward)
+        e.preventDefault();
+        if (!gn || atCapacity) break;
+        const inputIdx = gn.tx.vin.findIndex((v) => !v.is_coinbase && !nodes.has(v.txid));
+        if (inputIdx >= 0) onExpandInput(focusedNode, inputIdx);
+        break;
+      }
+      case "r": {
+        // Expand first available output (forward)
+        e.preventDefault();
+        if (!gn || atCapacity) break;
+        const consumedOutputs = new Set<number>();
+        for (const [, n] of nodes) {
+          for (const vin of n.tx.vin) {
+            if (vin.txid === focusedNode && vin.vout !== undefined) consumedOutputs.add(vin.vout);
+          }
+        }
+        const outIdx = gn.tx.vout.findIndex((v, i) =>
+          !consumedOutputs.has(i) && !isOpReturnOutput(v) && v.value > 0,
+        );
+        if (outIdx >= 0) onExpandOutput(focusedNode, outIdx);
+        break;
+      }
+      case "d": {
+        // Double-expand: expand up to 5 in each direction
+        e.preventDefault();
+        if (!gn || atCapacity) break;
+        let dExpanded = 0;
+        for (const [i, vin] of gn.tx.vin.entries()) {
+          if (dExpanded >= 5) break;
+          if (!vin.is_coinbase && !nodes.has(vin.txid)) {
+            onExpandInput(focusedNode, i); dExpanded++;
+          }
+        }
+        dExpanded = 0;
+        for (const [i, out] of gn.tx.vout.entries()) {
+          if (dExpanded >= 5) break;
+          if (!isOpReturnOutput(out) && out.value > 0) {
+            onExpandOutput(focusedNode, i); dExpanded++;
+          }
+        }
+        break;
+      }
+      case "x":
+      case "Delete":
+      case "Backspace": {
+        // Collapse focused node
+        e.preventDefault();
+        if (focusedNode !== rootTxid) {
+          onCollapse(focusedNode);
+          setFocusedNode(rootTxid);
+        }
+        break;
+      }
+      case "Escape": {
+        // Collapse expanded node ports
+        e.preventDefault();
+        if (expandedNodeTxid && onToggleExpand && !escapeHandledAbove) {
+          onToggleExpand(expandedNodeTxid);
+        }
+        break;
+      }
+    }
+  }, [focusedNode, layoutNodes, nodes, rootTxid, atCapacity, onExpandInput, onExpandOutput, onCollapse, setFocusedNode, onToggleExpand, expandedNodeTxid, escapeHandledAbove, onToggleSelect, selectMode]);
+}

@@ -1,0 +1,343 @@
+"use client";
+
+import { motion } from "motion/react";
+import { Text } from "@visx/text";
+import { useTranslation } from "react-i18next";
+import { SVG_COLORS, svgTextColor } from "../shared/svgConstants";
+import { formatSats } from "@/lib/format";
+import { truncateId } from "@/lib/constants";
+import { ENTITY_CATEGORY_COLORS } from "./constants";
+import { getNodeColor } from "./layout";
+import { getLockTimeRx, getVersionFill } from "./scriptStyles";
+import { ExpandedNode } from "./ExpandedNode";
+import { NodeBadges } from "./NodeBadges";
+import { PrivacySparkline, SPARKLINE_MAX_W } from "./PrivacySparkline";
+import { NodeExpandButtons } from "./NodeExpandButtons";
+import { NodeLabelAnnotation, type NodeLabelAnnotationProps } from "./NodeLabelAnnotation";
+import type { LayoutNode, LayoutEdge, GraphNode, TooltipData } from "./types";
+import type { MempoolOutspend } from "@/lib/api/types";
+import type { ScoringResult } from "@/lib/types";
+import type { useChartTooltip } from "../shared/ChartTooltip";
+import { txTypeOf, type TxType } from "./tx-type";
+
+// ─── Props ──────────────────────────────────────────────────────
+
+type GraphNodeRendererProps = Omit<NodeLabelAnnotationProps, "node"> & {
+  node: LayoutNode;
+  graphNodes: Map<string, GraphNode>;
+  edges: LayoutEdge[];
+  hoveredNode: string | null;
+  hoveredEdges: Set<string> | null;
+  focusedNode: string | null;
+  highlightTxids?: Set<string>;
+  /** Shows the collapse button (false for the roots the graph was built from). */
+  canCollapse: boolean;
+  /** In the multi-selection: drawn with a solid outline. */
+  isSelected?: boolean;
+  focusSpotlight: { nodes: Set<string>; edges: Set<string> } | null;
+  expandedNodeTxid: string | null | undefined;
+  heatMapActive: boolean;
+  heatMap: Map<string, ScoringResult>;
+  fingerprintMode?: boolean;
+  toxicMergeNodes: Set<string>;
+  ricochetHopLabels: Map<string, string>;
+  walletUtxos?: Map<string, Set<number>>;
+  loading: Set<string>;
+  atCapacity: boolean;
+  outspendCache?: ReadonlyMap<string, MempoolOutspend[]>;
+  onExpandInput: (txid: string, inputIndex: number) => void;
+  onExpandOutput: (txid: string, outputIndex: number) => void;
+  onCollapse: (txid: string) => void;
+  onToggleExpand?: (txid: string) => void;
+  onExpandPortInput?: (txid: string, inputIndex: number) => void;
+  onExpandPortOutput?: (txid: string, outputIndex: number) => void;
+  handleNodeClick: (node: LayoutNode, currentSelectedTxid: string | null, e?: React.MouseEvent) => void;
+  handleNodeDoubleClick: (node: LayoutNode) => void;
+  handleNodeMouseDown: (e: React.MouseEvent, node: LayoutNode) => void;
+  handleNodeTouchStart?: (e: React.TouchEvent, node: LayoutNode) => void;
+  justDraggedRef: React.RefObject<boolean>;
+  draggingTxid: string | null;
+  setHoveredNode: (txid: string | null) => void;
+  tooltip: ReturnType<typeof useChartTooltip<TooltipData>>;
+  toScreen: (gx: number, gy: number) => { x: number; y: number };
+  isTouchRef: React.RefObject<boolean>;
+  selectedNode: { txid: string; x: number; y: number } | null;
+  onNodePositionChange?: (txid: string, x: number, y: number) => void;
+  viewTransform?: { x: number; y: number; scale: number };
+  hoveredPort: string | null;
+  setHoveredPort: (port: string | null) => void;
+};
+
+export function GraphNodeRenderer({
+  node,
+  graphNodes,
+  edges,
+  hoveredNode,
+  hoveredEdges,
+  focusedNode,
+  highlightTxids,
+  isSelected,
+  canCollapse,
+  focusSpotlight,
+  expandedNodeTxid,
+  heatMapActive,
+  heatMap,
+  fingerprintMode,
+  toxicMergeNodes,
+  ricochetHopLabels,
+  walletUtxos,
+  loading,
+  atCapacity,
+  outspendCache,
+  onExpandInput,
+  onExpandOutput,
+  onCollapse,
+  onExpandPortInput,
+  onExpandPortOutput,
+  handleNodeClick,
+  handleNodeDoubleClick,
+  handleNodeMouseDown,
+  handleNodeTouchStart,
+  justDraggedRef,
+  draggingTxid,
+  setHoveredNode,
+  tooltip,
+  toScreen,
+  isTouchRef,
+  selectedNode,
+  onNodePositionChange,
+  viewTransform,
+  hoveredPort,
+  setHoveredPort,
+  ...labelProps
+}: GraphNodeRendererProps) {
+  const { t } = useTranslation();
+  const txTypeLabel = (type: TxType | null): string => {
+    switch (type) {
+      case "coinbase": return t("graph.coinbase", { defaultValue: "coinbase" });
+      case "bip47Notification": return t("graph.bip47Notification", { defaultValue: "BIP47 notification" });
+      case "sweep": return t("graph.txTypeSweep", { defaultValue: "sweep" });
+      case "simpleSend": return t("graph.txTypeSimpleSend", { defaultValue: "simple send" });
+      case "consolidation": return t("graph.txTypeConsolidation", { defaultValue: "consolidation" });
+      case "batch": return t("graph.txTypeBatch", { defaultValue: "batch" });
+      default: return "";
+    }
+  };
+
+  const heatScore = heatMapActive ? heatMap.get(node.txid)?.score : undefined;
+  const color = getNodeColor(node, heatScore);
+  const totalValue = node.tx.vout.reduce((s, o) => s + o.value, 0);
+  const isHovered = hoveredNode === node.txid;
+  const isFocused = focusedNode === node.txid || !!highlightTxids?.has(node.txid);
+  const isDimmedByHover = hoveredNode && !isHovered
+    && !hoveredEdges?.has(`e-${hoveredNode}-${node.txid}`)
+    && !hoveredEdges?.has(`e-${node.txid}-${hoveredNode}`);
+  const isConnectedToHovered = hoveredNode && (
+    edges.some((e) =>
+      (e.fromTxid === hoveredNode && e.toTxid === node.txid)
+      || (e.toTxid === hoveredNode && e.fromTxid === node.txid),
+    )
+  );
+  const isLoading = loading.has(node.txid);
+  const isExpandedNode = node.txid === expandedNodeTxid;
+
+  let nodeOpacity = 1;
+  if (focusSpotlight && !focusSpotlight.nodes.has(node.txid)) nodeOpacity = 0.15;
+  else if (isDimmedByHover && !isConnectedToHovered) nodeOpacity = 0.3;
+
+  // Multi-selection outline: the foreground token, solid (the focus ring is orange and dashed)
+  const selectionOutline = isSelected && (
+    <rect
+      x={node.x - 5} y={node.y - 5} width={node.width + 10} height={node.height + 10} rx={12}
+      fill="none" stroke={SVG_COLORS.foreground} strokeWidth={2} style={{ pointerEvents: "none" }}
+    />
+  );
+
+  // Render expanded node with UTXO ports (spring morph animation)
+  if (isExpandedNode) {
+    return (
+      <motion.g
+        key={node.txid}
+        data-txid={node.txid}
+        data-selected={isSelected || undefined}
+        initial={{ opacity: 0, scale: 0.92 }}
+        animate={{ opacity: nodeOpacity, scale: 1 }}
+        transition={{ type: "spring", stiffness: 300, damping: 25, mass: 0.8 }}
+      >
+        <ExpandedNode
+          node={node}
+          graphNodes={graphNodes}
+          outspends={outspendCache?.get(node.txid)}
+          heatScore={heatScore}
+          isLoading={isLoading}
+          hoveredPort={hoveredPort}
+          onHoverPort={setHoveredPort}
+          onExpandInput={onExpandPortInput ?? onExpandInput}
+          onExpandOutput={onExpandPortOutput ?? onExpandOutput}
+          onNodeClick={(e) => { if (!justDraggedRef.current) handleNodeClick(node, selectedNode?.txid ?? null, e); }}
+          onMouseDown={(e: React.MouseEvent) => handleNodeMouseDown(e, node)}
+          onTouchStart={handleNodeTouchStart ? (e: React.TouchEvent) => handleNodeTouchStart(e, node) : undefined}
+          atCapacity={atCapacity}
+        />
+        {selectionOutline}
+      </motion.g>
+    );
+  }
+
+  return (
+    <motion.g
+      key={node.txid}
+      data-txid={node.txid}
+      data-selected={isSelected || undefined}
+      initial={{ opacity: 0, scale: 0.8 }}
+      animate={{ opacity: nodeOpacity, scale: 1 }}
+      transition={{ duration: 0.3 }}
+      style={{ cursor: "pointer" }}
+      onMouseEnter={() => {
+        if (isTouchRef.current) return;
+        setHoveredNode(node.txid);
+        if (expandedNodeTxid === node.txid) return;
+        const pos = toScreen(node.x + node.width / 2, node.y - 8);
+        tooltip.showTooltip({
+          tooltipData: {
+            txid: node.txid, inputCount: node.inputCount, outputCount: node.outputCount,
+            totalValue, isCoinJoin: node.isCoinJoin, coinJoinType: node.coinJoinType,
+            entityLabel: node.entityLabel, entityCategory: node.entityCategory,
+            entityOfac: node.entityOfac, entityConfidence: node.entityConfidence,
+            depth: node.depth, fee: node.fee, feeRate: node.feeRate, confirmed: node.confirmed,
+          },
+          tooltipLeft: pos.x, tooltipTop: pos.y,
+        });
+      }}
+      onMouseLeave={() => { setHoveredNode(null); tooltip.hideTooltip(); }}
+    >
+      {/* Contextual glow aura (behind node) */}
+      {node.isRoot && (
+        <rect x={node.x - 4} y={node.y - 4} width={node.width + 8} height={node.height + 8} rx={12} fill={SVG_COLORS.bitcoin} fillOpacity={0.12} filter="url(#aura-root)" style={{ pointerEvents: "none" }} />
+      )}
+      {node.isCoinJoin && !node.isRoot && (
+        <rect x={node.x - 3} y={node.y - 3} width={node.width + 6} height={node.height + 6} rx={11} fill={SVG_COLORS.good} fillOpacity={0.1} filter="url(#aura-coinjoin)" style={{ pointerEvents: "none" }} />
+      )}
+      {node.entityOfac && (
+        <rect x={node.x - 3} y={node.y - 3} width={node.width + 6} height={node.height + 6} rx={11} fill={SVG_COLORS.critical} fillOpacity={0.15} filter="url(#aura-ofac)" style={{ pointerEvents: "none" }} />
+      )}
+
+      {/* Node background */}
+      <rect
+        x={node.x} y={node.y} width={node.width} height={node.height}
+        rx={fingerprintMode ? getLockTimeRx(node.tx.version) : 8}
+        fill={fingerprintMode ? getVersionFill(node.tx.locktime) : heatMapActive && heatScore !== undefined ? `${color}20` : SVG_COLORS.surfaceElevated}
+        stroke={color}
+        strokeWidth={isHovered ? 2.5 : (node.isRoot ? 2.5 : 1.5)}
+        strokeOpacity={isHovered || node.isRoot ? 1 : 0.6}
+        filter={node.isRoot ? "url(#glow-medium)" : (isHovered ? "url(#glow-subtle)" : undefined)}
+        onClick={(e) => handleNodeClick(node, selectedNode?.txid ?? null, e)}
+      />
+
+      {/* Focused node indicator */}
+      {isFocused && (
+        <rect x={node.x - 3} y={node.y - 3} width={node.width + 6} height={node.height + 6} rx={10} fill="none" stroke={SVG_COLORS.bitcoin} strokeWidth={1.5} strokeDasharray="4 4" strokeOpacity={0.7}>
+          <animate attributeName="stroke-dashoffset" values="0;8" dur="0.8s" repeatCount="indefinite" />
+        </rect>
+      )}
+
+      {selectionOutline}
+
+      {/* Loading pulse overlay */}
+      {isLoading && (
+        <rect x={node.x} y={node.y} width={node.width} height={node.height} rx={8} fill={color} fillOpacity={0.15}>
+          <animate attributeName="fill-opacity" values="0.05;0.2;0.05" dur="1.2s" repeatCount="indefinite" />
+        </rect>
+      )}
+
+      {/* Badge pills */}
+      <NodeBadges
+        nodeX={node.x}
+        nodeY={node.y}
+        nodeWidth={node.width}
+        isCoinJoin={node.isCoinJoin}
+        coinJoinType={node.coinJoinType}
+        isOfac={node.entityOfac}
+        isToxicMerge={toxicMergeNodes.has(node.txid)}
+        toxicLabel={t("graph.toxicBadge", { defaultValue: "TOXIC" })}
+        isUnconfirmed={!node.confirmed}
+        rightInset={heatMapActive && heatMap.has(node.txid) ? SPARKLINE_MAX_W + 4 : 0}
+        unconfirmedLabel={t("graph.unconfirmed", { defaultValue: "Unconfirmed" })}
+      />
+
+      {/* Privacy score sparkline */}
+      {heatMapActive && heatMap.has(node.txid) && (
+        <PrivacySparkline scoringResult={heatMap.get(node.txid)!} nodeX={node.x} nodeY={node.y} nodeWidth={node.width} nodeHeight={node.height} />
+      )}
+
+      {/* Heat map score: top-right, on the txid row, clear of the summary line and the expand buttons */}
+      {heatMapActive && heatScore !== undefined && (
+        <Text x={node.x + node.width - 8} y={node.y + 20} fontSize={12} fontWeight={800} fill={svgTextColor(color)} textAnchor="end" opacity={0.9}>{heatScore}</Text>
+      )}
+
+      {/* Txid label */}
+      <Text x={node.x + 10} y={node.y + 20} fontSize={11} fill={svgTextColor(color)} fontWeight={600} fontFamily="monospace">{truncateId(node.txid, 8)}</Text>
+
+      {/* Summary line */}
+      {/* Shrinks (never wraps) to stay inside the node for very large values; visx measures with `style`, not `fontSize` */}
+      <Text x={node.x + 10} y={node.y + 38} width={node.width - 24} scaleToFit="shrink-only" fontSize={10} style={{ fontSize: 10 }} fill={SVG_COLORS.muted}>
+        {`${node.inputCount}in / ${node.outputCount}out - ${formatSats(totalValue)}`}
+      </Text>
+
+      {/* Quick tx type label */}
+      {!node.entityLabel && !node.isCoinJoin && node.inputCount > 0 && node.txid !== expandedNodeTxid && (
+        <Text x={node.x + 10} y={node.y + 50} fontSize={9} fill={SVG_COLORS.muted} fillOpacity={0.6}>
+          {ricochetHopLabels.get(node.txid) ?? txTypeLabel(txTypeOf(node.tx))}
+        </Text>
+      )}
+
+      {/* Entity label + category */}
+      {node.entityLabel && (
+        <Text x={node.x + 10} y={node.y + 50} fontSize={9} fill={ENTITY_CATEGORY_COLORS[node.entityCategory ?? "unknown"]} fontWeight={500}>
+          {node.entityLabel}
+        </Text>
+      )}
+
+      {/* Wallet UTXO badge */}
+      {walletUtxos?.has(node.txid) && (() => {
+        const vouts = walletUtxos.get(node.txid)!;
+        const utxoSats = [...vouts].reduce((sum, vi) => sum + (node.tx.vout[vi]?.value ?? 0), 0);
+        return (
+          <g>
+            <rect x={node.x} y={node.y + node.height + 2} width={node.width} height={18} rx={4} fill={SVG_COLORS.bitcoin} fillOpacity={0.15} stroke={SVG_COLORS.bitcoin} strokeWidth={0.5} strokeOpacity={0.4} />
+            <Text x={node.x + node.width / 2} y={node.y + node.height + 14} fontSize={9} fill={svgTextColor(SVG_COLORS.bitcoin)} textAnchor="middle" fontWeight={600}>
+              {vouts.size === 1 ? t("graph.walletOutput", { sats: formatSats(utxoSats), defaultValue: "Wallet: {{sats}}" }) : t("graph.walletOutputs", { count: vouts.size, sats: formatSats(utxoSats), defaultValue: "{{count}} outputs: {{sats}}" })}
+            </Text>
+          </g>
+        );
+      })()}
+
+      {/* Transparent click overlay */}
+      <rect
+        x={node.x} y={node.y} width={node.width} height={node.height} rx={8} fill="transparent"
+        style={{ cursor: draggingTxid === node.txid ? "grabbing" : onNodePositionChange && viewTransform ? "grab" : "pointer" }}
+        onMouseDown={(e) => handleNodeMouseDown(e, node)}
+        onTouchStart={handleNodeTouchStart ? (e) => handleNodeTouchStart(e, node) : undefined}
+        onClick={(e) => { if (!justDraggedRef.current) handleNodeClick(node, selectedNode?.txid ?? null, e); }}
+        onDoubleClick={(e) => { e.stopPropagation(); handleNodeDoubleClick(node); }}
+      />
+
+      <NodeExpandButtons
+        node={node}
+        graphNodes={graphNodes}
+        color={color}
+        atCapacity={atCapacity}
+        outspendCache={outspendCache}
+        onExpandInput={onExpandInput}
+        onExpandOutput={onExpandOutput}
+        onCollapse={onCollapse}
+        canCollapse={canCollapse}
+      />
+
+      <NodeLabelAnnotation
+        node={node}
+        {...labelProps}
+      />
+    </motion.g>
+  );
+}

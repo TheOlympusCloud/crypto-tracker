@@ -1,6 +1,9 @@
-# am-i-exposed on http://<host>:8000/ and the wallet tracker on /tracker/, behind one
-# password. Put CT_PASSWORD and any other setting of the README's table in .env, then:
-#   docker compose up -d --build
+# Everything in one container: the web app on http://<host>:8000/ (am-i-exposed, with the
+# wallet tracker on /tracker/), its API, and the database in the volume below.
+#   docker compose up -d
+# The first start makes a password: docker compose logs, or
+#   docker compose exec crypto-tracker cat /data/password
+# Settings of the README's table go in an optional .env next to this file.
 services:
   crypto-tracker:
     build: .
@@ -8,7 +11,9 @@ services:
     restart: unless-stopped
     ports:
       - "8000:8000"
-    env_file: .env
+    env_file:
+      - path: .env
+        required: false
     volumes:
       - data:/data
 

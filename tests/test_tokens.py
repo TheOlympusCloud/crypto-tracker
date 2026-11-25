@@ -143,8 +143,10 @@ def test_the_chain_icon_follows_the_detected_chain(chain, read, icon):
 
 
 def test_every_chain_icon_the_server_names_has_a_mark_in_the_page():
-    source = (Path(chains.__file__).parent / "static" / "kinds.js").read_text()
-    block = source.split("export const CHAINS = {", 1)[1].split("\n};", 1)[0]
+    kinds = Path(chains.__file__).parent.parent / "web" / "src" / "lib" / "tracker" / "kinds.ts"
+    source = kinds.read_text()
+    block = source.split("export const CHAINS: Record<string, [string, GlyphPart[]]> = {", 1)[1]
+    block = block.split("\n};", 1)[0]
     drawn = set(re.findall(r"^  (\w+): \[", block, re.MULTILINE))
     named = {*chains.UTXO, *chains.EVM, "evm", "tron", "solana"}
     assert named <= drawn, named - drawn

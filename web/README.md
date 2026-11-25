@@ -1,0 +1,357 @@
+# Am I Exposed?
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![CI](https://github.com/Copexit/am-i-exposed/actions/workflows/ci.yml/badge.svg)](https://github.com/Copexit/am-i-exposed/actions/workflows/ci.yml)
+[![GitHub stars](https://img.shields.io/github/stars/Copexit/am-i-exposed.svg)](https://github.com/Copexit/am-i-exposed/stargazers)
+[![GitHub last commit](https://img.shields.io/github/last-commit/Copexit/am-i-exposed.svg)](https://github.com/Copexit/am-i-exposed/commits/main)
+
+**The on-chain privacy scanner you were afraid to run.**
+
+Paste a Bitcoin address, transaction ID, xpub/descriptor, PSBT or raw transaction (or open a .psbt/.txn file, or scan a static, animated BC-UR or BBQr QR code). Get a privacy score 0-100. Find out what the blockchain reveals about you - before someone else does.
+
+*Because Chainalysis already checked.*
+
+> **Are you an agent?** Scan a transaction right now:
+> ```bash
+> npx am-i-exposed scan tx <txid> --json
+> ```
+> [Full agent docs](https://am-i.exposed/agents/) | [skill.md](./cli/skill.md) | [MCP server](#mcp-server-ai-agents)
+
+[Live Site](https://am-i.exposed) | [Methodology](docs/privacy-engine.md) | [Privacy Guide](https://am-i.exposed/guide/) | [Agents & CLI](https://am-i.exposed/agents/) | [Setup Guide](https://am-i.exposed/setup-guide/) | [Contributing](CONTRIBUTING.md)
+
+---
+
+## Why this exists
+
+In April 2024, [OXT.me](https://oxt.me) and [KYCP.org](https://kycp.org) went offline following the arrest of the Samourai Wallet developers. OXT was the gold standard for Boltzmann entropy analysis. KYCP made CoinJoin privacy assessment accessible to ordinary users. Both are gone.
+
+**am-i.exposed** fills that gap and goes further: 34 heuristics, multi-hop chain tracing, entity matching against 30M+ known addresses, real Boltzmann entropy computed on-device via WebAssembly, interactive graph exploration, wallet-level auditing, and pre-broadcast PSBT analysis. All client-side. No backend. No tracking.
+
+For the full technical deep-dive - every heuristic, scoring weight, academic reference, threat model, and competitor analysis - see [`privacy-engine.md`](./docs/privacy-engine.md).
+
+## How it works
+
+1. Paste a Bitcoin address, txid, xpub/descriptor, PSBT or raw transaction, open a file, or scan a QR code
+2. Your browser fetches transaction data from the mempool.space API
+3. 34 heuristics (28 transaction-level, 6 address-level), 10 chain analysis modules, and entity matching against 364 known services run client-side
+4. Boltzmann entropy is computed on-device using a Rust/WASM engine
+5. You get a privacy score (0-100), letter grade, detailed findings, and actionable recommendations
+
+## Privacy disclosure
+
+**Your queries are not fully private.** Analysis runs client-side, but your browser makes API requests to [mempool.space](https://mempool.space) to fetch blockchain data. Their servers can see your IP address and which addresses/transactions you look up.
+
+For stronger privacy:
+- Use **Tor Browser** - the tool auto-detects Tor and routes API requests through the mempool.space `.onion` endpoint
+- Use a **trusted, no-log VPN**
+- **Wait** before querying a recent transaction (timing correlation is a real risk)
+- **Self-host** with your own mempool.space instance and [Umbrel](#self-hosting)
+
+There is no am-i.exposed backend. No analytics. No cookies. No tracking. The static site is served from GitHub Pages and has zero visibility into what is analyzed. See the [Operational Security Concerns](./docs/privacy-engine.md#operational-security-concerns) section of the privacy engine docs for the full threat model.
+
+## Privacy score
+
+| Grade | Score | Meaning |
+|-------|-------|---------|
+| A+ | 90-100 | Excellent - you know what you're doing |
+| B | 75-89 | Good - minor issues |
+| C | 50-74 | Fair - notable concerns |
+| D | 25-49 | Poor - significant exposure |
+| F | 0-24 | Critical - you might as well use Venmo |
+
+Scoring starts at a base of 70 for transactions and 93 for addresses. Each finding applies a positive or negative modifier, and the sum is clamped to 0-100. Only privacy-enhancing signals (CoinJoin participation, high entropy, large anonymity sets, uniform script types, fresh addresses) raise the score; everything else can only lower it. Deterministic links (for example the same address in inputs and outputs) cap the grade at F.
+
+## What it checks
+
+### Transaction analysis (paste a txid)
+
+**Core privacy heuristics**
+
+| Heuristic | What it detects |
+|-----------|----------------|
+| Round amount detection | Round BTC/sat outputs that reveal payment vs change |
+| Change detection | Address type mismatch, unnecessary inputs, round-amount change, output ordering |
+| Common input ownership (CIOH) | Multi-input txs that link all your addresses to the same entity |
+| Script type mix | Mixed address types across inputs/outputs that distinguish sender from recipient |
+| Fee analysis | Round fee rates and RBF signaling that narrow wallet identification |
+| Unnecessary input | Inputs that weren't needed to cover the output, exposing extra UTXOs |
+| UTXO age spread | Co-spent UTXOs of very different ages that reveal wallet history |
+| Dust output / dust spending | Tiny tracking outputs, and dust co-spent with real UTXOs (links the probe to the wallet) |
+| Timing | Unconfirmed broadcast recency, locktime set to a timestamp, stale locktime |
+
+**CoinJoin and mixing**
+
+| Heuristic | What it detects |
+|-----------|----------------|
+| CoinJoin detection | Whirlpool (5 equal outputs), WabiSabi (20+ I/O), JoinMarket (maker/taker) |
+| Post-mix analysis | Spending behavior after CoinJoin that undoes privacy gains |
+| CoinJoin premix | Tx0 pre-mix transactions and their privacy implications |
+| Ricochet | Ricochet hop 0 (known fee address and amount) |
+| Anonymity set estimation | How large the set of indistinguishable participants is |
+
+**Structural patterns**
+
+| Heuristic | What it detects |
+|-----------|----------------|
+| Peel chain detection | Sequential self-transfers that slowly drain a wallet |
+| Consolidation | Fan-in transactions merging UTXOs (links all addresses) |
+| Exchange patterns | Deposit/withdrawal patterns typical of centralized exchanges |
+| Entity detection | Matching against 364 known entities (exchanges, mixers, darknet, gambling) |
+| Coin selection | Algorithm fingerprints (largest-first, knapsack, branch-and-bound) |
+
+**Metadata and fingerprinting**
+
+| Heuristic | What it detects |
+|-----------|----------------|
+| OP_RETURN metadata | Permanent embedded data (Omni, OpenTimestamps, Runes, ASCII text) |
+| Wallet fingerprinting | nLockTime, nVersion, nSequence, low-R signatures |
+| BIP69 ordering | Lexicographic input/output ordering that narrows the wallet |
+| Witness analysis | Witness structure patterns that identify wallet software |
+| BIP47 notification | Payment code notification transactions |
+| Multisig/escrow | P2SH and P2WSH multisig patterns |
+| Coinbase detection | Mining reward transactions (structurally different from regular txs) |
+
+**Entropy**
+
+| Heuristic | What it detects |
+|-----------|----------------|
+| Boltzmann entropy (WASM) | Full link probability matrix computed on-device via Rust/WebAssembly - how many valid interpretations of the transaction exist, and the exact probability of each input-output link |
+
+### Address analysis (paste an address)
+
+| Heuristic | What it detects |
+|-----------|----------------|
+| Address reuse | The #1 privacy killer - harshest penalty in the model |
+| UTXO set exposure | Dust attack detection (<1000 sats), consolidation risk, UTXO count |
+| Address type | P2TR (Taproot) > P2WPKH (SegWit) > P2SH > P2PKH (Legacy) |
+| Spending patterns | How funds have moved through the address over time |
+| Recurring payments | Repeated payments to the same destination (routine detection) |
+| High activity | Addresses with unusually high transaction counts |
+
+### Chain analysis (multi-hop tracing)
+
+| Module | What it does |
+|--------|-------------|
+| Recursive trace | Multi-hop backward/forward tracing engine (configurable depth, minimum value, CoinJoin skipping) |
+| Backward analysis | Input provenance: parent tx patterns, CoinJoin inputs |
+| Forward analysis | Output destinations: toxic merges, direct spends |
+| Entity proximity | Detects known entities (exchanges, mixers, darknet markets) within N hops |
+| Taint analysis | Proportional (haircut) method tracking value flow through the tx graph |
+| UTXO clustering | Groups addresses by common-input-ownership across the traced graph |
+| Spending patterns | How outputs are spent downstream, including post-mix consolidation and ricochet hops |
+| Linkability matrix | Deterministic and probabilistic input-output links for the scanned tx |
+| Temporal analysis | Burst and timing correlation across an address's history |
+| Fingerprint evolution | Wallet fingerprint changes across an address's history |
+
+Chain findings count toward the grade: every finding (heuristic, chain, entropy) is scored together in one final pass.
+
+### Entity detection
+
+Transactions and addresses are checked against a database of **364 known entities** across 8 categories:
+
+| Category | Count | Examples |
+|----------|-------|---------|
+| Exchanges | 168 | Binance, Coinbase, Kraken, Bitfinex, Bitstamp |
+| Payment services | 51 | BitPay, BTCPay, payment processors |
+| Gambling | 43 | Known gambling platforms |
+| Scams | 29 | Identified scam operations |
+| Darknet markets | 28 | Silk Road, Hydra, and others |
+| Mining pools | 24 | F2Pool, AntPool, Foundry |
+| Mixers | 11 | Bitcoin Fog, ChipMixer, and others |
+| P2P exchanges | 10 | Bisq, Paxful, HodlHodl |
+
+The full entity index covers **30M+ addresses** using a priority-budgeted binary index. High-priority entities (OFAC-listed, darknet markets) get 100% named coverage. The core index (~6 MB) loads automatically; the full index (~92 MB) is an optional download for deep scans.
+
+### Wallet analysis (paste an xpub or descriptor)
+
+Full wallet-level privacy audit with BIP44/49/84/86 derivation support. Scans derived addresses across the gap limit and produces an aggregate privacy assessment covering address reuse, UTXO hygiene, spending patterns, fingerprint consistency, and consolidation history.
+
+### Before You Send (paste a PSBT or raw transaction)
+
+Pre-broadcast privacy check, analyzed in memory only. Analyze a transaction before signing to catch privacy issues while they can still be fixed - round amounts, script type mismatches, change detection, and wallet fingerprinting. Broadcast is opt-in and only for a fully signed transaction: nothing is sent unless you choose to broadcast, and broadcasting sends only the signed transaction to the endpoint shown.
+
+### Cross-heuristic intelligence
+
+The engine doesn't run heuristics in isolation. CoinJoin detection suppresses CIOH and round-amount penalties. Multisig patterns are recognized so that CIOH isn't falsely applied. Findings interact and inform each other.
+
+## Visualizations
+
+| Chart | Description |
+|-------|-------------|
+| Transaction stage | Input-to-output value flow with the engine's tags (change, entities, CoinJoin tiers) and Boltzmann link probabilities |
+| Link probability heatmap | Full Boltzmann matrix showing the probability of each input-output link |
+| Graph explorer | OXT-style interactive transaction DAG - expand, collapse, and trace through the graph |
+| Taint path diagram | Value flow visualization showing how taint propagates through transactions |
+| Privacy timeline | Per-transaction privacy history of an address |
+| Fingerprint timeline | Wallet fingerprint changes across an address's transactions |
+| Entity graph | Cluster view of addresses linked to known entities |
+| Score breakdown | Step-by-step breakdown of how the privacy score was calculated |
+| UTXO bubble chart | Visual clustering of unspent outputs by value and age |
+| Exposure matrix | Which adversary (passive observer, KYC exchange, state) can exploit which findings |
+
+## Tech
+
+- **Next.js 16** static export - no server, hosted on GitHub Pages
+- **Client-side analysis** - all heuristics, chain analysis, and entity matching run in your browser
+- **Boltzmann WASM** - Rust-compiled WebAssembly engine computing real link probability matrices on-device, using all threads, with turbo paths for JoinMarket and more
+- **IndexedDB cache** - confirmed transactions, outspends, and analysis results are cached locally across sessions. Repeat scans are instant, API requests are minimized, and fewer queries leave your browser
+- **mempool.space API** only - no secondary APIs, your queries stay with one provider
+- **Tor-aware** - auto-detects `.onion` and routes API requests through Tor
+- **TypeScript** strict mode throughout
+- **Tailwind CSS 4** - dark and light themes, following the OS by default
+- **visx** - interactive SVG visualizations (graph explorer, taint diagrams, timelines)
+- **@scure/btc-signer** - PSBT parsing and raw transaction decoding
+- **i18next** - 6 languages (English, Spanish, Portuguese, German, French, Polish)
+- **PWA** - installable, works offline after first load
+- **1,800+ tests** - Vitest unit/integration/hook tests, golden regression corpus, Playwright E2E, CLI tests (see [`docs/testing.md`](./docs/testing.md))
+
+## Self-hosting
+
+### Umbrel
+
+am-i.exposed is available as an Umbrel app, connecting directly to your own Bitcoin node and mempool.space instance for maximum privacy - no third-party API requests.
+
+See the [setup guide](https://am-i.exposed/setup-guide/#umbrel) for instructions.
+
+### Custom mempool.space instance
+
+Point the tool at any mempool.space-compatible API by configuring the API URL in settings. Supports self-hosted instances, eliminating all third-party data exposure.
+
+## Internationalization
+
+Available in 6 languages:
+
+- English (default)
+- Spanish (Castilian)
+- Portuguese
+- German
+- French
+- Polish
+
+Translations live in `public/locales/`. Contributions for additional languages are welcome.
+
+## CLI & Agent Integration
+
+The analysis engine is available as a CLI tool and MCP server for terminal use and AI agent integration.
+
+### Install
+
+```bash
+npm install -g am-i-exposed
+```
+
+### Commands
+
+```bash
+# Scan a transaction (28 heuristics + entity detection)
+am-i-exposed scan tx <txid> --json
+
+# Scan an address (reuse, UTXO hygiene, spending patterns)
+am-i-exposed scan address <addr> --json
+
+# Audit a wallet via xpub/zpub/descriptor
+am-i-exposed scan xpub <zpub> --json --gap-limit 30
+
+# Analyze a PSBT before broadcasting (no network access needed)
+am-i-exposed scan psbt <file> --json
+
+# Boltzmann entropy and link probability matrix
+am-i-exposed boltzmann <txid> --json
+
+# Multi-hop chain tracing (entity proximity, taint analysis)
+am-i-exposed chain-trace <txid> --depth 3 --json
+```
+
+### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--json` | Structured JSON output for programmatic consumption |
+| `--fast` | Skip parent tx context fetching (~6s instead of ~10s) |
+| `--network` | `mainnet` (default), `testnet4`, `signet` |
+| `--api <url>` | Custom mempool API URL (self-hosted, Umbrel) |
+| `--no-cache` | Disable SQLite response caching |
+| `--no-entities` | Skip entity filter loading |
+
+### MCP Server (AI agents)
+
+For structured tool calls via [Model Context Protocol](https://modelcontextprotocol.io):
+
+```bash
+am-i-exposed mcp
+```
+
+Claude Desktop configuration:
+```json
+{
+  "mcpServers": {
+    "bitcoin-privacy": {
+      "command": "npx",
+      "args": ["-y", "am-i-exposed", "mcp"]
+    }
+  }
+}
+```
+
+Exposes 5 tools: `scan_transaction`, `scan_address`, `scan_psbt`, `scan_wallet`, `compute_boltzmann`. See [`cli/skill.md`](./cli/skill.md) for full documentation.
+
+### Standalone binary
+
+Build a zero-dependency binary (requires [Bun](https://bun.sh)):
+
+```bash
+bash scripts/build-standalone.sh
+./cli/dist/am-i-exposed-linux-x64 scan tx <txid> --json
+```
+
+## Development
+
+```bash
+pnpm install
+pnpm dev          # Dev server on :3000
+pnpm build        # Static export to out/
+pnpm lint         # ESLint (0 errors, 0 warnings)
+pnpm type-check   # tsc --noEmit
+pnpm test         # Vitest (unit, hook, component, golden regression)
+pnpm test:e2e     # Playwright against out/ (run pnpm build first)
+pnpm build:wasm   # Rebuild Boltzmann WASM from Rust source
+```
+
+See [`docs/development-guide.md`](./docs/development-guide.md) for architecture and data flow, [`docs/testing.md`](./docs/testing.md) for the test suites and baseline workflow, and [`docs/testing-reference.md`](./docs/testing-reference.md) for example transactions and expected scores.
+
+## Research & Acknowledgments
+
+The privacy engine is built on foundational research by the Bitcoin privacy community:
+
+- **LaurentMT** - Creator of the Boltzmann entropy framework for Bitcoin transactions. His research series "Bitcoin Transactions & Privacy" (Parts 1-3, ~2015) defined transaction entropy E = log2(N), link probability matrices, and the mathematical tools that underpin all modern transaction privacy analysis. His [Boltzmann tool](https://github.com/Samourai-Wallet/boltzmann) was the first implementation to compute these metrics. The entropy heuristic (H5) and WASM link probability engine are direct implementations of his work.
+
+- **Greg Maxwell** - Inventor of [CoinJoin](https://bitcointalk.org/index.php?topic=279249.0) (2013). The original CoinJoin proposal inspired the entire ecosystem of collaborative transactions and directly motivated the entropy framework. The CIOH (H3), CoinJoin detection (H4), and entropy (H5) heuristics all trace back to concepts he introduced.
+
+- **OXT Research / ErgoBTC** - "Understanding Bitcoin Privacy with OXT" 4-part series (2021). Comprehensive educational guide covering change detection, transaction graphs, wallet clustering, CIOH, and defensive measures. Directly informed heuristic implementations and user-facing explanations. Archived at: [Part 1](https://archive.ph/1xAw7), [Part 2](https://archive.ph/TDvjy), [Part 3](https://archive.ph/suxyq), [Part 4](https://archive.ph/Aw6zC).
+
+- **Kristov Atlas** - CoinJoin Sudoku research, referenced by LaurentMT as foundational for deterministic link detection.
+
+- **Spiral BTC** - "The Scroll #3: A Brief History of Wallet Clustering" - historical survey of chain analysis from 2011-2024, covering the evolution from naive CIOH to wallet fingerprinting with ML.
+
+- **Academic researchers**: Meiklejohn et al. ("A Fistful of Bitcoins"), Moser & Narayanan ("Resurrecting Address Clustering"), Kappos et al. ("How to Peel a Million"), Reid & Harriman (2011), Ron & Shamir (2012).
+
+- **privacidadbitcoin.com** - Spanish-language Bitcoin privacy education. Community entropy calculation reference that helped identify a counting error in the original implementation.
+
+See [`research-boltzmann-entropy.md`](./docs/research-boltzmann-entropy.md) for the full research reference and [`privacy-engine.md`](./docs/privacy-engine.md) for the technical documentation.
+
+## Support
+
+am-i.exposed is free, open-source, and funded entirely by voluntary contributions. No ads, no subscriptions, no token.
+
+**Tip (Bitcoin, Lightning):** https://coinos.io/pay/exposed
+
+**Lightning address:** `exposed@coinos.io`
+
+## Authors
+
+- **Copexit** - Development & Architecture
+- **Arkad** ([@multicripto](https://x.com/multicripto)) - Co-author (Research & UX)
+
+## License
+
+MIT

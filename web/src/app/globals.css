@@ -1,0 +1,494 @@
+@import "tailwindcss";
+
+/*
+ * "A quiet instrument": calm surfaces, hairlines instead of boxes. Dark is
+ * the default; light is html[data-theme="light"]. See docs/ui/design.md.
+ * JS mirrors: DARK_COLORS / LIGHT_COLORS in src/lib/palette.ts.
+ */
+:root {
+  color-scheme: dark;
+  --background: #0b0b0d;
+  --foreground: #f2f2f4;
+  --muted: #a6a6b0;
+  --faint: #70707b;
+  --surface-1: #111114;
+  --surface-2: #17171b;
+  --hairline: rgba(255, 255, 255, 0.07);
+  --hairline-strong: rgba(255, 255, 255, 0.13);
+  --card-bg: #17171b;
+  --card-border: rgba(255, 255, 255, 0.1);
+  --surface-inset: #111114;
+  --surface-elevated: #1d1d22;
+  --bitcoin: #f7931a;
+  --bitcoin-hover: #e8850f;
+  --bitcoin-text: #f7931a;
+  --bitcoin-display: #f7931a;
+  --surface-float: #17171b;
+  --violet: #8b5cf6;
+  --success: #28d065;
+  --warning: #eab308;
+  --danger: #ef4444;
+  --info: #60a5fa;
+  --severity-critical: #ef4444;
+  --severity-high: #f97316;
+  --severity-medium: #eab308;
+  --severity-low: #60a5fa;
+  --severity-good: #28d065;
+  --glass-bg: rgba(17, 17, 20, 0.82);
+  --glass-border: rgba(255, 255, 255, 0.07);
+  --glass-blur: 16px;
+  --glass-shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset, 0 12px 40px rgba(0, 0, 0, 0.35);
+  --bitcoin-gradient: linear-gradient(135deg, #f7931a 0%, #e8850f 50%, #d4790a 100%);
+  --overlay-bg: rgba(20, 20, 24, 0.97);
+  --overlay-border: rgba(255, 255, 255, 0.1);
+  --overlay-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  --subtle-border: rgba(255, 255, 255, 0.06);
+  --subtle-hover: rgba(255, 255, 255, 0.02);
+  --glow-card-color: color-mix(in srgb, var(--bitcoin) 7%, transparent);
+  --shadow-sm: 0 0 #0000;
+  --shadow-card: 0 0 #0000;
+  --shadow-pop: 0 25px 50px -12px rgb(0 0 0 / 0.25);
+  --hero-field-bg: color-mix(in oklab, var(--surface-float) 85%, transparent);
+  background: var(--background);
+  color: var(--foreground);
+  font-feature-settings: "ss01", "cv11";
+}
+
+/*
+ * Light: designed as light, not an inverted dark. Elevation is a near-white
+ * surface on a softly tinted cool page, a hairline and a soft layered shadow
+ * (dark stays flat: its shadow tokens are transparent). --bitcoin stays the
+ * real brand orange for fills, marks and focus; orange TEXT uses
+ * --bitcoin-text (AA) or --bitcoin-display (large type, 3:1). Severity tokens
+ * are AA text shades; fills and soft tints use the --fill-* hues below (see
+ * the remaps after this block).
+ */
+html[data-theme="light"] {
+  --background: #eceef2;
+  --foreground: #15171c;
+  --muted: #4a4f5a;
+  --faint: #62676f;
+  --surface-1: #fbfbfc;
+  --surface-2: #e0e4ea;
+  --surface-float: #fbfbfc;
+  --hero-field-bg: var(--surface-float);
+  --hairline: rgba(15, 17, 21, 0.14);
+  --hairline-strong: rgba(15, 17, 21, 0.22);
+  --card-bg: #fbfbfc;
+  --card-border: #cfd4db;
+  --surface-inset: #eef0f4;
+  --surface-elevated: #fbfbfc;
+  --bitcoin-text: #b04307;
+  --bitcoin-display: #c85f06;
+  --success: #12703a;
+  --warning: #8f5606;
+  --danger: #c81e1e;
+  --info: #1d56d8;
+  --severity-critical: #c81e1e;
+  --severity-high: #b53d0b;
+  --severity-medium: #8f5606;
+  --severity-low: #1d56d8;
+  --severity-good: #12703a;
+  --fill-critical: #ef4444;
+  --fill-high: #ea580c;
+  --fill-medium: #b07b00;
+  --fill-low: #3b82f6;
+  --fill-good: #15803d;
+  --dial-band: 0.22;
+  --dial-band-active: 0.4;
+  --shadow-sm: 0 1px 2px rgba(16, 18, 24, 0.05);
+  --shadow-card: 0 1px 2px rgba(16, 18, 24, 0.06), 0 6px 20px -6px rgba(16, 18, 24, 0.1);
+  --shadow-pop: 0 2px 6px rgba(16, 18, 24, 0.05), 0 18px 44px -10px rgba(16, 18, 24, 0.18);
+  --glass-bg: rgba(251, 251, 252, 0.86);
+  --glass-border: rgba(15, 17, 21, 0.14);
+  --glass-shadow: 0 1px 2px rgba(16, 18, 24, 0.04), 0 10px 30px -10px rgba(16, 18, 24, 0.12);
+  --overlay-bg: rgba(251, 251, 252, 0.98);
+  --overlay-border: rgba(15, 17, 21, 0.16);
+  --overlay-shadow: 0 2px 6px rgba(16, 18, 24, 0.05), 0 18px 44px -10px rgba(16, 18, 24, 0.18);
+  --subtle-border: rgba(15, 17, 21, 0.14);
+  --subtle-hover: rgba(15, 17, 21, 0.05);
+  --glow-card-color: color-mix(in srgb, var(--bitcoin) 15%, transparent);
+  color-scheme: light;
+}
+
+/*
+ * Observatory coordinator palette, read by src/lib/observatory/coordinator-palette.ts and the
+ * sky canvas (getComputedStyle). Kept out of the main token blocks: palette.ts does not mirror it.
+ * --coord-<key>: sky colours, OKLCH L~0.79 C~0.13 with hues spread around the wheel so every star
+ * reads equally bright. Both themes draw the sky on a dark canvas (near-black, or the light
+ * theme's ink card), so these do not change per theme. Kruw is gold, not --bitcoin.
+ * --coord-<key>-fg: marks on cards, charts and legends; the sky colour in dark, L~0.55 in light
+ * (>= 4:1 on --card-bg).
+ * --obs-sky: the map canvas, near-black in dark and a deep-ink card in light; --obs-sky-fg is
+ * text and faint marks drawn on it (both themes); --obs-sky-edge is the vignette colour (the page
+ * in dark, so the sky dissolves into it; a deeper ink in light).
+ */
+:root {
+  --obs-sky: #060709;
+  --obs-sky-fg: #e6e9f0;
+  --obs-sky-edge: var(--background);
+  --coord-kruw: #e8af4f;
+  --coord-opencoordinator: #31d5c5;
+  --coord-gingerwallet: #ff9988;
+  --coord-coinjoin_nl: #aeb1ff;
+  --coord-coinjoiner: #9fcb6f;
+  --coord-swisscoordinator: #f299d5;
+  --coord-openwasabi: #5fc6ff;
+  --coord-other: #b2bbc8;
+  --coord-kruw-fg: var(--coord-kruw);
+  --coord-opencoordinator-fg: var(--coord-opencoordinator);
+  --coord-gingerwallet-fg: var(--coord-gingerwallet);
+  --coord-coinjoin_nl-fg: var(--coord-coinjoin_nl);
+  --coord-coinjoiner-fg: var(--coord-coinjoiner);
+  --coord-swisscoordinator-fg: var(--coord-swisscoordinator);
+  --coord-openwasabi-fg: var(--coord-openwasabi);
+  --coord-other-fg: var(--coord-other);
+}
+
+html[data-theme="light"] {
+  --obs-sky: #131726;
+  --obs-sky-edge: #05070d;
+  --coord-kruw-fg: #9a6500;
+  --coord-opencoordinator-fg: #00897b;
+  --coord-gingerwallet-fg: #b14f42;
+  --coord-coinjoin_nl-fg: #6766ba;
+  --coord-coinjoiner-fg: #588021;
+  --coord-swisscoordinator-fg: #a25089;
+  --coord-openwasabi-fg: #007ab4;
+  --coord-other-fg: #6a727d;
+}
+
+/*
+ * Observatory P2P palette, read by src/lib/observatory/p2p/venue-palette.ts. Categorical only:
+ * a venue or RoboSats coordinator, never a judgement (premiums use the severity tokens).
+ * --p2p-<venue> / --p2p-coord-<key>: fills (bars, wall steps), OKLCH L~0.78 in dark, L~0.6 in light.
+ * --p2p-*-fg: text and small marks on cards (>= 4:1 on --card-bg in light).
+ */
+:root {
+  --p2p-robosats: #b49cff;
+  --p2p-mostro: #8fd37a;
+  --p2p-hodlhodl: #4fc3e8;
+  --p2p-robosats-fg: var(--p2p-robosats);
+  --p2p-mostro-fg: var(--p2p-mostro);
+  --p2p-hodlhodl-fg: var(--p2p-hodlhodl);
+  --p2p-coord-temple: #e8af4f;
+  --p2p-coord-lake: #5fb8ff;
+  --p2p-coord-bazaar: #f39a7f;
+  --p2p-coord-alice: #f299d5;
+  --p2p-coord-eleuteria: #9fcb6f;
+  --p2p-coord-freeport: #31d5c5;
+  --p2p-coord-ammanaya: #b9a8ff;
+  --p2p-coord-temple-fg: var(--p2p-coord-temple);
+  --p2p-coord-lake-fg: var(--p2p-coord-lake);
+  --p2p-coord-bazaar-fg: var(--p2p-coord-bazaar);
+  --p2p-coord-alice-fg: var(--p2p-coord-alice);
+  --p2p-coord-eleuteria-fg: var(--p2p-coord-eleuteria);
+  --p2p-coord-freeport-fg: var(--p2p-coord-freeport);
+  --p2p-coord-ammanaya-fg: var(--p2p-coord-ammanaya);
+}
+
+html[data-theme="light"] {
+  --p2p-robosats: #8a6cf0;
+  --p2p-mostro: #4f9a3a;
+  --p2p-hodlhodl: #1797c4;
+  --p2p-robosats-fg: #6447cc;
+  --p2p-mostro-fg: #3b7a2a;
+  --p2p-hodlhodl-fg: #00729c;
+  --p2p-coord-temple: #c88a1c;
+  --p2p-coord-lake: #2f8fd8;
+  --p2p-coord-bazaar: #d06a50;
+  --p2p-coord-alice: #c4609f;
+  --p2p-coord-eleuteria: #6f9a35;
+  --p2p-coord-freeport: #0fa597;
+  --p2p-coord-ammanaya: #7d6ad8;
+  --p2p-coord-temple-fg: #9a6500;
+  --p2p-coord-lake-fg: #0070b8;
+  --p2p-coord-bazaar-fg: #b14f42;
+  --p2p-coord-alice-fg: #a25089;
+  --p2p-coord-eleuteria-fg: #588021;
+  --p2p-coord-freeport-fg: #00897b;
+  --p2p-coord-ammanaya-fg: #6a5bc2;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-card-bg: var(--card-bg);
+  --color-card-border: var(--card-border);
+  --color-surface-inset: var(--surface-inset);
+  --color-surface-elevated: var(--surface-elevated);
+  --color-bitcoin: var(--bitcoin);
+  --color-bitcoin-hover: var(--bitcoin-hover);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+  --color-info: var(--info);
+  --color-severity-critical: var(--severity-critical);
+  --color-severity-high: var(--severity-high);
+  --color-severity-medium: var(--severity-medium);
+  --color-severity-low: var(--severity-low);
+  --color-severity-good: var(--severity-good);
+  --color-glass-bg: var(--glass-bg);
+  --color-glass-border: var(--glass-border);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+  --color-surface-1: var(--surface-1);
+  --color-surface-2: var(--surface-2);
+  --color-surface-float: var(--surface-float);
+  --color-hairline: var(--hairline);
+  --color-hairline-strong: var(--hairline-strong);
+  --color-faint: var(--faint);
+}
+
+/* Orange text fails contrast on white: in light, bitcoin-colored text uses the deeper accent. */
+html[data-theme="light"] :is(.text-bitcoin, .hover\:text-bitcoin:hover, .group:hover .group-hover\:text-bitcoin) {
+  color: var(--bitcoin-text);
+}
+html[data-theme="light"] :is(.text-bitcoin\/85, .text-bitcoin\/80, .text-bitcoin\/70, .text-bitcoin\/50, .hover\:text-bitcoin\/80:hover, .group:hover .group-hover\:text-bitcoin\/80) {
+  color: color-mix(in srgb, var(--bitcoin-text) 88%, transparent);
+}
+
+/*
+ * Light severity: solid marks (dots, bars) use the brighter fill hues, and
+ * the translucent tints dark mode uses become clean soft tints (red-50 style)
+ * instead of greyed 700-shade washes.
+ */
+html[data-theme="light"] {
+  .bg-severity-critical { background-color: var(--fill-critical); }
+  .bg-severity-high { background-color: var(--fill-high); }
+  .bg-severity-medium { background-color: var(--fill-medium); }
+  .bg-severity-low { background-color: var(--fill-low); }
+  .bg-severity-good { background-color: var(--fill-good); }
+  :is(.bg-severity-critical\/5, .bg-severity-critical\/8, .bg-severity-critical\/10, .bg-severity-critical\/15, .bg-severity-critical\/20, .bg-severity-critical\/25) { background-color: color-mix(in srgb, var(--fill-critical) 9%, var(--card-bg)); }
+  :is(.bg-severity-high\/5, .bg-severity-high\/8, .bg-severity-high\/10, .bg-severity-high\/15, .bg-severity-high\/20) { background-color: color-mix(in srgb, var(--fill-high) 9%, var(--card-bg)); }
+  :is(.bg-severity-medium\/5, .bg-severity-medium\/10, .bg-severity-medium\/15, .bg-severity-medium\/20) { background-color: color-mix(in srgb, var(--fill-medium) 11%, var(--card-bg)); }
+  :is(.bg-severity-low\/10, .bg-severity-low\/15, .bg-severity-low\/20) { background-color: color-mix(in srgb, var(--fill-low) 9%, var(--card-bg)); }
+  :is(.bg-severity-good\/5, .bg-severity-good\/10, .bg-severity-good\/15, .bg-severity-good\/20) { background-color: color-mix(in srgb, var(--fill-good) 9%, var(--card-bg)); }
+  :is(.bg-warning\/10, .bg-warning\/15, .bg-warning\/25) { background-color: color-mix(in srgb, var(--fill-medium) 11%, var(--card-bg)); }
+  :is(.border-severity-critical\/15, .border-severity-critical\/20, .border-severity-critical\/25, .border-severity-critical\/30, .border-severity-critical\/40) { border-color: color-mix(in srgb, var(--fill-critical) 28%, var(--card-bg)); }
+  :is(.border-severity-high\/15, .border-severity-high\/20, .border-severity-high\/25, .border-severity-high\/30, .border-severity-high\/40, .border-severity-high\/50) { border-color: color-mix(in srgb, var(--fill-high) 30%, var(--card-bg)); }
+  :is(.border-severity-medium\/20, .border-severity-medium\/25, .border-severity-medium\/30, .border-severity-medium\/40, .border-warning\/30) { border-color: color-mix(in srgb, var(--fill-medium) 34%, var(--card-bg)); }
+  :is(.border-severity-low\/30, .border-severity-low\/40) { border-color: color-mix(in srgb, var(--fill-low) 28%, var(--card-bg)); }
+  :is(.border-severity-good\/15, .border-severity-good\/20, .border-severity-good\/30, .border-severity-good\/40) { border-color: color-mix(in srgb, var(--fill-good) 28%, var(--card-bg)); }
+}
+
+/* Light chrome: white glass bars, panels, clean paper (no film grain), quiet scrollbars. */
+html[data-theme="light"] {
+  .bg-background\/75 { background-color: rgb(236 238 242 / 0.85); }
+  /*
+   * Panels use bg-surface-inset for both page-level
+   * containers and wells inside cards. On paper the first must be raised
+   * (white), the second recessed: resolve by nesting.
+   */
+  :is(.bg-surface-inset, .bg-surface-inset\/50, .bg-surface-inset\/40) { background-color: var(--surface-1); }
+  :is(.bg-surface-1, .bg-card-bg, .bg-surface-elevated, .panel, .glass, .graph-canvas) :is(.bg-surface-inset, .bg-surface-inset\/50, .bg-surface-inset\/40) { background-color: var(--surface-inset); }
+  /* Home scan field: disabled Scan reads as a quiet grey key, not a washed-out orange one. */
+  .hero-field button:disabled { background: var(--surface-2) !important; color: var(--faint); box-shadow: none !important; opacity: 1; }
+  .readouts { box-shadow: var(--shadow-card); }
+  .readouts > * { background-color: var(--surface-1); }
+  .graph-canvas { box-shadow: var(--shadow-card); border-color: var(--hairline); }
+  .graph-canvas-backdrop { background-color: rgb(236 238 242 / 0.9); backdrop-filter: blur(14px); }
+  .panel {
+    background: var(--surface-1);
+    border: 1px solid var(--hairline);
+    border-radius: 12px;
+    padding: 20px;
+    box-shadow: var(--shadow-card);
+  }
+  ::selection { background: color-mix(in srgb, var(--bitcoin) 28%, var(--card-bg)); color: var(--foreground); }
+  ::-webkit-scrollbar-thumb { background: rgba(15, 17, 21, 0.16); }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(15, 17, 21, 0.3); }
+  scrollbar-color: rgba(15, 17, 21, 0.2) transparent;
+}
+html[data-theme="light"] body::after { display: none; }
+@media (min-width: 640px) {
+  html[data-theme="light"] .panel { padding: 24px; }
+}
+
+.num {
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.eyebrow {
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 11px;
+  line-height: 1;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  html {
+    scroll-behavior: smooth;
+  }
+}
+
+[id] {
+  /* Clears the sticky header plus the sticky section nav. */
+  scroll-margin-top: calc(var(--header-h, 64px) + 64px);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--card-border);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+}
+
+::selection {
+  background: var(--bitcoin);
+  color: #000;
+}
+
+button:focus-visible,
+a:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--bitcoin);
+  outline-offset: 2px;
+}
+
+input:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--bitcoin);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--bitcoin) 10%, transparent);
+}
+
+html[data-theme="light"] input:focus-visible,
+html[data-theme="light"] textarea:focus-visible {
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--bitcoin) 20%, transparent);
+}
+
+select:focus-visible {
+  outline: 3px solid var(--bitcoin);
+  outline-offset: 2px;
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+.glass {
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow);
+}
+
+/*
+ * Everything drawn on the Observatory sky (stats, ticker, tooltips) reads as dark glass in both
+ * themes: the dark-theme surface and text tokens, scoped to the sky. --obs-panel is the near-opaque
+ * surface of tooltips and pinned cards, so canvas labels never bleed through.
+ */
+.obs-sky-scope {
+  color-scheme: dark;
+  --foreground: #f2f2f4;
+  --muted: #a6a6b0;
+  --faint: #70707b;
+  --surface-1: #111114;
+  --surface-2: #17171b;
+  --surface-inset: #111114;
+  --surface-elevated: #1d1d22;
+  --hairline: rgba(255, 255, 255, 0.07);
+  --hairline-strong: rgba(255, 255, 255, 0.13);
+  --card-bg: #17171b;
+  --card-border: rgba(255, 255, 255, 0.1);
+  --bitcoin-text: #f7931a;
+  --success: #28d065;
+  --glass-bg: rgba(14, 15, 20, 0.62);
+  --glass-border: rgba(255, 255, 255, 0.08);
+  --glass-shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset, 0 12px 40px rgba(0, 0, 0, 0.35);
+  --overlay-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+  --shadow-sm: 0 0 #0000;
+  --shadow-card: 0 0 #0000;
+  --obs-panel: rgba(16, 17, 23, 0.94);
+  color: var(--foreground);
+}
+
+@property --border-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+
+/* Observatory: values and sections fade in instead of popping. */
+/* P2P depth wall draw-in, left to right (used with motion-safe: only). */
+@keyframes p2p-wall-in {
+  from { clip-path: inset(0 100% 0 0); }
+  to { clip-path: inset(0 0 0 0); }
+}
+
+@keyframes obs-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* Observatory: the calm halo of an online coordinator's status dot. */
+@keyframes obs-breathe {
+  0%, 100% { opacity: 0.5; transform: scale(1); }
+  60% { opacity: 0; transform: scale(2.4); }
+}
+
+@keyframes border-rotate {
+  to {
+    --border-angle: 360deg;
+  }
+}
+
+/* Noise texture overlay for premium film-grain effect */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  pointer-events: none;
+  opacity: 0.06;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-repeat: repeat;
+  background-size: 256px 256px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  body::after {
+    display: none;
+  }
+}

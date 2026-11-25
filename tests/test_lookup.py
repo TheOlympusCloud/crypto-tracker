@@ -83,7 +83,7 @@ def test_a_scanned_private_key_is_refused_and_not_echoed(db):
     from tracker.app import app
 
     wif = "5HueCGU8rMjxEXxiPuD5BDku4MkFqeZyd4dZ1jvhTVqvbTLvyTJ"
-    r = TestClient(app, base_url="http://localhost").post("/api/resolve", json={"q": wif})
+    r = TestClient(app, base_url="http://localhost").post("/api/tracker/resolve", json={"q": wif})
     assert r.status_code == 422 and "private key" in r.text and wif not in r.text
 
 
@@ -258,12 +258,12 @@ def test_lookup_bitcoin_shows_assets_connections_and_links_to_my_wallets(db, cli
     db.commit()
     before, verdicts = stored(db), graph.verdicts(db)
 
-    found = client.post("/api/resolve", json={"q": f"bitcoin:{SATOSHI}?amount=0.1"}).json()
+    found = client.post("/api/tracker/resolve", json={"q": f"bitcoin:{SATOSHI}?amount=0.1"}).json()
     assert found == {
         "address": SATOSHI, "chain": "bitcoin", "chains": [], "hint": None, "needs_key": None,
         "icon": "bitcoin",
     }  # fmt: skip
-    v = client.get(f"/api/lookup/{SATOSHI}").json()
+    v = client.get(f"/api/tracker/lookup/{SATOSHI}").json()
 
     assert (v["address"], v["chain"], v["mine"], v["watched"]) == (SATOSHI, "bitcoin", 0, False)
     assert v["icon"] == "bitcoin"
@@ -295,24 +295,24 @@ def test_lookup_bitcoin_shows_assets_connections_and_links_to_my_wallets(db, cli
 
     # Looking is not touching: nothing a verdict is made of has changed.
     assert stored(db) == before and graph.verdicts(db) == verdicts
-    assert client.get("/api/graph").json()["edges"] == []
+    assert client.get("/api/tracker/graph").json()["edges"] == []
 
 
 def test_lookup_evm_reads_the_chosen_chains_and_lists_every_token(db, client):
-    found = client.post("/api/resolve", json={"q": A}).json()
+    found = client.post("/api/tracker/resolve", json={"q": A}).json()
     assert found["chain"] == "evm" and found["chains"] == ["ethereum", "polygon"]
     assert found["icon"] == "evm"  # on every EVM chain: the generic mark until one is chosen
-    hinted = client.post("/api/resolve", json={"q": f"ethereum:{A}@137"}).json()
+    hinted = client.post("/api/tracker/resolve", json={"q": f"ethereum:{A}@137"}).json()
     assert (hinted["hint"], hinted["icon"]) == ("polygon", "polygon")
     # A code for a chain that needs a key is no dead end: the readable chains are offered.
-    keyless = client.post("/api/resolve", json={"q": f"ethereum:{A}@8453"}).json()
+    keyless = client.post("/api/tracker/resolve", json={"q": f"ethereum:{A}@8453"}).json()
     assert (keyless["hint"], keyless["needs_key"], keyless["icon"]) == (None, "base", "evm")
     assert keyless["chains"] == ["ethereum", "polygon"]
     before = stored(db)
-    assert client.get(f"/api/lookup/{A}?chains=base").status_code == 422  # needs a key
-    assert client.get(f"/api/lookup/{A}?chains=nope").status_code == 422
+    assert client.get(f"/api/tracker/lookup/{A}?chains=base").status_code == 422  # needs a key
+    assert client.get(f"/api/tracker/lookup/{A}?chains=nope").status_code == 422
 
-    v = client.get(f"/api/lookup/{A}?chains=ethereum").json()
+    v = client.get(f"/api/tracker/lookup/{A}?chains=ethereum").json()
     assert v["chains"] == ["ethereum"] and v["icon"] == "ethereum"
     held = [
         (a["asset"], a["name"], a["amount"], a["value"], a["trust"]["level"]) for a in v["assets"]
@@ -333,7 +333,7 @@ def test_lookup_evm_reads_the_chosen_chains_and_lists_every_token(db, client):
     assert {c["address"] for c in v["connections"]} == {D, B}  # nor is the airdropper a party
     assert v["explorer_address"].startswith("https://etherscan.io/")
 
-    both = client.get(f"/api/lookup/{A}").json()
+    both = client.get(f"/api/tracker/lookup/{A}").json()
     assert both["chains"] == ["ethereum", "polygon"] and both["icon"] == "evm"
     assert {(a["chain"], a["asset"]) for a in both["assets"]} >= {("polygon", "POL")}
     assert stored(db) == before
@@ -341,7 +341,7 @@ def test_lookup_evm_reads_the_chosen_chains_and_lists_every_token(db, client):
 
 def test_lookup_solana_lists_spl_and_token_2022_tokens_with_their_names(db, client):
     before = stored(db)
-    v = client.get(f"/api/lookup/{SOL}").json()
+    v = client.get(f"/api/tracker/lookup/{SOL}").json()
     assert v["icon"] == "solana"
     held = [
         (a["asset"], a["name"], a["amount"], a["value"], a["trust"]["level"]) for a in v["assets"]
@@ -376,7 +376,7 @@ def test_tokens_from_my_wallets_a_service_or_a_claim_were_wanted(db, client, mon
     monkeypatch.setitem(EXTRA, "txlist", [claim])
 
     def trust():
-        v = client.get(f"/api/lookup/{A}?chains=ethereum").json()
+        v = client.get(f"/api/tracker/lookup/{A}?chains=ethereum").json()
         return {a["asset"]: a["trust"]["level"] for a in v["assets"]}
 
     assert trust()["GOV"] == "unknown"  # claimed: the wallet took part
@@ -403,7 +403,7 @@ def test_lookup_warns_before_sending_to_a_flagged_address(db, client):
         (D_BTC,),
     )
     db.commit()
-    risk = client.get(f"/api/lookup/{SATOSHI}").json()["risk"]
+    risk = client.get(f"/api/tracker/lookup/{SATOSHI}").json()["risk"]
     assert (risk["level"], risk["headline"]) == ("bad", "Risky to send to")
     assert "Ransomware wallet" in risk["reason"]
     assert any("Tornado.Cash" in r["text"] for r in risk["reasons"])  # it dealt with a mixer
@@ -415,10 +415,10 @@ def test_lookup_spots_an_address_made_to_look_like_one_i_use(db, client):
     db.commit()
     for real, who in ((A, "your wallet"), (B, "an address you sent to")):
         poisoned = real[:6] + "e" * 32 + real[-4:]
-        risk = client.get(f"/api/lookup/{poisoned}?chains=ethereum").json()["risk"]
+        risk = client.get(f"/api/tracker/lookup/{poisoned}?chains=ethereum").json()["risk"]
         assert risk["level"] == "bad" and real in risk["reason"] and who in risk["reason"]
     # The real one is not its own lookalike.
-    assert client.get(f"/api/lookup/{B}?chains=ethereum").json()["risk"]["level"] != "bad"
+    assert client.get(f"/api/tracker/lookup/{B}?chains=ethereum").json()["risk"]["level"] != "bad"
 
 
 NOW = 1_800_000_000
@@ -458,31 +458,35 @@ def test_risk_of_an_address_that_could_not_be_read_fully_says_so():
 
 
 def test_watching_keeps_an_address_out_of_my_wallets_until_it_is_tracked(db, client):
-    assert client.post("/api/watch", json={"address": "nope"}).status_code == 422
-    assert client.post("/api/watch", json={"address": SATOSHI}).is_success
-    client.post("/api/labels", json={"address": SATOSHI, "name": "Satoshi", "category": "other"})
-    analysis = client.get("/api/analysis").json()
+    assert client.post("/api/tracker/watch", json={"address": "nope"}).status_code == 422
+    assert client.post("/api/tracker/watch", json={"address": SATOSHI}).is_success
+    client.post(
+        "/api/tracker/labels", json={"address": SATOSHI, "name": "Satoshi", "category": "other"}
+    )
+    analysis = client.get("/api/tracker/analysis").json()
     assert [(w["address"], w["label"]) for w in analysis["watched"]] == [(SATOSHI, "Satoshi")]
-    assert analysis["verdicts"] == [] and client.get("/api/graph").json()["nodes"] == []
-    v = client.get(f"/api/lookup/{SATOSHI}").json()
+    assert analysis["verdicts"] == [] and client.get("/api/tracker/graph").json()["nodes"] == []
+    v = client.get(f"/api/tracker/lookup/{SATOSHI}").json()
     assert (v["watched"], v["mine"], v["label"]) == (True, 0, "Satoshi")
 
     # Tracking makes it mine, private unless said otherwise, and no longer merely watched.
-    assert client.post("/api/wallets", json={"address": SATOSHI, "name": "Satoshi"}).is_success
-    analysis = client.get("/api/analysis").json()
+    assert client.post(
+        "/api/tracker/wallets", json={"address": SATOSHI, "name": "Satoshi"}
+    ).is_success
+    analysis = client.get("/api/tracker/analysis").json()
     assert analysis["watched"] == []
     assert [(x["address"], x["public"]) for x in analysis["verdicts"]] == [(SATOSHI, False)]
-    v = client.get(f"/api/lookup/{SATOSHI}").json()
+    v = client.get(f"/api/tracker/lookup/{SATOSHI}").json()
     assert (v["watched"], v["mine"], v["public"]) == (False, 1, 0)
 
-    assert client.post("/api/watch", json={"address": A}).is_success
-    assert client.delete(f"/api/watch/{A}").is_success
-    assert client.get("/api/analysis").json()["watched"] == []
+    assert client.post("/api/tracker/watch", json={"address": A}).is_success
+    assert client.delete(f"/api/tracker/watch/{A}").is_success
+    assert client.get("/api/tracker/analysis").json()["watched"] == []
 
 
 def test_lookup_reports_an_indexer_that_does_not_answer(db, client, monkeypatch):
     monkeypatch.setitem(chains.UTXO, "bitcoin", ("BTC", "esplora", "http://down", ""))
-    r = client.get(f"/api/lookup/{SATOSHI}")
+    r = client.get(f"/api/tracker/lookup/{SATOSHI}")
     assert r.status_code == 502 and "HTTP 404" in r.json()["detail"]
     assert database.connect().execute("SELECT COUNT(*) FROM node").fetchone()[0] == 0
 

@@ -1,0 +1,462 @@
+{
+ "max_hops": 4,
+ "hop_decay": 0.7,
+ "chains": [
+  {
+   "chain": "bitcoin",
+   "asset": "BTC",
+   "status": "ok",
+   "note": "",
+   "name": "Bitcoin",
+   "explorer_address": "https://mempool.space/address/{}",
+   "explorer_tx": "https://mempool.space/tx/{}"
+  },
+  {
+   "chain": "litecoin",
+   "asset": "LTC",
+   "status": "ok",
+   "note": "",
+   "name": "Litecoin",
+   "explorer_address": "https://litecoinspace.org/address/{}",
+   "explorer_tx": "https://litecoinspace.org/tx/{}"
+  },
+  {
+   "chain": "bitcoincash",
+   "asset": "BCH",
+   "status": "ok",
+   "note": "Bitcoin Cash: only the 100 newest transactions of an address are read.",
+   "name": "Bitcoin Cash",
+   "explorer_address": "https://blockchair.com/bitcoin-cash/address/{}",
+   "explorer_tx": "https://blockchair.com/bitcoin-cash/transaction/{}"
+  },
+  {
+   "chain": "dogecoin",
+   "asset": "DOGE",
+   "status": "ok",
+   "note": "Dogecoin: only the 50 newest transactions are read (about 100 lookups an hour).",
+   "name": "Dogecoin",
+   "explorer_address": "https://blockchair.com/dogecoin/address/{}",
+   "explorer_tx": "https://blockchair.com/dogecoin/transaction/{}"
+  },
+  {
+   "chain": "ethereum",
+   "asset": "ETH",
+   "status": "ok",
+   "note": "",
+   "name": "Ethereum",
+   "explorer_address": "https://etherscan.io/address/{}",
+   "explorer_tx": "https://etherscan.io/tx/{}"
+  },
+  {
+   "chain": "base",
+   "asset": "ETH",
+   "status": "needs_key",
+   "note": "Needs a free Blockscout key (CT_BLOCKSCOUT_KEY).",
+   "name": "Base",
+   "explorer_address": "https://basescan.org/address/{}",
+   "explorer_tx": "https://basescan.org/tx/{}"
+  },
+  {
+   "chain": "arbitrum",
+   "asset": "ETH",
+   "status": "needs_key",
+   "note": "Needs a free Blockscout key (CT_BLOCKSCOUT_KEY) or a free Etherscan key (CT_ETHERSCAN_KEY).",
+   "name": "Arbitrum",
+   "explorer_address": "https://arbiscan.io/address/{}",
+   "explorer_tx": "https://arbiscan.io/tx/{}"
+  },
+  {
+   "chain": "optimism",
+   "asset": "ETH",
+   "status": "needs_key",
+   "note": "Needs a free Blockscout key (CT_BLOCKSCOUT_KEY).",
+   "name": "Optimism",
+   "explorer_address": "https://optimistic.etherscan.io/address/{}",
+   "explorer_tx": "https://optimistic.etherscan.io/tx/{}"
+  },
+  {
+   "chain": "polygon",
+   "asset": "POL",
+   "status": "needs_key",
+   "note": "Needs a free Blockscout key (CT_BLOCKSCOUT_KEY) or a free Etherscan key (CT_ETHERSCAN_KEY).",
+   "name": "Polygon",
+   "explorer_address": "https://polygonscan.com/address/{}",
+   "explorer_tx": "https://polygonscan.com/tx/{}"
+  },
+  {
+   "chain": "bsc",
+   "asset": "BNB",
+   "status": "needs_key",
+   "note": "Needs a free NodeReal key (CT_NODEREAL_KEY): Etherscan's free plan no longer covers BNB Chain.",
+   "name": "BNB Chain",
+   "explorer_address": "https://bscscan.com/address/{}",
+   "explorer_tx": "https://bscscan.com/tx/{}"
+  },
+  {
+   "chain": "avalanche",
+   "asset": "AVAX",
+   "status": "ok",
+   "note": "",
+   "name": "Avalanche",
+   "explorer_address": "https://snowtrace.io/address/{}",
+   "explorer_tx": "https://snowtrace.io/tx/{}"
+  },
+  {
+   "chain": "tron",
+   "asset": "TRX",
+   "status": "ok",
+   "note": "Tron: the 200 newest transfers of an address are read; counterparties are not expanded automatically.",
+   "name": "Tron",
+   "explorer_address": "https://tronscan.org/#/address/{}",
+   "explorer_tx": "https://tronscan.org/#/transaction/{}"
+  },
+  {
+   "chain": "solana",
+   "asset": "SOL",
+   "status": "ok",
+   "note": "Solana: only the 25 newest transactions are read, transfers are net balance changes per transaction, and counterparties are not expanded automatically.",
+   "name": "Solana",
+   "explorer_address": "https://solscan.io/account/{}",
+   "explorer_tx": "https://solscan.io/tx/{}"
+  }
+ ],
+ "fiat": {
+  "currency": "USD",
+  "total": 68740.0,
+  "private": 57100.0,
+  "public": 11640.0,
+  "unpriced": [],
+  "priced_at": 1795608350,
+  "assets": {
+   "BTC": 59170.0,
+   "ETH": 6120.0,
+   "SOL": 2250.0,
+   "USDC": 1200.0
+  },
+  "wallets": {
+   "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq": 47530.0,
+   "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh": 11640.0,
+   "0xab5801a7d398351b8be11c439e05c5b3259aec9b": 5100.0,
+   "vines1vzrYbzLMRdu58ou5XTby4qAqVRLmqo36NKPTg": 2250.0,
+   "0xd8da6bf26964af9d7eed9e03e53415d37aa96045": 2220.0
+  }
+ },
+ "alerts": {
+  "unread": 1,
+  "items": [
+   {
+    "time": 1795435550,
+    "text": "Cold storage is now linked to public wallet Exchange withdrawals (90%)",
+    "address": "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq",
+    "seen": false
+   }
+  ]
+ },
+ "watched": [
+  {
+   "address": "3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy",
+   "label": null,
+   "category": null,
+   "chain": "bitcoin"
+  }
+ ],
+ "verdicts": [
+  {
+   "address": "0xab5801a7d398351b8be11c439e05c5b3259aec9b",
+   "wallet": "0xab5801a7d398351b8be11c439e05c5b3259aec9b",
+   "addresses": [
+    "0xab5801a7d398351b8be11c439e05c5b3259aec9b"
+   ],
+   "checked": "full",
+   "name": "Savings",
+   "public": false,
+   "links": [
+    {
+     "wallet": "0xd8da6bf26964af9d7eed9e03e53415d37aa96045",
+     "wallet_id": "0xd8da6bf26964af9d7eed9e03e53415d37aa96045",
+     "public": false,
+     "confidence": 1.0,
+     "path": [
+      "0xab5801a7d398351b8be11c439e05c5b3259aec9b",
+      "0xd8da6bf26964af9d7eed9e03e53415d37aa96045"
+     ],
+     "kinds": [
+      "transfer"
+     ],
+     "via": []
+    }
+   ],
+   "services": [],
+   "shared_services": [],
+   "coverage": {
+    "synced": true,
+    "truncated": false,
+    "filling": null,
+    "error": null,
+    "counterparties": 0,
+    "expanded": 0,
+    "notes": [
+     "Not read on arbitrum, polygon. Needs a free Blockscout key (CT_BLOCKSCOUT_KEY) or a free Etherscan key (CT_ETHERSCAN_KEY).",
+     "Not read on base, optimism. Needs a free Blockscout key (CT_BLOCKSCOUT_KEY).",
+     "Not read on bsc. Needs a free NodeReal key (CT_NODEREAL_KEY): Etherscan's free plan no longer covers BNB Chain.",
+     "Swaps: THORChain and Maya records of a wallet are read back over several syncs; until they are complete, older swaps can be missing."
+    ]
+   }
+  },
+  {
+   "address": "0xd8da6bf26964af9d7eed9e03e53415d37aa96045",
+   "wallet": "0xd8da6bf26964af9d7eed9e03e53415d37aa96045",
+   "addresses": [
+    "0xd8da6bf26964af9d7eed9e03e53415d37aa96045"
+   ],
+   "checked": "full",
+   "name": "Hot wallet",
+   "public": false,
+   "links": [
+    {
+     "wallet": "0xab5801a7d398351b8be11c439e05c5b3259aec9b",
+     "wallet_id": "0xab5801a7d398351b8be11c439e05c5b3259aec9b",
+     "public": false,
+     "confidence": 1.0,
+     "path": [
+      "0xd8da6bf26964af9d7eed9e03e53415d37aa96045",
+      "0xab5801a7d398351b8be11c439e05c5b3259aec9b"
+     ],
+     "kinds": [
+      "transfer"
+     ],
+     "via": []
+    }
+   ],
+   "services": [
+    {
+     "name": "Binance",
+     "category": "cex",
+     "guess": false
+    },
+    {
+     "name": "Tornado Cash Router",
+     "category": "mixer",
+     "guess": false
+    }
+   ],
+   "shared_services": [],
+   "coverage": {
+    "synced": true,
+    "truncated": false,
+    "filling": null,
+    "error": null,
+    "counterparties": 0,
+    "expanded": 0,
+    "notes": [
+     "Not read on arbitrum, polygon. Needs a free Blockscout key (CT_BLOCKSCOUT_KEY) or a free Etherscan key (CT_ETHERSCAN_KEY).",
+     "Not read on base, optimism. Needs a free Blockscout key (CT_BLOCKSCOUT_KEY).",
+     "Not read on bsc. Needs a free NodeReal key (CT_NODEREAL_KEY): Etherscan's free plan no longer covers BNB Chain.",
+     "Swaps: THORChain and Maya records of a wallet are read back over several syncs; until they are complete, older swaps can be missing."
+    ]
+   }
+  },
+  {
+   "address": "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq",
+   "wallet": "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq",
+   "addresses": [
+    "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq"
+   ],
+   "checked": "full",
+   "name": "Cold storage",
+   "public": false,
+   "links": [
+    {
+     "wallet": "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
+     "wallet_id": "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
+     "public": true,
+     "confidence": 0.7,
+     "path": [
+      "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq",
+      "3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy",
+      "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh"
+     ],
+     "kinds": [
+      "transfer",
+      "transfer"
+     ],
+     "via": []
+    }
+   ],
+   "services": [],
+   "shared_services": [],
+   "coverage": {
+    "synced": true,
+    "truncated": false,
+    "filling": null,
+    "error": null,
+    "counterparties": 2,
+    "expanded": 2,
+    "notes": [
+     "Swaps: THORChain and Maya records of a wallet are read back over several syncs; until they are complete, older swaps can be missing."
+    ]
+   }
+  },
+  {
+   "address": "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
+   "wallet": "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
+   "addresses": [
+    "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh"
+   ],
+   "checked": "full",
+   "name": "Exchange withdrawals",
+   "public": true,
+   "links": [
+    {
+     "wallet": "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq",
+     "wallet_id": "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq",
+     "public": false,
+     "confidence": 0.7,
+     "path": [
+      "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
+      "3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy",
+      "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq"
+     ],
+     "kinds": [
+      "transfer",
+      "transfer"
+     ],
+     "via": []
+    }
+   ],
+   "services": [],
+   "shared_services": [],
+   "coverage": {
+    "synced": true,
+    "truncated": false,
+    "filling": null,
+    "error": null,
+    "counterparties": 1,
+    "expanded": 1,
+    "notes": [
+     "Swaps: THORChain and Maya records of a wallet are read back over several syncs; until they are complete, older swaps can be missing."
+    ]
+   }
+  },
+  {
+   "address": "vines1vzrYbzLMRdu58ou5XTby4qAqVRLmqo36NKPTg",
+   "wallet": "vines1vzrYbzLMRdu58ou5XTby4qAqVRLmqo36NKPTg",
+   "addresses": [
+    "vines1vzrYbzLMRdu58ou5XTby4qAqVRLmqo36NKPTg"
+   ],
+   "checked": "full",
+   "name": "Phone",
+   "public": false,
+   "links": [],
+   "services": [],
+   "shared_services": [],
+   "coverage": {
+    "synced": true,
+    "truncated": false,
+    "filling": null,
+    "error": null,
+    "counterparties": 0,
+    "expanded": 0,
+    "notes": [
+     "Solana: only the 25 newest transactions are read, transfers are net balance changes per transaction, and counterparties are not expanded automatically.",
+     "Swaps: THORChain and Maya records of a wallet are read back over several syncs; until they are complete, older swaps can be missing."
+    ]
+   }
+  }
+ ],
+ "origins": {
+  "0xab5801a7d398351b8be11c439e05c5b3259aec9b": [
+   {
+    "chain": "ethereum",
+    "asset": "ETH",
+    "token": "",
+    "received": 1.5,
+    "sources": [
+     {
+      "address": "0xd8da6bf26964af9d7eed9e03e53415d37aa96045",
+      "name": "Hot wallet",
+      "kind": "own",
+      "guess": false,
+      "type": "",
+      "public": false,
+      "reason": "",
+      "share": 1.0,
+      "amount": 1.5,
+      "path": [
+       "0xab5801a7d398351b8be11c439e05c5b3259aec9b",
+       "0xd8da6bf26964af9d7eed9e03e53415d37aa96045"
+      ]
+     }
+    ]
+   }
+  ],
+  "0xd8da6bf26964af9d7eed9e03e53415d37aa96045": [
+   {
+    "chain": "ethereum",
+    "asset": "ETH",
+    "token": "",
+    "received": 2.0,
+    "sources": [
+     {
+      "address": "0x28c6c06298d514db089934071355e5743bf21d60",
+      "name": "Binance 14",
+      "kind": "cex",
+      "guess": false,
+      "type": "exchange",
+      "public": false,
+      "reason": "",
+      "share": 1.0,
+      "amount": 2.0,
+      "path": [
+       "0xd8da6bf26964af9d7eed9e03e53415d37aa96045",
+       "0x28c6c06298d514db089934071355e5743bf21d60"
+      ]
+     }
+    ]
+   }
+  ],
+  "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq": [
+   {
+    "chain": "bitcoin",
+    "asset": "BTC",
+    "token": "",
+    "received": 0.49,
+    "sources": [
+     {
+      "address": "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
+      "name": "Exchange withdrawals",
+      "kind": "own",
+      "guess": false,
+      "type": "",
+      "public": true,
+      "reason": "",
+      "share": 0.7959,
+      "amount": 0.39,
+      "path": [
+       "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq",
+       "3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy",
+       "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh"
+      ]
+     },
+     {
+      "address": "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
+      "name": "",
+      "kind": "unknown",
+      "guess": false,
+      "type": "",
+      "public": false,
+      "reason": "no earlier transfer of this asset",
+      "share": 0.2041,
+      "amount": 0.1,
+      "path": [
+       "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq",
+       "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
+      ]
+     }
+    ]
+   }
+  ],
+  "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh": [],
+  "vines1vzrYbzLMRdu58ou5XTby4qAqVRLmqo36NKPTg": []
+ }
+}

@@ -1,0 +1,125 @@
+import type { TxHeuristic } from "./types";
+import type { Finding } from "@/lib/types";
+import { fmtN } from "@/lib/format";
+import { isCoinbase, getValuedOutputs, extractOpReturnData, isOpReturnOutput } from "./tx-utils";
+
+/**
+ * BIP47 Notification Transaction Detection
+ *
+ * Detects BIP47 (PayNym) notification transactions used to establish
+ * reusable payment channels between two identities.
+ *
+ * Pattern:
+ * - 1 input (sender's key used for ECDH)
+ * - 1 OP_RETURN output with exactly 80 bytes of data (encrypted payment code)
+ * - 1 small output to the receiver's notification address (546-1000 sats typically)
+ * - 0-1 change output
+ *
+ * The notification tx creates toxic change that links the sender's identity
+ * to the PayNym connection. This change must be frozen immediately.
+ *
+ * Impact: +3 (positive - indicates use of reusable payment codes)
+ */
+export const analyzeBip47Notification: TxHeuristic = (tx) => {
+  const findings: Finding[] = [];
+
+  if (isCoinbase(tx)) return { findings };
+
+  // BIP47 notification tx typically has 1 input (the key used for ECDH)
+  // Some implementations allow 2-3 inputs, but 1 is standard
+  if (tx.vin.length < 1 || tx.vin.length > 3) return { findings };
+
+  // Look for OP_RETURN output with exactly 80 bytes (160 hex chars) of data
+  const opReturnOutputs = tx.vout.filter(isOpReturnOutput);
+
+  const [opReturn] = opReturnOutputs;
+  if (opReturnOutputs.length !== 1 || !opReturn) return { findings };
+
+  const dataHex = extractOpReturnData(opReturn.scriptpubkey);
+
+  // BIP47 payment code is exactly 80 bytes = 160 hex characters
+  if (dataHex.length !== 160) return { findings };
+
+  // Negative check: known non-BIP47 OP_RETURN protocols with 80-byte payloads
+  const lowerData = dataHex.toLowerCase();
+  if (lowerData.startsWith("6f6d6e69") ||              // Omni Layer ("omni")
+      lowerData.startsWith("434e545250525459") ||       // Counterparty ("CNTRPRTY")
+      lowerData.startsWith("53504b") ||                 // Stacks ("SPK")
+      lowerData.startsWith("567266")) {                 // Veriblock ("Vrf")
+    return { findings };
+  }
+
+  // The first byte of the payment code data should be 0x01 (version 1)
+  // or 0x02 (version 2) after decryption. Since it's encrypted, we can't
+  // check this directly, but we can check the overall structure.
+
+  // Spendable outputs (excluding OP_RETURN)
+  const spendable = getValuedOutputs(tx.vout);
+
+  // Need at least 1 spendable output (notification dust) and at most 3
+  // (notification dust + change + possible extra)
+  if (spendable.length < 1 || spendable.length > 3) return { findings };
+
+  // Look for a dust-sized output (notification to receiver's address)
+  // BIP47 notification sends a small amount to the receiver's notification address
+  const notificationOutput = spendable.find((o) => o.value <= 1_000);
+
+  // The change output is everything else
+  const changeOutputs = spendable.filter((o) => o !== notificationOutput);
+  const hasChange = changeOutputs.length > 0;
+  const changeValue = changeOutputs.reduce((sum, o) => sum + o.value, 0);
+
+  const notificationAddress = notificationOutput?.scriptpubkey_address ?? "";
+
+  findings.push({
+    id: "bip47-notification",
+    severity: "good",
+    confidence: "high",
+    title: "BIP47 notification transaction (PayNym)",
+    params: {
+      _variant: hasChange ? "toxic" : "clean",
+      notificationValue: notificationOutput?.value ?? 0,
+      toxicChangeValue: hasChange ? fmtN(changeValue) : "0",
+      notificationAddress,
+      // No notification output: the description.toxic_nodust key omits that sentence
+      ...(notificationOutput ? {} : { context: "nodust" }),
+    },
+    description:
+      "This transaction contains an OP_RETURN with an 80-byte payload consistent with a BIP47 notification transaction. " +
+      "BIP47 establishes a reusable payment channel between two PayNym identities." +
+      (notificationOutput
+        ? ` A small notification output of ${notificationOutput.value} sats was sent to the receiver's notification address.`
+        : "") +
+      (hasChange
+        ? ` The change output (${fmtN(changeValue)} sats) is toxic - it permanently links the sender's identity to this PayNym connection.`
+        : " No change output detected."),
+    recommendation:
+      hasChange
+        ? "BIP47 reusable payment codes improve privacy for recurring payments. " +
+          "CRITICAL: The change from this notification transaction is toxic. " +
+          "It permanently links your wallet to the PayNym connection. " +
+          "Freeze this change output immediately and never spend it with your other UTXOs. " +
+          "Best practice: use only no-KYC UTXOs for notification transactions."
+        : "BIP47 reusable payment codes improve privacy for recurring payments. No toxic change to manage.",
+    scoreImpact: 3,
+    remediation: hasChange
+      ? {
+          qualifier: `Toxic change: ${fmtN(changeValue)} sats. This output links your wallet to the PayNym connection.`,
+          steps: [
+            "Immediately freeze the change output in your wallet's coin control.",
+            "Never spend this change with post-mix or regular UTXOs.",
+            "For future notification txs, use only no-KYC UTXOs as inputs.",
+            "Consider spending the toxic change through a CoinJoin cycle.",
+          ],
+          tools: [
+            { name: "Ashigaru (PayNym + Coin Control)", url: "https://ashigaru.rs" },
+            { name: "Sparrow Wallet (Coin Control)", url: "https://sparrowwallet.com" },
+          ],
+          urgency: "immediate" as const,
+        }
+      : undefined,
+  });
+
+  return { findings };
+};
+

@@ -1,0 +1,94 @@
+# Rate limit for Tor proxy endpoint (2 req/sec per client IP, burst of 25)
+# Must accommodate up to 20 sequential Chainalysis address checks
+limit_req_zone $binary_remote_addr zone=tor_proxy:1m rate=2r/s;
+
+server {
+    listen 8080;
+    server_name _;
+    server_tokens off;
+    # Relative redirects (e.g. /guide -> /guide/) so they keep the host and port of Umbrel's app proxy.
+    absolute_redirect off;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # Security headers
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "no-referrer" always;
+
+    # Hashed static assets - cache aggressively
+    # Note: add_header in a location block does NOT inherit from server block,
+    # so security headers must be repeated here.
+    location /_next/static/ {
+        expires 1y;
+        add_header Cache-Control "public, immutable" always;
+        add_header X-Frame-Options "SAMEORIGIN" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header Referrer-Policy "no-referrer" always;
+    }
+
+    # Reverse proxy: forward /api/* to the local Umbrel mempool instance
+    location /api/ {
+        proxy_pass http://${APP_MEMPOOL_IP}:${APP_MEMPOOL_PORT}/api/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 30s;
+        proxy_connect_timeout 5s;
+        add_header Cache-Control "no-store" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-Frame-Options "SAMEORIGIN" always;
+        add_header Referrer-Policy "no-referrer" always;
+    }
+
+    # Reverse proxy: forward /tor-proxy/* to the Tor proxy sidecar
+    location /tor-proxy/ {
+        limit_req zone=tor_proxy burst=25 nodelay;
+        proxy_pass http://${APP_TOR_PROXY_IP}:${APP_TOR_PROXY_PORT}/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 60s;
+        proxy_connect_timeout 5s;
+        add_header Cache-Control "no-store" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-Frame-Options "SAMEORIGIN" always;
+        add_header Referrer-Policy "no-referrer" always;
+    }
+
+    # SPA fallback: serve index.html for all non-file routes
+    # no-cache = always revalidate with server (304 if unchanged, 200 if new)
+    # This ensures users get fresh HTML after Umbrel app updates.
+    location / {
+        add_header Cache-Control "no-cache" always;
+        add_header X-Frame-Options "SAMEORIGIN" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header Referrer-Policy "no-referrer" always;
+        try_files $uri $uri/ /index.html;
+    }
+
+    # Expose mempool connection info so the frontend can build explorer links
+    # mempoolPort: matches the external app_proxy port on Umbrel (typically 3006)
+    # mempoolOnion: mempool's .onion hostname for Tor users (from mempool's exports.sh)
+    # mempoolExternalUrl: optional explicit user-facing URL for mempool's web UI.
+    #   On Umbrel this is unset (the host:port heuristic works because Umbrel
+    #   routes the app_proxy port directly to mempool). On StartOS the packager
+    #   must pass it because each service has its own hostname (see issue #95).
+    # bitcoinNetwork: optional hint, Umbrel's APP_BITCOIN_NETWORK (mainnet, testnet,
+    #   testnet4, signet, regtest). The app asks the node itself (genesis block hash
+    #   of /api/block-height/0); the hint is used only when that check fails.
+    location = /api/local-info {
+        access_log off;
+        default_type application/json;
+        return 200 '{"mempoolPort":"${APP_MEMPOOL_PORT}","mempoolOnion":"${APP_MEMPOOL_HIDDEN_SERVICE}","mempoolExternalUrl":"${APP_MEMPOOL_EXTERNAL_URL}","bitcoinNetwork":"${APP_BITCOIN_NETWORK}"}';
+    }
+
+    # Health check endpoint
+    location = /health {
+        access_log off;
+        return 200 "ok";
+    }
+}

@@ -1,0 +1,73 @@
+"use client";
+
+import { motion } from "motion/react";
+import { Clock, X } from "lucide-react";
+import type { RecentScan } from "@/hooks/useRecentScans";
+import { useTranslation } from "react-i18next";
+import { formatTimeAgo } from "@/lib/format";
+import { gradeColor, truncateId } from "@/lib/constants";
+
+interface RecentScansProps {
+  scans: RecentScan[];
+  onSelect: (input: string) => void;
+  onClear?: () => void;
+  hideHeader?: boolean;
+}
+
+export function RecentScans({ scans, onSelect, onClear, hideHeader }: RecentScansProps) {
+  const { t, i18n } = useTranslation();
+  const locale = i18n.language ?? "en";
+  const timeAgo = (ms: number) => formatTimeAgo(Math.floor(ms / 1000), locale);
+
+  if (scans.length === 0) return null;
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ delay: 0.3 }}
+      className="w-full max-w-2xl"
+    >
+      {!hideHeader && (
+        <div className="flex items-center justify-between mb-2 px-1">
+          <div className="flex items-center gap-1.5 text-xs text-muted">
+            <Clock size={14} />
+            <span>{t("recent.title", { defaultValue: "Recent scans" })}</span>
+          </div>
+          {onClear && (
+            <button
+              onClick={onClear}
+              className="inline-flex items-center gap-1 text-xs text-muted hover:text-foreground transition-colors cursor-pointer p-2 -m-2"
+              title={t("recent.clearHistory", { defaultValue: "Clear scan history" })}
+              aria-label={t("recent.clearHistory", { defaultValue: "Clear scan history" })}
+            >
+              <X size={14} />
+              {t("recent.clear", { defaultValue: "Clear" })}
+            </button>
+          )}
+        </div>
+      )}
+      <div className="flex flex-wrap gap-2">
+        {scans.map((scan) => (
+          <button
+            key={scan.input}
+            onClick={() => onSelect(scan.input)}
+            className="inline-flex items-center gap-2 px-3 py-2.5 rounded-lg bg-surface-elevated/50
+              border border-card-border hover:border-card-border hover:bg-surface-elevated
+              transition-all text-xs cursor-pointer group"
+            title={`${scan.type === "txid" ? t("recent.transaction", { defaultValue: "Transaction" }) : t("recent.address", { defaultValue: "Address" })} · ${timeAgo(scan.timestamp)}`}
+          >
+            <span className={`font-bold ${gradeColor(scan.grade)}`}>
+              {scan.grade}
+            </span>
+            <span className="font-mono text-muted group-hover:text-foreground transition-colors truncate max-w-32">
+              {truncateId(scan.input)}
+            </span>
+            <span className="text-muted text-xs">{timeAgo(scan.timestamp)}</span>
+          </button>
+        ))}
+      </div>
+    </motion.div>
+  );
+}
+

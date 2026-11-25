@@ -9,3 +9,4 @@ android/build/
 *.jks
 *.keystore
 .env
+web/public/data/*.bin

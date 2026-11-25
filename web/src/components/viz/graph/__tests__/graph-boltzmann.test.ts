@@ -1,0 +1,278 @@
+/**
+ * Tests for the graph Boltzmann computation lifecycle:
+ * - Synthetic results for 1-input txs (trivially deterministic)
+ * - Auto-compute eligibility thresholds
+ * - Change detection auto-marking
+ */
+
+import { describe, it, expect, beforeEach } from "vitest";
+import {
+  makeTx,
+  makeVin,
+  makeVout,
+  makeCoinbaseVin,
+  makeOpReturnVout,
+  resetAddrCounter,
+} from "@/lib/analysis/heuristics/__tests__/fixtures/tx-factory";
+import { detectJoinMarketForTurbo } from "@/lib/analysis/boltzmann-pool";
+import { analyzeChangeDetection } from "@/lib/analysis/heuristics/change-detection";
+import { graphBoltzmannMode } from "@/hooks/useGraphBoltzmann";
+import { singleInterpretationResult as buildSyntheticResult } from "@/lib/analysis/boltzmann-detection";
+
+beforeEach(() => resetAddrCounter());
+
+// ─── Synthetic Boltzmann Results ────────────────────────────────
+
+describe("synthetic Boltzmann for 1-input txs", () => {
+  it("produces 100% deterministic matrix for 1in/2out", () => {
+    const tx = makeTx({
+      txid: "aaa",
+      vin: [makeVin({ prevout: { scriptpubkey: "", scriptpubkey_asm: "", scriptpubkey_type: "v0_p2wpkh", scriptpubkey_address: "bc1q_sender", value: 100000 } })],
+      vout: [makeVout({ value: 50000 }), makeVout({ value: 48500 })],
+    });
+    const result = buildSyntheticResult(tx);
+
+    expect(result.entropy).toBe(0);
+    expect(result.nbCmbn).toBe(1);
+    expect(result.nInputs).toBe(1);
+    expect(result.nOutputs).toBe(2);
+    expect(result.matLnkProbabilities).toEqual([[1], [1]]);
+    expect(result.deterministicLinks).toEqual([[0, 0], [1, 0]]);
+  });
+
+  it("produces correct matrix for 1in/1out (sweep)", () => {
+    const tx = makeTx({
+      txid: "bbb",
+      vin: [makeVin()],
+      vout: [makeVout({ value: 98500 })],
+    });
+    const result = buildSyntheticResult(tx);
+
+    expect(result.matLnkProbabilities).toEqual([[1]]);
+    expect(result.deterministicLinks).toEqual([[0, 0]]);
+    expect(result.efficiency).toBe(0);
+  });
+
+  it("indexes the matrix by vout: the OP_RETURN output gets an all-zero row", () => {
+    const tx = makeTx({
+      txid: "ccc",
+      vin: [makeVin()],
+      vout: [makeVout({ value: 98500 }), makeOpReturnVout()],
+    });
+    const result = buildSyntheticResult(tx);
+
+    // extractTxValues filters OP_RETURN (1 valued output), and the matrix is
+    // re-indexed by raw tx position so consumers can use vout indices directly
+    expect(result.nOutputs).toBe(1);
+    expect(result.matLnkProbabilities).toEqual([[1], [0]]);
+    expect(result.deterministicLinks).toEqual([[0, 0]]);
+  });
+});
+
+// ─── Eligibility Thresholds ─────────────────────────────────────
+
+describe("auto-compute eligibility thresholds", () => {
+  it("coinbase txs are ineligible", () => {
+    const tx = makeTx({ vin: [makeCoinbaseVin()] });
+    expect(graphBoltzmannMode(tx)).toBe("ineligible");
+  });
+
+  it("1-input txs get synthetic results", () => {
+    const tx = makeTx({
+      vin: [makeVin()],
+      vout: [makeVout(), makeVout()],
+    });
+    expect(graphBoltzmannMode(tx)).toBe("synthetic");
+  });
+
+  it("small multi-input txs (<18 I/O) are auto-computed", () => {
+    // 3in/4out = 7 total I/O
+    const tx = makeTx({
+      vin: [makeVin(), makeVin(), makeVin()],
+      vout: [makeVout(), makeVout(), makeVout(), makeVout()],
+    });
+    expect(graphBoltzmannMode(tx)).toBe("auto-compute");
+  });
+
+  it("17 total I/O is auto-computed", () => {
+    const vins = Array.from({ length: 8 }, () => makeVin());
+    const vouts = Array.from({ length: 9 }, () => makeVout());
+    const tx = makeTx({ vin: vins, vout: vouts });
+    expect(graphBoltzmannMode(tx)).toBe("auto-compute");
+  });
+
+  it("18 total I/O (non-JoinMarket) needs manual button", () => {
+    const vins = Array.from({ length: 9 }, () => makeVin());
+    const vouts = Array.from({ length: 9 }, () => makeVout());
+    const tx = makeTx({ vin: vins, vout: vouts });
+    expect(graphBoltzmannMode(tx)).toBe("manual-button");
+  });
+
+  it(">80 total I/O is ineligible", () => {
+    const vins = Array.from({ length: 41 }, () => makeVin());
+    const vouts = Array.from({ length: 41 }, () => makeVout());
+    const tx = makeTx({ vin: vins, vout: vouts });
+    expect(graphBoltzmannMode(tx)).toBe("ineligible");
+  });
+
+  it("exactly 80 I/O without a turbo mode is ineligible (beyond the exact engine)", () => {
+    const vins = Array.from({ length: 40 }, () => makeVin());
+    const vouts = Array.from({ length: 40 }, () => makeVout());
+    const tx = makeTx({ vin: vins, vout: vouts });
+    expect(graphBoltzmannMode(tx)).toBe("ineligible");
+  });
+
+  it("exact-feasible 24 I/O gets manual button", () => {
+    const vins = Array.from({ length: 12 }, () => makeVin());
+    const vouts = Array.from({ length: 12 }, () => makeVout());
+    const tx = makeTx({ vin: vins, vout: vouts });
+    expect(graphBoltzmannMode(tx)).toBe("manual-button");
+  });
+});
+
+// ─── Change Detection Auto-Marking ──────────────────────────────
+
+describe("change detection auto-marking", () => {
+  it("detects change output on a simple 1in/2out tx with round payment", () => {
+    // One output is a round number (likely payment), the other is change
+    const tx = makeTx({
+      txid: "d".repeat(64),
+      vin: [makeVin({ prevout: { scriptpubkey: "", scriptpubkey_asm: "", scriptpubkey_type: "v0_p2wpkh", scriptpubkey_address: "bc1q_in", value: 500000 } })],
+      vout: [
+        makeVout({ value: 100000, scriptpubkey_type: "v0_p2wpkh" }), // round = payment
+        makeVout({ value: 398500, scriptpubkey_type: "v0_p2wpkh" }), // non-round = change
+      ],
+    });
+    const result = analyzeChangeDetection(tx);
+    const finding = result.findings.find((f) => f.id === "h2-change-detected");
+
+    // The heuristic should identify one output as change
+    // (exact index depends on signal agreement - round amount + value disparity)
+    expect(finding).toBeDefined();
+    if (finding?.params) {
+      const idx = (finding.params as Record<string, unknown>).changeIndex;
+      expect(typeof idx).toBe("number");
+    }
+  });
+
+  it("does not detect change on a sweep (1in/1out)", () => {
+    const tx = makeTx({
+      txid: "e".repeat(64),
+      vin: [makeVin()],
+      vout: [makeVout({ value: 98500 })],
+    });
+    const result = analyzeChangeDetection(tx);
+    const changeFound = result.findings.find((f) => f.id === "h2-change-detected");
+    expect(changeFound).toBeUndefined();
+  });
+
+  it("detects script type mismatch change (P2PKH input, P2WPKH + P2PKH outputs)", () => {
+    // Input is P2PKH, one output matches (P2PKH = change), other is P2WPKH (payment)
+    const tx = makeTx({
+      txid: "f".repeat(64),
+      vin: [makeVin({ prevout: { scriptpubkey: "", scriptpubkey_asm: "", scriptpubkey_type: "p2pkh", scriptpubkey_address: "1ABC", value: 500000 } })],
+      vout: [
+        makeVout({ value: 200000, scriptpubkey_type: "v0_p2wpkh" }),  // different type = payment
+        makeVout({ value: 298500, scriptpubkey_type: "p2pkh" }),       // matches input type = change
+      ],
+    });
+    const result = analyzeChangeDetection(tx);
+    const finding = result.findings.find((f) => f.id === "h2-change-detected");
+    if (finding?.params) {
+      const idx = (finding.params as Record<string, unknown>).changeIndex;
+      // The P2PKH output (index 1) should be identified as change
+      expect(idx).toBe(1);
+    }
+  });
+  it("detects same-address-in-output change (output returns to input address)", () => {
+    const sharedAddr = "bc1q_shared_address_test";
+    const tx = makeTx({
+      txid: "1".repeat(64),
+      vin: [makeVin({ prevout: { scriptpubkey: "", scriptpubkey_asm: "", scriptpubkey_type: "v0_p2wpkh", scriptpubkey_address: sharedAddr, value: 500000 } })],
+      vout: [
+        makeVout({ value: 100000, scriptpubkey_address: "bc1q_recipient" }),  // payment to new address
+        makeVout({ value: 398500, scriptpubkey_address: sharedAddr }),         // change back to input address
+      ],
+    });
+    const result = analyzeChangeDetection(tx);
+    const sameAddrFinding = result.findings.find((f) => f.id === "h2-same-address-io");
+
+    expect(sameAddrFinding).toBeDefined();
+    expect(sameAddrFinding?.confidence).toBe("deterministic");
+    if (sameAddrFinding?.params) {
+      const indices = (sameAddrFinding.params as Record<string, unknown>).selfSendIndices;
+      expect(typeof indices).toBe("string");
+      // Output index 1 should be the self-send (change) output
+      expect((indices as string).split(",").map(Number)).toContain(1);
+    }
+  });
+
+  it("detects all-self-send (every output returns to input addresses)", () => {
+    const addr1 = "bc1q_addr_1_test";
+    const tx = makeTx({
+      txid: "2".repeat(64),
+      vin: [makeVin({ prevout: { scriptpubkey: "", scriptpubkey_asm: "", scriptpubkey_type: "v0_p2wpkh", scriptpubkey_address: addr1, value: 500000 } })],
+      vout: [
+        makeVout({ value: 200000, scriptpubkey_address: addr1 }),
+        makeVout({ value: 298500, scriptpubkey_address: addr1 }),
+      ],
+    });
+    const result = analyzeChangeDetection(tx);
+    const selfSendFinding = result.findings.find((f) => f.id === "h2-self-send");
+
+    expect(selfSendFinding).toBeDefined();
+    if (selfSendFinding?.params) {
+      const indices = (selfSendFinding.params as Record<string, unknown>).selfSendIndices;
+      // Both outputs should be marked
+      expect((indices as string).split(",").map(Number).sort()).toEqual([0, 1]);
+    }
+  });
+});
+
+// ─── JoinMarket Turbo Mode Detection Guards ─────────────────────
+
+describe("detectJoinMarketForTurbo guards", () => {
+  it("rejects Stonewall (2 equal outputs) - equalCount < 3", () => {
+    // Tx 015d9cf0: 9 inputs, 4 outputs (2 equal at 9.1M + 2 change)
+    const inputs = [203_486, 5_000_000, 11_126, 9_829, 9_572_867, 13_796, 150_000, 82_835, 5_000_000];
+    const outputs = [9_136_520, 9_136_520, 907_419, 791_116];
+    const result = detectJoinMarketForTurbo(inputs, outputs);
+    expect(result.isJoinMarket).toBe(false);
+  });
+
+  it("rejects small Stonewall (2 inputs, 2 equal outputs)", () => {
+    const inputs = [500_000, 600_000];
+    const outputs = [300_000, 300_000, 250_000, 248_500];
+    expect(detectJoinMarketForTurbo(inputs, outputs).isJoinMarket).toBe(false);
+  });
+
+  it("rejects batch payment (1 large input, 3 equal outputs) - aboveDenom < equalCount-1", () => {
+    // 1 input funding 3 equal outputs + change: only 1 input >= denom, need 2
+    const inputs = [3_500_000];
+    const outputs = [1_000_000, 1_000_000, 1_000_000, 490_000];
+    expect(detectJoinMarketForTurbo(inputs, outputs).isJoinMarket).toBe(false);
+  });
+
+  it("rejects consolidation with coincidental equal outputs", () => {
+    // 6 small inputs, 3 happen to be equal but none above denom
+    const inputs = [50_000, 40_000, 30_000, 20_000, 15_000, 10_000];
+    const outputs = [50_000, 50_000, 50_000, 13_000];
+    expect(detectJoinMarketForTurbo(inputs, outputs).isJoinMarket).toBe(false);
+  });
+
+  it("accepts real JoinMarket (5 equal outputs, 5 inputs above denom)", () => {
+    const inputs = [1_600_000, 1_300_000, 1_100_000, 1_050_000, 1_006_000];
+    const outputs = [1_000_000, 1_000_000, 1_000_000, 1_000_000, 1_000_000, 599_000, 299_000, 99_000, 49_000];
+    const result = detectJoinMarketForTurbo(inputs, outputs);
+    expect(result.isJoinMarket).toBe(true);
+    expect(result.denomination).toBe(1_000_000);
+  });
+
+  it("accepts 3-party JoinMarket (3 equal, 3 inputs above denom)", () => {
+    const inputs = [150_000, 120_000, 106_000];
+    const outputs = [100_000, 100_000, 100_000, 49_000, 19_000];
+    const result = detectJoinMarketForTurbo(inputs, outputs);
+    expect(result.isJoinMarket).toBe(true);
+    expect(result.denomination).toBe(100_000);
+  });
+});

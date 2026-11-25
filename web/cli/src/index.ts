@@ -1,0 +1,226 @@
+import { Command } from "commander";
+import { DEFAULT_ANALYSIS_SETTINGS } from "@/lib/analysis/settings";
+import { initEntityFilter } from "./adapters/entity-loader";
+import { scanTx } from "./commands/scan-tx";
+import { scanAddress } from "./commands/scan-address";
+import { scanXpub } from "./commands/scan-xpub";
+import { scanPsbt } from "./commands/scan-psbt";
+import { boltzmann, DEFAULT_INTRAFEES_RATIO } from "./commands/boltzmann";
+import { chainTrace } from "./commands/chain-trace";
+import { VERSION } from "./output/json";
+import { networkForApi } from "./util/api";
+
+// Defaults shared with the web app's analysis settings
+const DEFAULT_MIN_SATS = String(DEFAULT_ANALYSIS_SETTINGS.minSats);
+
+const program = new Command();
+
+program
+  .name("am-i-exposed")
+  .description(
+    "Bitcoin privacy scanner - analyze transactions, addresses, and wallets for chain analysis exposure",
+  )
+  .version(VERSION)
+  .option("--json", "Output structured JSON (suppresses spinner and colors)")
+  .option(
+    "--network <net>",
+    "Network: mainnet, testnet4, or signet",
+    "mainnet",
+  )
+  .option("--api <url>", "Custom mempool API URL")
+  .option("--no-color", "Disable colored output")
+  .option("--no-entities", "Skip entity filter loading (faster startup)")
+  .option("--no-cache", "Disable SQLite response caching");
+
+// ---- scan <subcommand> ----
+
+const scan = program.command("scan").description("Scan a Bitcoin artifact");
+
+scan
+  .command("tx <txid>")
+  .description("Analyze a transaction for privacy exposure")
+  .option("--fast", "Skip parent tx and output address fetching (faster, less context)")
+  .option(
+    "--chain-depth <N>",
+    "Include chain analysis up to N hops. 0 skips all chain modules, " +
+      "so the grade can differ from the web scan, which always runs chain analysis",
+    "0",
+  )
+  .option(
+    "--min-sats <N>",
+    "Minimum satoshi value to follow when tracing",
+    DEFAULT_MIN_SATS,
+  )
+  .action(async (txid: string, opts: Record<string, string>) => {
+    await run(() => scanTx(txid, mergeOpts(opts)));
+  });
+
+scan
+  .command("address <addr>")
+  .alias("addr")
+  .description("Analyze an address for privacy exposure")
+  .action(async (addr: string, opts: Record<string, string>) => {
+    await run(() => scanAddress(addr, mergeOpts(opts)));
+  });
+
+scan
+  .command("xpub <descriptor>")
+  .description(
+    "Wallet-level privacy audit via xpub, zpub, or output descriptor",
+  )
+  .option("--gap-limit <N>", "Consecutive unused addresses before stopping", "20")
+  .option("--labels <file>", "BIP329 labels file (.jsonl) to match against the wallet")
+  .option("--export-labels <file>", "Write BIP329 labels: the imported ones plus automatic aie: labels")
+  .action(async (descriptor: string, opts: Record<string, string>) => {
+    await run(() => scanXpub(descriptor, mergeOpts(opts)));
+  });
+
+scan
+  .command("psbt <input>")
+  .description("Analyze an unsigned transaction (PSBT) before broadcasting")
+  .action(async (input: string, opts: Record<string, string>) => {
+    await run(() => scanPsbt(input, mergeOpts(opts)));
+  });
+
+// ---- top-level commands ----
+
+program
+  .command("boltzmann <txid>")
+  .description(
+    "Compute Boltzmann entropy and link probability matrix for a transaction",
+  )
+  .option(
+    "--timeout <seconds>",
+    "Maximum computation time",
+    String(DEFAULT_ANALYSIS_SETTINGS.boltzmannTimeout),
+  )
+  .option(
+    "--intrafees-ratio <float>",
+    "Max CoinJoin intrafees ratio",
+    String(DEFAULT_INTRAFEES_RATIO),
+  )
+  .action(async (txid: string, opts: Record<string, string>) => {
+    await run(() => boltzmann(txid, mergeOpts(opts)));
+  });
+
+program
+  .command("chain-trace <txid>")
+  .description("Multi-hop transaction graph analysis")
+  .option(
+    "--direction <dir>",
+    "Trace direction: backward, forward, or both",
+    "both",
+  )
+  .option("--depth <N>", "Maximum hops to trace", String(DEFAULT_ANALYSIS_SETTINGS.maxDepth))
+  .option(
+    "--min-sats <N>",
+    "Minimum satoshi value to follow (filters dust)",
+    DEFAULT_MIN_SATS,
+  )
+  .action(async (txid: string, opts: Record<string, string>) => {
+    await run(() => chainTrace(txid, mergeOpts(opts)));
+  });
+
+// ---- MCP server ----
+
+program
+  .command("mcp")
+  .description("Start MCP (Model Context Protocol) server on stdio")
+  .action(async () => {
+    const { startMcpServer } = await import("./mcp/server");
+    await startMcpServer();
+  });
+
+// ---- cache management ----
+
+const cache = program
+  .command("cache")
+  .description("Manage the API response cache");
+
+cache
+  .command("stats")
+  .description("Show cache statistics")
+  .action(async () => {
+    const { cacheStats } = await import("./adapters/sqlite-cache");
+    const stats = cacheStats();
+    const sizeMB = (stats.sizeBytes / 1024 / 1024).toFixed(2);
+    const age = stats.oldestAt
+      ? `${Math.round((Date.now() - stats.oldestAt) / 1000 / 60)} min ago`
+      : "n/a";
+    if (program.opts().json) {
+      console.log(JSON.stringify(stats, null, 2));
+    } else {
+      console.log(`Entries:  ${stats.entries}`);
+      console.log(`Expired: ${stats.expired}`);
+      console.log(`Size:    ${sizeMB} MB`);
+      console.log(`Oldest:  ${age}`);
+    }
+  });
+
+cache
+  .command("clear")
+  .description("Purge all cached API responses")
+  .action(async () => {
+    const { cacheClear, cacheClose } = await import("./adapters/sqlite-cache");
+    cacheClear();
+    cacheClose();
+    console.log("Cache cleared.");
+  });
+
+// ---- helpers ----
+
+export interface GlobalOpts {
+  json?: boolean;
+  network: string;
+  api?: string;
+  entities: boolean;
+  cache: boolean;
+  color: boolean;
+  // command-specific (merged in)
+  [key: string]: unknown;
+}
+
+/** Merge command-level opts with global program opts. */
+function mergeOpts(commandOpts: Record<string, string>): GlobalOpts {
+  const global = program.opts();
+  return { ...global, ...commandOpts } as unknown as GlobalOpts;
+}
+
+/** Wrap command execution with entity init and error handling. */
+async function run(fn: () => Promise<void>): Promise<void> {
+  try {
+    const opts = program.opts() as GlobalOpts;
+
+    // Initialize entity filter unless --no-entities
+    if (opts.entities !== false) {
+      await initEntityFilter();
+    }
+
+    // A custom --api serves one chain: use it (or check an explicit --network against it)
+    if (opts.api) {
+      program.setOptionValue("network", await networkForApi(opts.api, {
+        explicit: program.getOptionValueSource("network") !== "default",
+        fallback: opts.network,
+      }));
+    }
+
+    await fn();
+  } catch (err) {
+    const opts = program.opts() as GlobalOpts;
+    if (opts.json) {
+      console.log(
+        JSON.stringify({
+          error: true,
+          message: err instanceof Error ? err.message : String(err),
+        }),
+      );
+    } else {
+      console.error(
+        `Error: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    process.exit(1);
+  }
+}
+
+program.parse();

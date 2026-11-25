@@ -1,0 +1,6 @@
+User-agent: *
+Allow: /
+
+Disallow: /offline.html
+
+Sitemap: https://am-i.exposed/sitemap.xml

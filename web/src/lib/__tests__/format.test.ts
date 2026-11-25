@@ -1,0 +1,101 @@
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { formatSats, formatTimeAgo, fmtInterpretations } from "../format";
+
+describe("formatSats", () => {
+  it("formats basic amounts", () => {
+    expect(formatSats(1000)).toBe("1,000 sats");
+    expect(formatSats(0)).toBe("0 sats");
+  });
+
+  it("formats large amounts with locale separators", () => {
+    expect(formatSats(100_000_000)).toBe("100,000,000 sats");
+  });
+
+  it("handles negative values", () => {
+    expect(formatSats(-500)).toBe("-500 sats");
+  });
+});
+
+describe("formatTimeAgo", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function setNow(unixSeconds: number) {
+    vi.useFakeTimers();
+    vi.setSystemTime(unixSeconds * 1000);
+  }
+
+  const NOW = 1700000000; // arbitrary fixed timestamp
+
+  it("formats seconds ago", () => {
+    setNow(NOW);
+    const result = formatTimeAgo(NOW - 30, "en");
+    expect(result).toMatch(/30/);
+    expect(result).toMatch(/ago/i);
+  });
+
+  it("formats minutes ago", () => {
+    setNow(NOW);
+    const result = formatTimeAgo(NOW - 300, "en");
+    expect(result).toMatch(/5/);
+    expect(result).toMatch(/ago/i);
+  });
+
+  it("formats hours ago", () => {
+    setNow(NOW);
+    const result = formatTimeAgo(NOW - 7200, "en");
+    expect(result).toMatch(/2/);
+    expect(result).toMatch(/ago/i);
+  });
+
+  it("formats days ago", () => {
+    setNow(NOW);
+    const result = formatTimeAgo(NOW - 86400 * 3, "en");
+    expect(result).toMatch(/3/);
+    expect(result).toMatch(/ago/i);
+  });
+
+  it("formats months ago", () => {
+    setNow(NOW);
+    const result = formatTimeAgo(NOW - 86400 * 60, "en");
+    expect(result).toMatch(/2/);
+    expect(result).toMatch(/ago/i);
+  });
+
+  it("formats years ago", () => {
+    setNow(NOW);
+    const result = formatTimeAgo(NOW - 86400 * 400, "en");
+    // narrow style may output "last yr." or "1 yr. ago"
+    expect(result).toMatch(/yr|year/i);
+  });
+
+  it("handles zero difference", () => {
+    setNow(NOW);
+    const result = formatTimeAgo(NOW, "en");
+    expect(result).toBeTruthy();
+  });
+
+  it("returns a non-empty string for all time ranges", () => {
+    setNow(NOW);
+    const offsets = [1, 120, 7200, 86400, 2592000, 31536000];
+    for (const offset of offsets) {
+      const result = formatTimeAgo(NOW - offset, "en");
+      expect(result.length).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe("fmtInterpretations", () => {
+  it("prints an exact count as is", () => {
+    expect(fmtInterpretations(1496, 10.55)).toBe("1,496");
+  });
+
+  it("shows a u64-saturated count as ~2^bits, never as the clamped number", () => {
+    expect(fmtInterpretations(18446744073709552000, 1797.88, true)).toBe("~2^1798");
+  });
+
+  it("treats a count past 2^53 as approximate even without the flag", () => {
+    expect(fmtInterpretations(2 ** 60, 60)).toBe("~2^60");
+  });
+});

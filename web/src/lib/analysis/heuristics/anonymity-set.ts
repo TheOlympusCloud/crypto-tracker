@@ -1,0 +1,130 @@
+import type { TxHeuristic } from "./types";
+import type { Finding } from "@/lib/types";
+import { DUST_THRESHOLD } from "@/lib/constants";
+import { formatSatsOrBtc } from "@/lib/format";
+import { isCoinbase, isOpReturnOutput } from "./tx-utils";
+
+/**
+ * Anonymity Set Analysis
+ *
+ * Calculates the anonymity set for each output value - the number of outputs
+ * sharing the same value, making them indistinguishable from each other.
+ *
+ * An anonymity set of 1 means the output is unique and trivially traceable.
+ * Higher anonymity sets (like in CoinJoin) mean more possible interpretations.
+ *
+ * This is separate from H4 CoinJoin detection - it provides granular per-output
+ * analysis rather than a binary CoinJoin/not-CoinJoin determination.
+ *
+ * Impact: informational (-2 to +5, lighter than CoinJoin detection)
+ */
+export const analyzeAnonymitySet: TxHeuristic = (tx) => {
+  const findings: Finding[] = [];
+  // Filter to spendable, non-dust outputs (exclude OP_RETURN and dust)
+  // Dust outputs (< 1000 sats) are excluded because they don't meaningfully
+  // contribute to anonymity sets - a coincidental value match with dust
+  // does not provide real privacy protection.
+  const outputs = tx.vout.filter(
+    (o) => !isOpReturnOutput(o) && o.value >= DUST_THRESHOLD,
+  );
+
+  // Skip coinbase transactions
+  if (isCoinbase(tx)) return { findings };
+
+  if (outputs.length < 2) return { findings };
+
+
+  // Count occurrences of each output value
+  const valueCounts = new Map<number, number>();
+  for (const out of outputs) {
+    valueCounts.set(out.value, (valueCounts.get(out.value) ?? 0) + 1);
+  }
+
+  // Calculate anonymity sets
+  const sets: { value: number; count: number }[] = [];
+  const seen = new Set<number>();
+  for (const out of outputs) {
+    if (seen.has(out.value)) continue;
+    seen.add(out.value);
+    const count = valueCounts.get(out.value) ?? 1;
+    sets.push({ value: out.value, count });
+  }
+
+  // Sort by count descending
+  sets.sort((a, b) => b.count - a.count);
+
+  // Find max anonymity set
+  const maxSet = sets[0];
+  if (!maxSet) return { findings };
+  const uniqueOutputs = sets.filter((s) => s.count === 1).length;
+  const totalSets = sets.length;
+
+  // An anonymity set needs several possible owners. With one input (or all
+  // inputs from one address) a single party funds every output, so equal
+  // values hide nothing and earn no credit.
+  const inputOwners = new Set(tx.vin.map((v) => v.prevout?.scriptpubkey_address ?? `${v.txid}:${v.vout}`));
+  if (inputOwners.size < 2 && maxSet.count >= 2) return { findings };
+
+  if (maxSet.count >= 5) {
+    // Strong anonymity set
+    findings.push({
+      id: "anon-set-strong",
+      severity: "good",
+      confidence: "deterministic",
+      title: `Largest anonymity set: ${maxSet.count} outputs`,
+      params: { count: maxSet.count, value: formatSatsOrBtc(maxSet.value) },
+      description:
+        `${maxSet.count} outputs share the value ${formatSatsOrBtc(maxSet.value)}, creating an anonymity set of ${maxSet.count}. ` +
+        `An observer cannot distinguish which input funded which of these ${maxSet.count} equal outputs. ` +
+        buildSetSummary(sets),
+      recommendation:
+        "Strong anonymity sets indicate good privacy. CoinJoin transactions maximize this property.",
+      scoreImpact: 5,
+    });
+  } else if (maxSet.count >= 2) {
+    // Some ambiguity
+    findings.push({
+      id: "anon-set-moderate",
+      severity: "low",
+      confidence: "deterministic",
+      title: `Anonymity set: ${maxSet.count} equal outputs`,
+      params: { count: maxSet.count, value: formatSatsOrBtc(maxSet.value) },
+      description:
+        `${maxSet.count} outputs share the value ${formatSatsOrBtc(maxSet.value)}. ` +
+        `This provides limited ambiguity. ` +
+        buildSetSummary(sets),
+      recommendation:
+        "For stronger privacy, use CoinJoin to create larger anonymity sets (5+ equal outputs).",
+      scoreImpact: 1,
+    });
+  } else if (uniqueOutputs === totalSets) {
+    // All outputs are unique - no ambiguity (normal for most transactions)
+    findings.push({
+      id: "anon-set-none",
+      severity: "low",
+      confidence: "deterministic",
+      title: "No anonymity set (all outputs unique)",
+      params: { outputCount: outputs.length },
+      description:
+        `All ${outputs.length} outputs have unique values. Each output is trivially distinguishable, ` +
+        `which is typical for standard transactions.`,
+      recommendation:
+        "This is normal for most transactions. CoinJoin creates larger anonymity sets for improved privacy.",
+      scoreImpact: 0,
+    });
+  }
+
+  return { findings };
+};
+
+function buildSetSummary(sets: { value: number; count: number }[]): string {
+  const grouped = sets.filter((s) => s.count >= 2);
+  if (grouped.length === 0) return "";
+
+  const parts = grouped
+    .slice(0, 3)
+    .map((s) => `${s.count}x ${formatSatsOrBtc(s.value)}`);
+
+  const suffix = grouped.length > 3 ? ` and ${grouped.length - 3} more groups` : "";
+  return `Equal-value groups: ${parts.join(", ")}${suffix}.`;
+}
