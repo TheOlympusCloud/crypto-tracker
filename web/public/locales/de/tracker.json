@@ -29,5 +29,14 @@
   "trust.verified": "verifiziert",
   "trust.unknown": "unbekannt",
   "trust.scam": "gefälscht · wertlos",
-  "privacy_score": "Privatsphäre-Score"
+  "privacy_score": "Privatsphäre-Score",
+  "badge.public": "öffentlich",
+  "badge.private": "privat",
+  "worth.partly": "Nur ein Teil dieser Wallet konnte gelesen werden: Sie enthält mindestens so viel",
+  "trust.name": "Sein Name: „{{name}}“.",
+  "fakes_one": "{{count}} gefälschter Token · wertlos",
+  "fakes_other": "{{count}} gefälschte Token · wertlos",
+  "history.filling": "Historie wird ergänzt",
+  "history.filling_back": "Historie wird ergänzt, bisher bis {{date}}",
+  "history.complete": "Historie vollständig"
 }

@@ -29,5 +29,14 @@
   "trust.verified": "vérifié",
   "trust.unknown": "inconnu",
   "trust.scam": "faux · vaut 0",
-  "privacy_score": "Score de confidentialité"
+  "privacy_score": "Score de confidentialité",
+  "badge.public": "public",
+  "badge.private": "privé",
+  "worth.partly": "Seule une partie de ce portefeuille a pu être lue : il contient au moins ceci",
+  "trust.name": "Son nom : « {{name}} ».",
+  "fakes_one": "{{count}} faux jeton · vaut 0",
+  "fakes_other": "{{count}} faux jetons · valent 0",
+  "history.filling": "Historique en cours de remplissage",
+  "history.filling_back": "Historique en cours de remplissage, jusqu'au {{date}} pour l'instant",
+  "history.complete": "Historique complet"
 }

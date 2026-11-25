@@ -29,5 +29,16 @@
   "trust.verified": "zweryfikowany",
   "trust.unknown": "nieznany",
   "trust.scam": "fałszywy · wart 0",
-  "privacy_score": "Wynik prywatności"
+  "privacy_score": "Wynik prywatności",
+  "badge.public": "publiczny",
+  "badge.private": "prywatny",
+  "worth.partly": "Udało się odczytać tylko część tego portfela: zawiera co najmniej tyle",
+  "trust.name": "Jego nazwa: „{{name}}”.",
+  "fakes_one": "{{count}} fałszywy token · wart 0",
+  "fakes_few": "{{count}} fałszywe tokeny · warte 0",
+  "fakes_many": "{{count}} fałszywych tokenów · wartych 0",
+  "fakes_other": "{{count}} fałszywego tokena · wartego 0",
+  "history.filling": "Historia jest uzupełniana",
+  "history.filling_back": "Historia jest uzupełniana, na razie do {{date}}",
+  "history.complete": "Historia kompletna"
 }

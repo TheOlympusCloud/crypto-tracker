@@ -29,5 +29,14 @@
   "trust.verified": "verificado",
   "trust.unknown": "desconhecido",
   "trust.scam": "falso · vale 0",
-  "privacy_score": "Pontuação de privacidade"
+  "privacy_score": "Pontuação de privacidade",
+  "badge.public": "pública",
+  "badge.private": "privada",
+  "worth.partly": "Só foi possível ler parte desta carteira: ela tem pelo menos isto",
+  "trust.name": "Seu nome: “{{name}}”.",
+  "fakes_one": "{{count}} token falso · vale 0",
+  "fakes_other": "{{count}} tokens falsos · valem 0",
+  "history.filling": "Histórico sendo preenchido",
+  "history.filling_back": "Histórico sendo preenchido, até {{date}} por enquanto",
+  "history.complete": "Histórico completo"
 }

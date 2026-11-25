@@ -29,5 +29,14 @@
   "trust.verified": "verified",
   "trust.unknown": "unknown",
   "trust.scam": "fake · worth 0",
-  "privacy_score": "Privacy score"
+  "privacy_score": "Privacy score",
+  "badge.public": "public",
+  "badge.private": "private",
+  "worth.partly": "Only part of this wallet could be read: it holds at least this much",
+  "trust.name": "Its name: “{{name}}”.",
+  "fakes_one": "{{count}} fake token · worth 0",
+  "fakes_other": "{{count}} fake tokens · worth 0",
+  "history.filling": "History filling in",
+  "history.filling_back": "History filling in, back to {{date}} so far",
+  "history.complete": "History complete"
 }
