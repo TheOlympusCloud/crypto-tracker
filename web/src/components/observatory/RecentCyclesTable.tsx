@@ -21,7 +21,7 @@ function truncTxid(txid: string): string {
 
 export function RecentCyclesTable({ firstPage }: RecentCyclesTableProps) {
   const { t } = useTranslation();
-  const { isUmbrel } = useNetwork();
+  const { torProxy: isUmbrel } = useNetwork();
   // Appended pages are tagged with the base page they were loaded under, so a
   // base refresh (focus revalidation) drops them by derivation, and a page that
   // was in flight across a refresh is discarded when it lands.

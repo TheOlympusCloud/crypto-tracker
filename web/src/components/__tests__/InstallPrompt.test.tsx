@@ -9,7 +9,7 @@ vi.mock("react-i18next", () => ({
   }),
 }));
 
-const network = vi.hoisted(() => ({ value: { isUmbrel: false } }));
+const network = vi.hoisted(() => ({ value: { isUmbrel: false, torProxy: false } }));
 vi.mock("@/context/NetworkContext", () => ({ useNetwork: () => network.value }));
 
 import { InstallPrompt } from "../InstallPrompt";
@@ -37,19 +37,19 @@ afterEach(() => { cleanup(); vi.useRealTimers(); });
 
 describe("InstallPrompt", () => {
   it("shows on the public site from the fifth visit, with no other precondition", async () => {
-    network.value = { isUmbrel: false };
+    network.value = { isUmbrel: false, torProxy: false };
     await mountOnVisit(5);
     expect(screen.queryAllByRole("button").length).toBeGreaterThan(0);
   });
 
   it("stays hidden on the public site before the fifth visit", async () => {
-    network.value = { isUmbrel: false };
+    network.value = { isUmbrel: false, torProxy: false };
     await mountOnVisit(4);
     expect(screen.queryAllByRole("button")).toHaveLength(0);
   });
 
   it("shows on Umbrel on the first visit", async () => {
-    network.value = { isUmbrel: true };
+    network.value = { isUmbrel: true, torProxy: true };
     await mountOnVisit(1);
     expect(screen.queryAllByRole("button").length).toBeGreaterThan(0);
   });

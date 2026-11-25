@@ -32,7 +32,7 @@ function subscribeStandalone(callback: () => void) {
  */
 export function InstallPrompt() {
   const { t } = useTranslation();
-  const { isUmbrel } = useNetwork();
+  const { torProxy: isUmbrel } = useNetwork();
   const isStandalone = useSyncExternalStore(
     subscribeStandalone,
     getIsStandalone,

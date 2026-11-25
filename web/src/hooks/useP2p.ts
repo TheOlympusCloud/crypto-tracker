@@ -53,7 +53,7 @@ function baseState(p: Polled<unknown>, interval: number, now: number): SourceSta
 
 /** Live P2P markets: verified Nostr snapshots, REST info, index and HodlHodl, composed into markets and source health. */
 export function useP2p(): P2pData {
-  const { isUmbrel, routeReady } = useNetwork();
+  const { torProxy: isUmbrel, routeReady } = useNetwork();
   const k = (name: string) => (routeReady ? `p2p:${name}:${isUmbrel}` : null);
   const opts = (signal: AbortSignal) => ({ isUmbrel, signal });
 
@@ -176,7 +176,7 @@ export interface P2pHistory {
 
 /** RoboSats daily volume (reachable coordinators) and Mostro completed trades; starts once enabled turns true. */
 export function useP2pHistory(enabled: boolean): P2pHistory {
-  const { isUmbrel, routeReady } = useNetwork();
+  const { torProxy: isUmbrel, routeReady } = useNetwork();
   const [started, setStarted] = useState(enabled);
   if (enabled && !started) setStarted(true);
   const on = started && routeReady;
