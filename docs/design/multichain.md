@@ -150,7 +150,7 @@ privacy scan and the wallet score (section 4.1).
 |---|---|---|---|---|---|---|
 | 1 | **Linked to a public wallet** | One of your private wallets can be tied to a public one (exists as the verdict) | Whatever is tied to your identity spreads to it | The tracker's verdicts | As the links it rests on | finding |
 | 2 | **Exchange exposure (KYC)** | Direct deposits to or withdrawals from a labelled exchange | The exchange knows the address is yours, and can be made to tell | Transfers + label sets | Fact (where labelled) | finding |
-| 3 | **Exchange deposit address shared** | Two of your wallets paid the same exchange deposit address | Deposit addresses belong to one exchange account: the two wallets are one customer | Transfers, the deposit-address guess of `detect.py` tightened (3.5) | Guess, high (0.85) | link + finding |
+| 3 | **Exchange deposit address shared** | Two of your wallets paid the same exchange deposit address (EVM, Tron, Bitcoin, Litecoin, Bitcoin Cash) | Deposit addresses belong to one exchange account: the two wallets are one customer | Transfers, and the candidate itself: a sync does not expand counterparties by default (depth 0), and never on Tron, so each unread address paid by two or more of my wallets is read once (`sync.sync_address`, at most 10 per sync, busiest first) | Guess, high (0.85), rules in 3.5 | link + finding |
 | 4 | **Flagged and sanctioned counterparties** | Dealings with addresses on OFAC's list, frozen by Tether or Circle, or labelled scam, hack, mixer | Exchanges freeze or question such funds | [0xB10C's OFAC lists](https://github.com/0xB10C/ofac-sanctioned-digital-currency-addresses) (MIT; XBT, ETH, USDT, USDC, TRX, SOL, BSC, ARB, LTC...), USDT/USDC `AddedBlackList`/`Blacklisted` events through the indexer, label sets | Fact | finding; feeds the lookup's "check before sending" |
 | 5 | **Activity hours** | The hours at which the wallet sends, and the time zone they suggest | A time zone narrows down who you are | Timestamps of transactions the wallet sent (already stored) | Estimate, only from 20 or more sent transactions | finding, never a link |
 
@@ -162,22 +162,23 @@ Ethereum, BNB Chain, Base, Arbitrum, Optimism, Polygon, Avalanche and any chain 
 | # | Check | Detects | Why you care | Data, free source | Reliability | Output |
 |---|---|---|---|---|---|---|
 | 1 | **First funder (gas)** | Who sent the first native coin, needed for gas, on each chain | A fresh wallet funded from your main wallet or from your exchange account is tied to it from its first transaction; the most used Sybil and clustering signal | The earliest incoming native transfer; own wallets: already stored; others: one `txlist`/`txlistinternal` call with `sort=asc` per chain (Routescan keyless, Blockscout, NodeReal, self-hosted) | Fact | finding; a funder that is mine is already a transfer link |
-| 2 | **Name records** | A primary ENS name (reverse record, checked forward), Basenames, `.bnb` (Space ID); the addresses of other chains a name publishes (ENSIP-9: BTC, SOL...) | A name is a public tag on every transaction; addresses listed on it tie chains together for anyone | `eth_call` to the ENS Universal Resolver on any Ethereum RPC (publicnode without a key, or your node); the Base and BNB Chain RPCs for Basenames and `.bnb` | Fact (reverse record is set by the address itself); listed addresses: 0.8 | finding; link 0.8 between the name's address and each address it lists |
+| 2 | **Name records** | A primary ENS name (reverse record, checked forward), Basenames; the addresses of other chains a name publishes (ENSIP-9: BTC, SOL...) | A name is a public tag on every transaction; addresses listed on it tie chains together for anyone | `eth_call` to the ENS Universal Resolver (on Base for Basenames), sent where 4.9 says: the indexer that already reads the wallet if it serves `eth_call` (Routescan does, keyless), else the chain's `rpc` in `CT_CHAINS`, else a public RPC | Fact (reverse record is set by the address itself); listed addresses: 0.8 | finding; link 0.8 between the name's address and each address it lists |
 | 3 | **Same address on several EVM chains** | The address is active on N chains | Anything that ties it on one chain ties it on all | Already read | Fact | finding (low impact, explains) |
 | 4 | **Bridge records** | Bridging through CCTP, Across, Wormhole, the OP Stack and Arbitrum bridges, with the recipient the bridge event names | The recipient is public: the two ends are one person to anyone looking | The bridge's own event in the receipt of your transaction (no new party involved) | Fact (0.95, like swaps) | link (section 3.1) |
-| 5 | **Mixer use and anonymity set** | Deposits to and withdrawals from Tornado Cash pools (and other labelled mixers); when both legs are your wallets, how many deposits went into the pool between them | Tornado use is flagged by exchanges; a small anonymity set links deposit and withdrawal | Pool `Deposit`/`Withdrawal` logs for that block range through the indexer's `logs` module (Routescan keyless, checked) | Fact for use; link at most 1 / (1 + deposits in between), only when both legs are yours | finding; link |
+| 5 | **Mixer use and anonymity set** | Deposits to and withdrawals from Tornado Cash pools (and other labelled mixers); when both legs are your wallets, how many deposits went into the pool between them | Tornado use is flagged by exchanges; a small anonymity set links deposit and withdrawal | Pool `Deposit`/`Withdrawal` logs for that block range through the indexer's `logs` module (Routescan keyless, checked) | Fact for use; link at most 1 / (1 + deposits in between), capped at 0.3, only when both legs are yours (3.5) | finding; link |
 | 6 | **NFTs moved between your wallets** | ERC-721/1155 transfers between two of your wallets | As direct a link as a payment; today they are not read | `tokennfttx`, `token1155tx` lists of the same indexers | Fact; NFTs from strangers ignored (anyone can airdrop) | link (transfer) |
 | 7 | **Open token approvals** | Unlimited or large ERC-20 approvals still open, and Permit2 allowances, with the spender's label | Security rather than privacy: an approval to a drained or unknown contract can empty the wallet; approvals also list the dApps you use | `Approval` logs with your address as owner, the current `allowance` by `eth_call` | Fact | finding, score impact 0 (shown under security) |
 
 Smart-account owners and deployers (a Safe's `getOwners()`, the creator of a contract wallet)
-are facts too, but matter to few users: deferred (6.2).
+are facts too, but matter to few users, and `.bnb` names need a resolver of their own: both
+deferred (6.2).
 
 ### 2.4 Solana
 
 | # | Check | Detects | Why you care | Data, free source | Reliability | Output |
 |---|---|---|---|---|---|---|
-| 1 | **Fee payer** | Your transactions whose fee was paid by another address | The payer holds a key that signed with you: one owner, unless it is a relayer | `getTransaction` (already fetched): `accountKeys[0]` | Fact; relayers are hubs or labelled and end the path, like services | link 0.9 |
-| 2 | **Co-signers** | Two addresses signing one transaction | Solana's equivalent of common inputs | `accountKeys[].signer` of the same transactions | Fact; marketplace and multisig authorities are hubs or labelled | link 0.9 |
+| 1 | **Fee payer** | Your transactions whose fee was paid by another address | The payer holds a key that signed with you: one owner, unless it is a relayer | `getTransaction` (already fetched): `accountKeys[0]` | Fact. A payer that is not mine is read first (one `getSignaturesForAddress`, limit 1000): 1000 signatures or a label make it a hub and no link is stored (3.5) | link 0.9 |
+| 2 | **Co-signers** | Two addresses signing one transaction | Solana's equivalent of common inputs | `accountKeys[].signer` of the same transactions | Fact. A co-signer that is not mine is read first, as a payer: marketplace and RFQ authorities come out as hubs | link 0.9 |
 | 3 | **First funder and rent refunds** | Who first funded the account; where the rent of your closed token accounts went | Refunds to another wallet tie the two; today they are booked to the token account, not its owner | Same transactions: `closeAccount` destination, first incoming SOL | Fact | link (transfer); finding |
 | 4 | **Exchange exposure** | As 2.2 #2 | As 2.2 #2 | Needs Solana exchange labels, which the open sets lack: exchanges' published proof-of-reserves addresses (OKX signs each one), plus your own labels | Fact once labelled | finding |
 | 5 | **Name records** | `.sol` names (SNS) pointing at the address | As EVM names | Bonfida's free SNS proxy, or the name-service program through your RPC | Fact | finding |
@@ -187,8 +188,8 @@ are facts too, but matter to few users: deferred (6.2).
 | # | Check | Detects | Why you care | Data, free source | Reliability | Output |
 |---|---|---|---|---|---|---|
 | 1 | **Activator** | The address that activated the account (the first TRX or TRC-10 transfer, which pays the account's creation) | Exchanges activate their deposit addresses; a wallet activated by your other wallet is tied to it | TronGrid `transactions?only_to=true&order_by=block_timestamp,asc&limit=1` | Fact | finding; transfer link already |
-| 2 | **Energy and bandwidth delegation** | `DelegateResourceContract` from one address to another | Delegating resources to your own wallets ties them; rental services are hubs | TronGrid transaction list (today only `TransferContract` is read) | Fact; rental services end the path | link 0.8 |
-| 3 | **Deposit address shared, exchange exposure, Tether freezes** | 2.2 #2, #3, #4 on USDT-TRC20 | Most exchange flows on Tron are USDT | GraphSense Tron labels, Tether's `AddedBlackList` events on TronGrid | As 2.2 | link + finding |
+| 2 | **Energy and bandwidth delegation** | `DelegateResourceContract` from one address to another | Delegating resources to your own wallets ties them; rental services are hubs | TronGrid transaction list (today only `TransferContract` is read) | Fact. A delegator that is not mine is read first (one TronGrid page): a full page of 200 or a label make it a hub, as rental services are, and no link is stored | link 0.8 |
+| 3 | **Deposit address shared, exchange exposure, Tether freezes** | 2.2 #2, #3, #4 on USDT-TRC20 | Most exchange flows on Tron are USDT | GraphSense Tron labels, Tether's `AddedBlackList` events on TronGrid; deposit-address candidates read as in 2.2 #3 (three TronGrid calls each) | As 2.2 | link + finding |
 
 Account permissions (owner or active keys set to another address) are facts but rare: deferred.
 
@@ -207,7 +208,8 @@ recognises its unequal outputs reliably.
 1. **Linked to a public wallet**: the exposure that matters most; it exists, and becomes the
    first finding of every wallet's score.
 2. **Exchange exposure**: facts, on every chain, and the party most likely to be asked.
-3. **Exchange deposit address shared**: strong and cheap, on EVM, Tron and Bitcoin alike.
+3. **Exchange deposit address shared**: strong and cheap, on EVM, Tron, Bitcoin, Litecoin
+   and Bitcoin Cash.
 4. **Bridge records**: facts that tie chains together, read without any new party.
 5. **First funder and activator**: facts, the first thing a Sybil hunter looks at.
 6. **Name records**: facts, and a name undoes every other precaution.
@@ -246,17 +248,23 @@ address that is not declared yet:
 
 | Bridge | Event on the source chain | Recipient field | Destination |
 |---|---|---|---|
-| Circle CCTP (v1, v2) | `DepositForBurn` | `mintRecipient` (bytes32; an EVM or Solana address) | `destinationDomain` |
+| Circle CCTP (v1, v2) | `DepositForBurn` | `mintRecipient` (bytes32: an EVM address, or on Solana a token account) | `destinationDomain` |
 | Across v3 | `FundsDeposited` / `V3FundsDeposited` | `recipient` | `destinationChainId` |
-| Wormhole Token Bridge | `LogMessagePublished` | `to` in the transfer payload | `toChain` |
+| Wormhole Token Bridge | `LogMessagePublished` | `to` in the transfer payload (on Solana a token account) | `toChain` |
 | OP Stack (Base, Optimism) | `ETHDepositInitiated`, `ERC20DepositInitiated` | `to` | the L2 |
 | Arbitrum | gateway router deposit | `to` | Arbitrum One |
 
 Only the transactions my wallets sent to a bridge contract are read again, as receipts
-(`eth_getTransactionReceipt` through the indexer's `proxy` module or the chain's RPC): no
-third party learns anything new. Each record is stored like a THORChain swap (the `swap`
-table already has protocol, sender, recipient, tx_in, tx_out) and becomes a link
-`bridge-record` of 0.95. The amount-and-time match stays for bridges without a decoder.
+(`eth_getTransactionReceipt` through the indexer's `proxy` module, which Routescan serves
+without a key, or the chain's RPC): no third party learns anything new. Each record is
+stored like a THORChain swap (the `swap` table already has protocol, sender, recipient,
+tx_in, tx_out) and becomes a link `bridge-record` of 0.95. The amount-and-time match stays
+for bridges without a decoder.
+
+On Solana, CCTP and Wormhole name the recipient's token account, not the wallet. Its owner
+is read with one `getAccountInfo` (`jsonParsed`, `info.owner`) on the Solana RPC that
+already reads my wallets (`CT_SOLANA`), so no new party. A token account closed since has
+no owner to read: the record is kept without a link and says why.
 Solana-side origins (Wormhole, CCTP from Solana) can be looked up on Wormholescan by
 transaction (free, no key, checked); that sends the transaction id out, so `CT_SWAPS=off`
 turns it off, like the THORChain and Maya lookups.
@@ -282,19 +290,32 @@ ends the walk there, as today.
 
 ### 3.4 One privacy score per wallet, across chains
 
-A wallet's score is am-i-exposed's address score (`score.ts`, base 93, same grades) over the
-findings of all its addresses on all chains, plus findings about the wallet itself:
+The server computes it, once, for everything that shows it or alerts on it, so the grade is
+the same on every device and equals the one alerted on. The formula is am-i-exposed's address
+score (`score.ts`: base 93, impacts summed and clamped, the same grade bounds), ported in a few
+lines of Python; one shared fixture of findings is scored by both versions in their tests.
 
-- per-address findings: from the server for account chains; for Bitcoin and Litecoin
-  addresses, am-i-exposed's own address analysis when it has run (from its result cache);
-- each finding id counts once, with its worst impact across addresses;
-- wallet findings: linked to a public wallet (impact scaled by the link's confidence), in a
-  group with a public wallet (3.2), exchange exposure;
-- `partial` when the verdict is not "full" (history filling in, a source down, an address not
-  deep-scanned yet): shown as "partly checked", never as a clean grade.
+It scores:
+
+- the wallet's own findings: linked to a public wallet (impact scaled by the link's
+  confidence), in a group with a public wallet (3.2), exchange exposure, deposit address
+  shared;
+- the server-side findings of each of its addresses, on every chain: the account-chain
+  checks, and for UTXO addresses their reuse, read from stored transfers;
+- each finding id once, with its worst impact across the wallet's addresses: one exchange
+  exposure is enough to be exposed. Reuse is the exception, counted per address: −10 for
+  each reused address, at most −40, where am-i-exposed's single-address score gives −70 to
+  −93 and would make a whole HD wallet F for one slip;
+- `partial` exactly when the verdict is not "full" (history filling in, a source down).
+
+am-i-exposed's deep scan of a Bitcoin or Litecoin address (its 30-odd heuristics, run in the
+browser) is not part of the wallet grade: the server cannot see it. It stays one click away,
+and its own grade shows next to the address once it has run, labelled "deep scan". A Bitcoin
+HD wallet that was never deep-scanned therefore has a full wallet grade, built from the
+wallet-level and reuse findings and labelled "wallet checks; addresses not deep-scanned".
 
 The score breaks down into its findings (`ScoreBreakdown`), so the number is never alone. An
-alert is raised when a wallet's grade drops.
+alert is raised when the grade drops, from the same number the page shows.
 
 ### 3.5 How it fits the existing links, verdicts and graph
 
@@ -304,13 +325,23 @@ or a hub ends a path, a guessed one weakens it, and several pieces of evidence c
 
 | Kind | Confidence | Rule | Combines as |
 |---|---|---|---|
-| `deposit-address` | 0.85 | Two of my wallets paid the same address that forwards only to one labelled exchange, was read in full, is not a hub, and received from no more than 3 senders | combine: one row per deposit address, so repeated payments to one address count once |
+| `deposit-address` | 0.85 | Two of my wallets paid the same address that forwards only to one labelled exchange, was read in full (the candidate read of 2.2 #3), is not a hub, and received from no more than 3 senders | combine: one row per deposit address, so repeated payments to one address count once |
 | `bridge-record` | 0.95 | A bridge event names the recipient (3.1) | `max`, like `swap` |
 | `name` | 0.8 | A name's primary address lists another address (ENSIP-9) | `max` |
-| `fee-payer` | 0.9 | Solana: one address paid the fee of another's transaction | combine |
-| `co-signer` | 0.9 | Solana: two addresses signed one transaction | combine |
-| `delegation` | 0.8 | Tron: resources delegated from one address to another | combine |
-| `mixer` | ≤ 1 / (1 + deposits in between), at most 0.5 | Tornado deposit by one of my wallets, withdrawal to another, same pool | `max` |
+| `fee-payer` | 0.9 | Solana: one address paid the fee of another's transaction; a stranger only after its read (2.4) | combine |
+| `co-signer` | 0.9 | Solana: two addresses signed one transaction; a stranger only after its read (2.4) | combine |
+| `delegation` | 0.8 | Tron: resources delegated from one address to another; a stranger only after its read (2.5) | combine |
+| `mixer` | ≤ 1 / (1 + deposits in between), at most 0.3 | Tornado deposit by one of my wallets, withdrawal to another, same pool. An upper bound: the real anonymity set is every unspent earlier deposit, so the cap keeps it below the alert threshold on its own | `max` |
+
+**Precondition for every new kind.** A link is stored only between two of my wallets, or
+between one of mine and a stranger that has been read and is neither busy nor labelled. A
+busy stranger is stored as a hub (`node.hub`), which `graph.trace` already treats as the end
+of a path. This matters because `hub` is only ever set by reading an address, and a sync reads
+strangers only on the deep chains (`chains.DEEP`) and only when asked for depth: a Solana fee
+payer or a Tron delegator that nobody read would otherwise join two strangers' wallets (two
+links of 0.9 through one relayer give 0.9 × 0.9 × 0.7 = 0.57, above the alert threshold).
+Each check that creates such links runs M1's busy check on the stranger first, inside the
+sync's budget.
 
 Transfers that become readable (NFTs between my wallets, rent refunds booked to the owner)
 are transfers, worth 1.0, under the existing "trusted token" rule. First funders and
@@ -340,6 +371,11 @@ sends ids and parameters, never sentences:
 }
 ```
 
+- `Finding` requires `title`, `description` and `recommendation`, which the adapter below
+  fills. `evidence` is not in upstream's type: `TrackerFinding = Finding & { evidence }` in
+  `web/src/lib/tracker/types.ts` carries it, and upstream's components ignore it.
+- The server also sends the score (3.4) with the findings, in `ScoringResult`'s shape
+  (`score`, `grade`, `findings`, `partial`), so the page never computes its own.
 - Ids of tracker checks start with `x-`, so they never collide with upstream's.
 - Their texts (`finding.<id>.title`, `.description`, `.recommendation`) live in a tracker
   namespace, `tracker-exposure`. A small adapter in `web/src/lib/tracker/` fills `title`,
@@ -391,8 +427,8 @@ interface ChainProfile {
   verdicts. A check may make extra calls (a first funder, an `eth_call`) only through the
   context's budgeted client (4.6).
 - `GET /api/tracker/exposure/<address>?chains=` scans any address. `GET /analysis` gains the
-  findings of each of my wallets, computed from stored data plus what syncs cache (names,
-  approvals, funders), so opening the wallet page costs no API call.
+  findings and score of each of my wallets, computed from stored data plus what syncs cache
+  (names, approvals, funders), so opening the wallet page costs no API call.
 - New configuration follows the existing pattern: a public default, overridable per chain in
   `CT_CHAINS` (`"rpc"` for `eth_call` and logs, next to `"url"`), env vars for the rest. That
   is also the hook OLYMPUS-292 asked for: a local node for another chain is one URL.
@@ -429,7 +465,8 @@ interface ChainProfile {
 - A scan of an address that is not mine has a budget (about 60 calls). When it runs out, the
   result is `partial` and says which checks did not run, the way a verdict says "Partly
   checked".
-- Per-day quotas are counted and shown in "Wallets & sync", so a user sees why a check waits.
+- A per-day quota that runs out (Routescan's) is counted, and the "partly checked" note names
+  it, so a user sees why a check waits.
 
 ### 4.7 The UI
 
@@ -463,11 +500,19 @@ are not added: the server sends ids and parameters.
 ### 4.9 Privacy of the analysis itself
 
 Every new call is listed in the README's Privacy section with what it reveals. The design
-avoids new parties: bridge records come from receipts at the indexer that already serves the
-wallet; names come from an RPC (your node if set); label and sanction lists are downloaded
-whole. The two exceptions can be turned off: Wormholescan with `CT_SWAPS=off`, Bonfida's SNS
-proxy (used only when no Solana RPC that serves the name service is set) with
-`CT_LABELS=off`, which turns off name lookups like contract names.
+avoids new parties where it can: bridge records come from receipts at the indexer that
+already serves the wallet; Solana token-account owners from the same Solana RPC; label and
+sanction lists are downloaded whole.
+
+- **`eth_call`** (names, allowances) goes to the indexer that already reads the wallet when it
+  serves `eth_call` (Routescan for Ethereum and Avalanche, Etherscan), else to the chain's
+  `rpc` in `CT_CHAINS` (your node), else to a public RPC such as publicnode. That public RPC
+  is a new party that sees each of my EVM addresses it is asked about; the README says so,
+  and `CT_LABELS=off` turns name lookups off as it does contract names.
+- **Wormholescan** (Solana-side bridge records only) sees transaction ids; `CT_SWAPS=off`
+  turns it off, like the THORChain and Maya lookups.
+- **Bonfida's SNS proxy**, used only when no Solana RPC that serves the name service is set,
+  sees my Solana addresses; `CT_LABELS=off` turns it off.
 
 ## 5. The split
 
@@ -484,47 +529,64 @@ Privacy, the fact-and-guess table) and a review before it is merged.
 - "Privacy score" in the tracker works for those chains and opens that scan.
 - Checks: exchange exposure (2.2 #2), flagged and mixer counterparties from the existing
   labels (2.2 #4, labels only), same address on several EVM chains (2.3 #3).
-- Delivers the finding contract (4.1), `tracker/exposure/` with its registry and impact table,
+- Delivers the finding contract (4.1), `tracker/exposure/` with its registry, impact table
+  and score (the Python port of `score.ts`, tested on one fixture shared with a vitest),
   `GET /api/tracker/exposure/<address>`, the adapter, the `tracker-exposure` namespace, the
-  in-memory cache and the scan budget.
+  in-memory cache, the scan budget, and the busy check of a stranger (3.5) that M3, M4, M9
+  and M14 use: one Solana `getSignaturesForAddress` (limit 1000), one TronGrid page, or
+  `sync.sync_address` elsewhere; a busy or labelled stranger is stored as a hub.
 - Done when: a known exchange-funded test address shows the exchange finding with evidence
   links; a partial read says "partly checked"; nothing is stored for a scanned address
-  (test); the locale test passes with the new namespace.
+  (test); the busy check stores a Solana address with 1000 signatures as a hub and one with
+  10 as nothing (tests); the locale test passes with the new namespace.
 - Depends on: nothing. Parallel: alone in its stage.
 
 ### Stage 3 (all depend on M1 only, unless said)
 
 **M2. One privacy score per wallet, across chains**
 - Each wallet card and panel shows a grade and its findings by chain; the portfolio shows
-  grades; an alert fires when a grade drops. Rules of 3.4, including `partial`.
+  grades; a node's panel in the graph lists the findings of that wallet; an alert fires when
+  a grade drops. Rules of 3.4, including `partial`, computed on the server.
 - Done when: a wallet linked at 70% to a public one loses the stated impact; a wallet with a
-  history still filling in reads "partly checked"; opening the page makes no API call.
-- Files: `graph.py` (verdict output), `app.py` `/analysis`, `components/tracker/portfolio/`.
-  Parallel: yes.
+  history still filling in reads "partly checked"; a Bitcoin-only HD wallet never
+  deep-scanned shows a full wallet grade labelled "addresses not deep-scanned", and one
+  reused address costs it −10, not an F; the alerted grade equals the displayed one (test);
+  opening the page makes no API call.
+- Files: `tracker/exposure/` (wallet findings), `app.py` `/analysis`, `alerts.py`,
+  `components/tracker/portfolio/`, the graph's node panel. Parallel: yes.
 
-**M3. Exchange deposit addresses shared by two wallets**
+**M3. Shared counterparties: exchange deposit addresses, busy strangers**
+- Each sync reads the unread, unlabelled addresses that two or more of my wallets dealt with,
+  at most 10, busiest first (`sync.sync_address` on EVM, Tron, Bitcoin, Litecoin and Bitcoin
+  Cash; on Solana the one-call busy check of 2.4; none on Dogecoin, whose quota is too
+  small). Busy ones become hubs, so they stop paths, which today an unread Solana or Tron
+  exchange wallet does not.
 - New link `deposit-address` (3.5) and finding; tightened deposit-address guess.
-- Done when: two wallets paying one deposit address are linked at 0.85 and alerted; a hot
-  wallet, a hub, an address with 4+ senders or one that also pays anyone else never makes
-  the link (tests for each).
+- Done when: two wallets paying one deposit address are linked at 0.85 and alerted, on EVM
+  and on a Tron USDT deposit address never read before; a hot wallet, a hub, an address with
+  4+ senders or one that also pays anyone else never makes the link (tests for each); the
+  eleventh candidate waits for the next sync.
 - Files: new `tracker/deposits.py`, `detect.py`, one line in `sync.py`, `kinds.ts`.
   Parallel: yes.
 
-**M4. First funder, activator and fee sponsor**
+**M4. First funder and activator**
 - EVM first funder per chain, Tron activator, Solana first funder: shown in scans and wallet
   panels, naming the funder (your wallet, an exchange, a stranger who also funded another
-  wallet of yours).
+  wallet of yours). A stranger funder is read first with the busy check of 2.4/2.5, so an
+  unlabelled exchange hot wallet is not called "a stranger who funded both".
 - Done when: own wallets use stored history (no call); other addresses take at most one call
-  per chain; a CEX funder yields the exchange-exposure wording.
-- Files: `tracker/exposure/funder.py`, `chains.py` (one ascending read helper). Parallel:
+  per chain; a CEX funder yields the exchange-exposure wording; a busy unlabelled funder of
+  two wallets of mine is marked a hub and named as such.
+- Files: `tracker/exposure/funder.py` only (its ascending read uses `chains.get`). Parallel:
   yes.
 
 **M5. Name records: ENS, Basenames, SNS**
 - Primary name (verified forward) and the other-chain addresses a name lists; finding and
   `name` link (0.8).
 - Done when: a known ENS name is found and shown; a reverse record whose forward does not
-  match is ignored; addresses listed on the name become links; works against a self-hosted
-  RPC set in `CT_CHAINS`.
+  match is ignored; addresses listed on the name become links; `eth_call` goes to Routescan
+  for Ethereum and to a self-hosted RPC when one is set in `CT_CHAINS`; `CT_LABELS=off`
+  makes no name lookup.
 - Data: Universal Resolver by `eth_call`; keccak-256 for namehashes (a small pure-Python
   implementation tested against known vectors, or one vetted dependency; to be decided in
   the issue). Files: `tracker/exposure/names.py`, a `name` table. Parallel: yes.
@@ -532,9 +594,11 @@ Privacy, the fact-and-guess table) and a review before it is merged.
 **M6. Bridge records**
 - CCTP, Across, Wormhole (EVM side), OP Stack and Arbitrum bridges decoded from receipts
   (3.1); `bridge-record` links; records in `swap`.
-- Done when: recorded receipts of each bridge give the right recipient and destination chain
-  (EVM and Solana recipients); a bridge to an undeclared address shows in the wallet's
-  verdict as a link to a stranger; no new host is called with `CT_SWAPS=off`.
+- Done when: recorded receipts of each bridge give the right recipient and destination chain;
+  a recorded CCTP and a recorded Wormhole transfer to Solana resolve the token account to its
+  owner wallet (one `getAccountInfo` each), and a closed token account gives no link; a
+  bridge to an undeclared address shows in the wallet's verdict as a link to a stranger; no
+  new host is called with `CT_SWAPS=off`.
 - Files: new `tracker/bridges.py`, `sync.py`, `kinds.ts`. Depends on nothing (stage 3 to
   share the review load). Parallel: yes.
 
@@ -556,10 +620,13 @@ Privacy, the fact-and-guess table) and a review before it is merged.
 
 **M9. Solana links: fee payers, co-signers, rent refunds**
 - `fee-payer` and `co-signer` links; rent refunds of closed token accounts booked to the
-  owner.
-- Done when: recorded transactions give the right links; a relayer paying for many
-  wallets is a hub and links nobody; existing Solana transfers are unchanged.
-- Files: `chains.py` (Solana part), `kinds.ts`. Parallel: yes.
+  owner. Signers are not in the transfer rows: the Solana reader returns them as `links`,
+  as the UTXO reader returns `btc_links`, for snapshots and full reads (`history.py`).
+- Done when: recorded transactions give the right links; a relayer that was never read
+  before is read once, comes out as a hub and links nobody (test), and two wallets of mine
+  that used it are not linked; existing Solana transfers are unchanged.
+- Files: `chains.py` (Solana part), `history.py`, `kinds.ts`. Parallel: yes; shares
+  `chains.py` with M14 and M15 (different functions).
 
 **M10. Exchange labels for Solana and Tron**
 - Exchanges' published proof-of-reserves addresses (OKX signs each; others where they
@@ -585,14 +652,15 @@ Privacy, the fact-and-guess table) and a review before it is merged.
 
 **M13. Mixer use and anonymity set**
 - 2.3 #5, finding and `mixer` link.
-- Done when: a recorded deposit and withdrawal with few deposits in between give the bound;
-  a large pool gives no link; the pool scan is cached by block range.
+- Done when: a recorded deposit and withdrawal with few deposits in between give the bound,
+  never above 0.3; a large pool gives no link; the pool scan is cached by block range.
 - Files: new `tracker/mixers.py`. Parallel: yes.
 
 **M14. Tron resource delegation links**
 - `delegation` links; rental services end paths.
-- Done when: a recorded delegation between two wallets of mine links them at 0.8; a
-  delegator that is a hub links nobody; Tron transfers are unchanged.
+- Done when: a recorded delegation between two wallets of mine links them at 0.8; a rental
+  service never read before is read once, comes out as a hub and links nobody (test); Tron
+  transfers are unchanged.
 - Files: `chains.py` (Tron part). Parallel: yes.
 
 **M15. NFT transfers between my wallets**
@@ -615,9 +683,9 @@ Privacy, the fact-and-guess table) and a review before it is merged.
 
 | Stage | Issues | Notes |
 |---|---|---|
-| 2 | M1 | Foundation, small: three findings on existing data. |
-| 3 | M2, M3, M4, M5, M6, M7, M8, M9, M10 | Each in its own module; shared files (`kinds.ts`, `sync.py`, the locale files, `app.py`) get one-line or alphabetical additions. |
-| 4 | M11, M12, M13, M14, M15, M16 | M11 needs M6; M12 is most useful once stage 3 links exist. |
+| 2 | M1 | Foundation, small: three findings on existing data, and the busy check stage 3 shares. |
+| 3 | M2, M3, M4, M5, M6, M7, M8, M9, M10 | Each in its own module; shared files (`kinds.ts`, `sync.py`, the locale files, `app.py`) get one-line or alphabetical additions. M9 is the only one in `chains.py`. |
+| 4 | M11, M12, M13, M14, M15, M16 | M11 needs M6; M12 is most useful once stage 3 links exist. M14 and M15 both edit `chains.py`, in different functions. |
 
 Expected conflicts are trivial: registry lines, `LINKS`/`DASHES` entries, locale keys and
 `SCHEMA` lines. Whoever merges second rebases on `feat/multichain`.
@@ -626,9 +694,9 @@ Expected conflicts are trivial: registry lines, `LINKS`/`DASHES` entries, locale
 
 ### 6.1 To confirm during implementation
 
-- Routescan without a key serves `logs` (checked) and the `proxy` receipt and `eth_call`
-  calls (documented, not yet called here); the default public RPC per EVM chain (publicnode
-  answers for Ethereum).
+- Routescan without a key serves `logs`, and the `proxy` receipt and `eth_call` calls (all
+  three checked); the default public RPC per EVM chain where the indexer has no `eth_call`
+  (publicnode answers for Ethereum).
 - Circle's and Wormholescan's APIs answer without a key (both answered here); they are only
   needed for Solana-side records.
 - That at least one exchange's proof-of-reserves list can be downloaded without an account
@@ -638,7 +706,7 @@ Expected conflicts are trivial: registry lines, `LINKS`/`DASHES` entries, locale
 
 ### 6.2 Deferred
 
-Smart-account owners and deployers (Safe), Tron account permissions, CashFusion detection,
-LayerZero/Stargate recipient decoding, local nodes for chains other than Bitcoin (only the
-URL hook is built), a cross-chain transaction graph in upstream's graph explorer (it is
-UTXO-shaped; the tracker's graph covers cross-chain).
+Smart-account owners and deployers (Safe), `.bnb` names, Tron account permissions,
+CashFusion detection, LayerZero/Stargate recipient decoding, local nodes for chains other
+than Bitcoin (only the URL hook is built), a cross-chain transaction graph in upstream's
+graph explorer (it is UTXO-shaped; the tracker's graph covers cross-chain).
