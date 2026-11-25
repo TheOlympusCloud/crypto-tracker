@@ -95,6 +95,10 @@ with more transactions than a lookup reads (25), since no single call reaches ba
 there. Your own
 wallets are answered from their stored history once it is complete.
 
+Names: an EVM address is looked up in ENS (on Ethereum) and Basenames (on Base), a Solana
+address in SNS (.sol). Base needs no key for this: names are asked of Base's own contracts,
+not of its indexer. Bitcoin Cash addresses that a name lists are not read yet.
+
 ## Install
 
 ### With Docker Compose
@@ -308,14 +312,14 @@ only the proxy reaches the app.
 | `CT_BLOCKSCOUT_KEY` | unset | Free Blockscout API key (`proapi_…`, from [dev.blockscout.com](https://dev.blockscout.com)); turns on Base, Arbitrum, Optimism and Polygon, token balances included. Set it in the environment, never in a file you commit. |
 | `CT_NODEREAL_KEY` | unset | Free NodeReal API key (from [nodereal.io](https://nodereal.io), MegaNode); turns on BNB Chain. Calls are paced to the free plan's limit, about one every two seconds. |
 | `CT_ETHERSCAN_KEY` | unset | Free Etherscan API key; turns on Arbitrum and Polygon, the chains Etherscan's free plan still covers. Not needed with `CT_BLOCKSCOUT_KEY`. |
-| `CT_CHAINS` | unset | JSON file that adds EVM chains or points built-in ones at your own indexer, see `chains.example.json`. Keep the real file as `chains.json` (git-ignored). |
+| `CT_CHAINS` | unset | JSON file that adds EVM chains or points built-in ones at your own indexer, see `chains.example.json`. Keep the real file as `chains.json` (git-ignored). `"rpc"`: your own node's JSON-RPC URL for that chain, used for name lookups (`ethereum`, `base`). |
 | `CT_LITECOIN`, `CT_BITCOINCASH`, `CT_DOGECOIN`, `CT_TRON`, `CT_SOLANA` | public APIs | Base URL of the indexer for that chain (Esplora, Haskoin, BlockCypher, TronGrid, Solana RPC). |
 | `CT_DELAY` | `0.25` | Seconds between API calls. |
 | `CT_SYNC_EVERY` | unset | Sync all wallets every this many minutes while the server runs. |
 | `CT_SWAPS` | `on` | `off` never asks THORChain or Maya about your addresses. `CT_THORCHAIN` and `CT_MAYA` set their Midgard URLs. |
 | `CT_CURRENCY` | `USD` | Currency of the values, e.g. `EUR` (ECB reference rate). |
 | `CT_PRICES` | `on` | `off` never asks for prices. |
-| `CT_LABELS` | `on` | `off` never downloads label sets or asks an explorer for contract names. |
+| `CT_LABELS` | `on` | `off` never downloads label sets, asks an explorer for contract names or looks up names (ENS, Basenames, SNS). |
 | `CT_BTC_PAGES`, `CT_EVM_ROWS` | `8`, `1000` | History loaded per address (pages of 25 / rows per list). |
 
 ## Android
@@ -447,13 +451,16 @@ scanned yet.
 | First funded by the same address as your other wallets | -10, medium | A stranger sent the address, one of your wallets, its first coins and also sent coins to another of your wallets; it was read and is not busy. |
 | First funded by an exchange | -5, medium | An address an open label set or you label as an exchange sent it its first coins. Comes on top of "Dealt directly with an exchange": the withdrawal is the address's first transaction. |
 | First funded by a busy address | 0, low | As two rows up, but the stranger turned out busy or a known service, so it is stored as a very active address and links nobody. |
+| Has a public name | -15, high | The address's primary name: ENS, Basenames or SNS (.sol). Counted only when the name points back at the address, since anybody can point their own reverse record at any name. |
+| Its name lists addresses on other chains | -5, medium | The addresses of Bitcoin, Litecoin, Dogecoin, Tron, Solana or other EVM chains that the name publishes (ENSIP-9). |
 
 The score is am-i-exposed's address score: 93, plus the impacts, kept within 0 to 100;
 A+ from 90, B from 75, C from 50, D from 25, F below (`tracker/exposure/`, tested against
 `score.ts` on one shared set of cases). The impacts are a first proposal, to be tuned on
 real wallets. Each finding lists the transactions it rests on, with links to the chain's
-explorer. Only labels from a source that states them count: a guessed label (behaviour, a
-contract name) makes no finding, and a token a stranger airdropped makes no counterparty.
+explorer (a name rests on no transaction, so it lists none). Only labels from a source that
+states them count: a guessed label (behaviour, a contract name) makes no finding, and a
+token a stranger airdropped makes no counterparty.
 No finding is no clean bill: only labelled addresses can be recognised.
 
 The first funder is the sender of the earliest native coin the address received on each
@@ -486,10 +493,10 @@ browser: with [a Bitcoin node of your own](#a-bitcoin-node-of-your-own), at that
 this server; otherwise at mempool.space (or at the mempool instance set in its own settings),
 and tor-check.copexit.workers.dev to see whether you use Tor. `CT_ESPLORA` and `CT_CHAINS` do
 not apply to it. The privacy scan of an EVM, Solana or Tron address is made by the tracker's
-server instead: like a lookup, it sends the address to the indexer of its chain, nowhere
-else, and stores nothing. Finding its first funder can take one more call to the same indexer.
-On a wallet of yours, a stranger who first funded it and also funded another of your wallets
-is looked up there too, as a sync looks up a counterparty.
+server instead: like a lookup, it sends the address to the indexer of its chain, and to the
+name services below (Names); it stores nothing. Finding its first funder can take one more
+call to the same indexer. On a wallet of yours, a stranger who first funded it and also
+funded another of your wallets is looked up there too, as a sync looks up a counterparty.
 
 Every address you sync is sent to the indexer that answers for it, so that indexer sees
 your wallets together, from one IP address. That is exactly the link this app helps you
@@ -504,6 +511,15 @@ as private as that indexer is discreet.
 
 Swaps: each of your addresses is also looked up at the THORChain and Maya Midgard APIs.
 `CT_SWAPS=off` turns that off.
+
+Names: each of your EVM addresses is looked up once a day in ENS, at the indexer that
+already reads it (Routescan), and in Basenames at a public Base RPC
+(base-rpc.publicnode.com), which is a new party: it sees each of your EVM addresses it is
+asked about. Your Solana addresses are looked up in SNS at the Solana RPC that already reads
+them. A scan does the same for the address scanned. With your own nodes, set `"rpc"` for
+`ethereum` and `base` in `CT_CHAINS`: the calls go there instead. `CT_LABELS=off` makes no
+name lookup at all. Names read through a gateway (CCIP-read, such as cb.id) are not followed,
+since that would tell the gateway too.
 
 Prices: only asset identifiers (coin names, token contracts) go to the price API, never
 addresses or amounts.
@@ -526,6 +542,9 @@ price API; `CT_PRICES=off` spares it too.
   list](https://tokens.uniswap.org) and [Jupiter's token API](https://dev.jup.ag/docs/token-api)
   (names and verified flag of Solana tokens), no key, cached for a day.
 - Labels: see [Who is on the other side](#who-is-on-the-other-side).
+- Names: ENS's Universal Resolver on Ethereum, the ENSIP-19 reverse registrar and the
+  Basenames registry on Base, and the SNS name-service accounts on Solana, all read on chain
+  without a key.
 
 ## Who is on the other side
 
@@ -571,17 +590,19 @@ in `tracker/heuristics.py` and `tracker/graph.py`.
 | bridge | 0.5 to 0.95 | Money leaves one of your wallets on chain X and the same asset reaches another of your wallets on chain Y within 6 hours, 0 to 3% smaller. +0.25 if a labelled bridge is involved, +0.15 if within 0.5%, +0.1 if within 10 minutes; divided by the number of equally plausible matches. |
 | exchange-flow | 0.09 to 0.8 | Money leaves one wallet into an exchange and the same asset, 0 to 2% less, comes out of an exchange into another wallet within 48 hours. Starts at 0.5 (same exchange), 0.3 (two exchanges) or 0.15 (the deposit went to an address that was never expanded); +0.15 within 0.5%, +0.1 within an hour; x0.6 for round amounts; divided by the number of equally plausible matches. Repeated matches between the same two wallets are not independent proof: they lift the best single match at most halfway to 0.8, never past it. |
 | swap | 0.95 | THORChain or Maya Protocol recorded a swap from one address to the other (for example ETH in, BTC out). The record is public and names the destination, so this is close to a fact. Several swaps between the same two addresses stay at 0.95. |
+| name | 0.8 | The primary name of one of your EVM addresses (ENS, Basenames), checked forward, lists the other address (a Bitcoin, Solana... address, ENSIP-9). The name's owner published it, but anybody can type any address into their records. A stranger it lists is read first: a busy one, or a labelled service, links nobody. Several names listing the same address stay at 0.8. |
 
 Several transactions supporting the same guess combine as `1 - (1-c1)(1-c2)...`.
 
 The findings of the [privacy scan](#privacy-scan-of-evm-solana-and-tron-addresses) are
 facts: a transfer read from the chain, with a counterparty that an open label set or you
-name. They add no line to the graph. A first funder is such a transfer, already a solid
-arrow; the finding only names it. A stranger who first funded one of your wallets and also
-funded another joins them through a stranger (0.7), as any shared counterparty does. The scan
-of such a wallet reads that stranger first: a busy one is stored as a very active address,
-which no path passes through, so an unlabelled exchange wallet is not taken for one person
-who funded both.
+name, or a name record. They add no line to the graph; the addresses a name of your own
+wallet lists do (name, above). A first funder is such a transfer, already a solid arrow; the
+finding only names it. A stranger who first funded one of your wallets and also funded
+another joins them through a stranger (0.7), as any shared counterparty does. The scan of
+such a wallet reads that stranger first: a busy one is stored as a very active address, which
+no path passes through, so an unlabelled exchange wallet is not taken for one person who
+funded both.
 
 A link between two wallets multiplies the confidences along its path (a transfer counts
 1.0) and then by 0.7 for every stranger it passes through. Links chain through your own

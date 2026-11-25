@@ -1,6 +1,7 @@
 {
   "ethereum": {
     "url": "http://blockscout.lan/api",
+    "rpc": "http://ethereum-node.lan:8545",
     "tokenlist": true,
     "symbol": "ETH",
     "llama": "ethereum"

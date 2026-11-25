@@ -515,8 +515,9 @@ sanction lists are downloaded whole.
   and `CT_LABELS=off` turns name lookups off as it does contract names.
 - **Wormholescan** (Solana-side bridge records only) sees transaction ids; `CT_SWAPS=off`
   turns it off, like the THORChain and Maya lookups.
-- **Bonfida's SNS proxy**, used only when no Solana RPC that serves the name service is set,
-  sees my Solana addresses; `CT_LABELS=off` turns it off.
+- **SNS names** are read from the name service's accounts at the Solana RPC that already reads
+  the wallet (`CT_SOLANA`), so no new party; Bonfida's proxy is not used (M5).
+  `CT_LABELS=off` turns it off.
 
 ## 5. The split
 
@@ -592,9 +593,9 @@ Privacy, the fact-and-guess table) and a review before it is merged.
   match is ignored; addresses listed on the name become links; `eth_call` goes to Routescan
   for Ethereum and to a self-hosted RPC when one is set in `CT_CHAINS`; `CT_LABELS=off`
   makes no name lookup.
-- Data: Universal Resolver by `eth_call`; keccak-256 for namehashes (a small pure-Python
-  implementation tested against known vectors, or one vetted dependency; to be decided in
-  the issue). Files: `tracker/exposure/names.py`, a `name` table. Parallel: yes.
+- Data: Universal Resolver by `eth_call`; keccak-256 for namehashes: a small pure-Python
+  implementation tested against known vectors (decided in OLYMPUS-298: no dependency for
+  about 30 lines). Files: `tracker/exposure/names.py`, a `name` table. Parallel: yes.
 
 **M6. Bridge records**
 - CCTP, Across, Wormhole (EVM side), OP Stack and Arbitrum bridges decoded from receipts
