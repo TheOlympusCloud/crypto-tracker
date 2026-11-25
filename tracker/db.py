@@ -52,6 +52,8 @@ CREATE TABLE IF NOT EXISTS history(
 CREATE TABLE IF NOT EXISTS watch(address TEXT PRIMARY KEY, ts INT);
 CREATE TABLE IF NOT EXISTS coinjoin(chain TEXT, txid TEXT, PRIMARY KEY(chain, txid));
 CREATE TABLE IF NOT EXISTS failure(source TEXT PRIMARY KEY, error TEXT, ts INT);
+CREATE TABLE IF NOT EXISTS name(address TEXT, chain TEXT, name TEXT, listed TEXT,
+  PRIMARY KEY(address, chain));
 """
 
 EVM_RE = re.compile(r"0x[0-9a-fA-F]{40}")

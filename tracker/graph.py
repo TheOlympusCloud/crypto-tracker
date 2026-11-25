@@ -30,7 +30,7 @@ MIXED = (
 )
 # How several rows of one kind of guess between the same pair combine. Independent evidence
 # compounds (`combine`); the same observation made again does not.
-COMBINE = {"exchange-flow": lambda c: repeated(c), "swap": max}
+COMBINE = {"exchange-flow": lambda c: repeated(c), "name": max, "swap": max}
 
 
 def repeated(confidences, cap=EXCHANGE_CAP):
