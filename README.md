@@ -32,6 +32,9 @@ list the wallets that are yours and mark as **public** the ones tied to your ide
 
 - **Lookup of any address**, yours or not: paste, type or scan it in the box at the top of
   every view. See [Look up an address](#look-up-an-address).
+- **Privacy score of any address** on every chain the scan covers: am-i-exposed's for
+  Bitcoin, the tracker's for EVM, Solana and Tron. See
+  [Privacy scan of EVM, Solana and Tron addresses](#privacy-scan-of-evm-solana-and-tron-addresses).
 
 A wallet is a single address or an HD wallet: paste an xpub, ypub, zpub or output
 descriptor and all its used addresses are found and treated as one wallet.
@@ -83,6 +86,9 @@ its verdict stays "Partly checked".
 The same EVM address is read on every EVM chain. Chains that are read less deeply say so
 in each wallet's verdict, and chains waiting for a key are listed as such instead of
 failing.
+
+The privacy scan reads an address as deeply as a lookup does (the depths above), so a scan
+of a busy Solana or Tron address says "Partly checked".
 
 ## Install
 
@@ -416,15 +422,50 @@ code is read from it. Pasting always works. This is am-i-exposed's own scanner: 
 decoded in the browser by [zxing-wasm](https://github.com/Sec-ant/zxing-wasm), served by
 the app itself.
 
+## Privacy scan of EVM, Solana and Tron addresses
+
+The scanner's box (the home page) takes an EVM, Solana or Tron address as well as a Bitcoin
+one, and so does **Privacy score** in the tracker's panels. A Bitcoin address goes to
+am-i-exposed's own scan, in the browser. Any of the others opens the tracker's scan
+(`/tracker/scan/`), which the server makes: the same score, grade, findings list and score
+breakdown as am-i-exposed's, so a score means the same on every chain. An EVM address first
+asks which chains to read, as a lookup does. Litecoin, Dogecoin and Bitcoin Cash are not
+scanned yet.
+
+| Finding | Impact | What it rests on |
+|---|---|---|
+| Dealt directly with an exchange | -15, high | Transfers to or from an address an open label set or you label as an exchange. |
+| Dealt with a flagged address | -15, high | Transfers with an address labelled as a scam, a hack or under sanctions. |
+| Dealt with a mixer | -10, medium | Transfers with a labelled mixer. |
+| The same address on several chains | -2, low | Transfers of the same EVM address on two or more of the chains read. |
+
+The score is am-i-exposed's address score: 93, plus the impacts, kept within 0 to 100;
+A+ from 90, B from 75, C from 50, D from 25, F below (`tracker/exposure/`, tested against
+`score.ts` on one shared set of cases). The impacts are a first proposal, to be tuned on
+real wallets. Each finding lists the transactions it rests on, with links to the chain's
+explorer. Only labels from a source that states them count: a guessed label (behaviour, a
+contract name) makes no finding, and a token a stranger airdropped makes no counterparty.
+No finding is no clean bill: only labelled addresses can be recognised.
+
+A scan says **Partly checked**, and why, when the address has more history than is read,
+an indexer did not answer, or a check ran out of calls (each scan may make 60 calls beyond
+the address's own read).
+
+Like a lookup, a scan stores nothing about the address. Its read is kept in memory for 10
+minutes (200 reads at most), so a scan right after a lookup of the same address costs
+nothing; a lookup always reads anew.
+
 ## Privacy
 
 The database says which wallets are yours. Keep it on your machine.
 
-**Privacy score** hands the address to am-i-exposed, which looks it up from your browser:
-with [a Bitcoin node of your own](#a-bitcoin-node-of-your-own), at that node through this
-server; otherwise at mempool.space (or at the mempool instance set in its own settings), and
-tor-check.copexit.workers.dev to see whether you use Tor. `CT_ESPLORA` and `CT_CHAINS` do not
-apply to it.
+**Privacy score** of a Bitcoin address hands it to am-i-exposed, which looks it up from your
+browser: with [a Bitcoin node of your own](#a-bitcoin-node-of-your-own), at that node through
+this server; otherwise at mempool.space (or at the mempool instance set in its own settings),
+and tor-check.copexit.workers.dev to see whether you use Tor. `CT_ESPLORA` and `CT_CHAINS` do
+not apply to it. The privacy scan of an EVM, Solana or Tron address is made by the tracker's
+server instead: like a lookup, it sends the address to the indexer of its chain, nowhere
+else, and stores nothing.
 
 Every address you sync is sent to the indexer that answers for it, so that indexer sees
 your wallets together, from one IP address. That is exactly the link this app helps you
@@ -509,6 +550,10 @@ in `tracker/heuristics.py` and `tracker/graph.py`.
 
 Several transactions supporting the same guess combine as `1 - (1-c1)(1-c2)...`.
 
+The findings of the [privacy scan](#privacy-scan-of-evm-solana-and-tron-addresses) are
+facts: a transfer read from the chain, with a counterparty that an open label set or you
+name. They add no line to the graph.
+
 A link between two wallets multiplies the confidences along its path (a transfer counts
 1.0) and then by 0.7 for every stranger it passes through. Links chain through your own
 wallets: public A tied to private B tied to private C exposes C. Paths never pass through
@@ -579,10 +624,12 @@ its look, its two themes and its six languages.
   `web/src/app/tracker/`, `web/src/components/tracker/`, `web/src/lib/tracker/`,
   `web/src/lib/i18n/tracker.ts` and the `tracker*.json` files in `web/public/locales/`. In
   upstream's own files the changes are a few lines: the menu item, the i18n set-up, the
-  `three` and `cytoscape` packages, and `torProxy` in `/api/local-info`: a host with its own
+  `three` and `cytoscape` packages, `torProxy` in `/api/local-info`: a host with its own
   mempool but no Tor sidecar (this server) is used like Umbrel for mempool, while the services
   Umbrel sends through its sidecar keep the public site's routes (`useLocalApi`,
-  `NetworkContext`, and the hooks and panels of those services).
+  `NetworkContext`, and the hooks and panels of those services), and EVM, Solana and Tron
+  addresses let through the input boxes (`AddressInput.tsx`, `InlineSearchBar.tsx`) and sent
+  on to the tracker's scan where upstream would call them invalid (`useAnalysis.ts`).
 - The tracker's server (`tracker/`, Python) stays behind the app: it keeps the database,
   syncs, and answers under `/api/tracker/`. `/api/` itself is left to am-i-exposed, which
   looks there for a self-hosted mempool.
