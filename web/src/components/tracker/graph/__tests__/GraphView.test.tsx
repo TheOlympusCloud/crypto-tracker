@@ -122,12 +122,12 @@ describe("GraphView", () => {
   });
 
   it("folds what is collapsed but keeps the shown path, and highlights it", async () => {
-    renderTracker(<GraphView active />, { collapsed: new Set([COLD]), shownPath: [COLD, PUBLIC] });
+    renderTracker(<GraphView active />, { collapsed: new Set([COLD]), shownPaths: [[COLD, PUBLIC]] });
     await waitFor(() => expect(r3.setData).toHaveBeenCalled());
     const drawn = r3.setData.mock.calls[0]![0];
     expect(drawn.nodes.map((n) => n.address)).not.toContain(STRANGER);
     expect(drawn.nodes.find((n) => n.address === COLD)?.folded).toBe(1);
-    expect(r3.highlight).toHaveBeenLastCalledWith([COLD, PUBLIC]);
+    expect(r3.highlight).toHaveBeenLastCalledWith([[COLD, PUBLIC]]);
   });
 
   it("draws a lookup's graph instead of mine", async () => {

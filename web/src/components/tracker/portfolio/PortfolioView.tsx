@@ -11,6 +11,7 @@ import { Amount, Badge, Bar, CARD, fake, held, readFiat, Segment, TrustBadge, Ve
 import { ChainMark, Coin } from "../Glyph";
 import { useTracker } from "../TrackerProvider";
 import { GradeChip } from "./Grade";
+import { GroupCards } from "./Groups";
 import { OriginBar } from "./Origins";
 import { assetTotals, type AssetTotal } from "./totals";
 import { judge } from "./verdict";
@@ -82,6 +83,14 @@ export function PortfolioView() {
               ))}
             </ul>
           </section>
+
+          {analysis.verdicts.length > 1 && (
+            <section>
+              <SectionHead kicker={t("tracker-portfolio:groups.kicker")} heading={t("tracker-portfolio:groups.heading")} />
+              <p className="mb-4 max-w-[70ch] text-sm text-muted">{t("tracker-portfolio:groups.hint")}</p>
+              <GroupCards />
+            </section>
+          )}
         </>
       )}
     </div>

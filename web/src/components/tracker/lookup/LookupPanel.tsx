@@ -12,7 +12,7 @@ import { Amount, Badge, BUTTON, fake, FakeList, PRIMARY, PrivacyScoreLink, ROW, 
 import { caveats, explorerHref, moved, type Party } from "./logic";
 import { useLookup } from "./useLookup";
 
-type LookupPanelState = Exclude<PanelState, { kind: "wallet" | "node" | "path" }>;
+type LookupPanelState = Exclude<PanelState, { kind: "wallet" | "node" | "path" | "group" }>;
 
 const DRAWN = 60; // counterparties drawn in the graph (lookup.py DRAWN)
 const H2 = "break-words text-xl font-semibold text-foreground";

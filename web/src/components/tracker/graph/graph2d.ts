@@ -223,14 +223,14 @@ export function create2d(el: HTMLElement, { onSelect }: RendererOptions): Render
   }
 
   let timers: ReturnType<typeof setTimeout>[] = [];
-  function highlight(path: string[]) {
+  function highlight(paths: string[][]) {
     timers.forEach(clearTimeout);
     timers = [];
     cy.elements().removeClass("faded path").removeData("hop thick hopFont");
-    if (path.length < 2) return;
+    if (paths.flat().length < 2) return;
     const still = reducedMotion();
     let keep = cy.collection();
-    path.forEach((a, i) => {
+    for (const path of paths) path.forEach((a, i) => {
       keep = keep.union(cy.getElementById(a));
       if (!i) return;
       // The path draws itself hop by hop.

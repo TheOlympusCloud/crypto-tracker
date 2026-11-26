@@ -17,6 +17,7 @@ export type PanelState =
   | { kind: "wallet"; address: string }
   | { kind: "node"; address: string }
   | { kind: "path"; path: string[]; heading: string; back: string }
+  | { kind: "group"; address: string }
   | { kind: "lookup" }
   | { kind: "lookup-busy"; address: string }
   | { kind: "lookup-error"; address: string; chains: string[]; message: string }
@@ -54,10 +55,12 @@ export interface Tracker {
   setScope: (v: LookupResult | null) => void;
   /** The panel and lookup on show right now, for an answer that arrives after its caller is gone. */
   latest: () => { panel: PanelState | null; scope: LookupResult | null };
-  /** The path drawn as the fat orange line in the graph. */
-  shownPath: string[];
+  /** The paths drawn as fat orange lines in the graph: one, or every link of a group. */
+  shownPaths: string[][];
   /** Opens the graph with `path` highlighted and spelled out; an empty path focuses `back`. */
   showPath: (path: string[], heading: string, back: string) => void;
+  /** Opens the graph with the group of wallets that holds `address` highlighted, and its panel. */
+  showGroup: (address: string) => void;
   /** Addresses whose counterparties are folded into them in the graph, kept in this browser. */
   collapsed: ReadonlySet<string>;
   toggleFold: (address: string) => void;
@@ -129,7 +132,7 @@ export function TrackerProvider({ children }: { children: ReactNode }) {
     setScopeState(v);
   }, []);
   const latest = useCallback(() => ({ ...now.current }), []);
-  const [shownPath, setShownPath] = useState<string[]>([]);
+  const [shownPaths, setShownPaths] = useState<string[][]>([]);
   const folded = useSyncExternalStore(foldedStore.subscribe, foldedStore.getSnapshot, foldedStore.getServerSnapshot);
   const [foldedHere, setFoldedHere] = useState<readonly string[] | null>(null); // this visit's folds, also where nothing is kept
   const collapsed = useMemo(() => new Set(foldedHere ?? folded), [foldedHere, folded]);
@@ -237,11 +240,11 @@ export function TrackerProvider({ children }: { children: ReactNode }) {
   const selectNode = useCallback((address: string) => setPanel({ kind: "node", address }), [setPanel]);
   const lookAt = useCallback((v: LookupResult | null) => {
     setScope(v);
-    if (v) setShownPath([]); // a looked-up address shows its own connections, no path of mine
+    if (v) setShownPaths([]); // a looked-up address shows its own connections, no path of mine
   }, [setScope]);
   const showPath = useCallback((path: string[], heading: string, back: string) => {
     setScope(null);
-    setShownPath(path);
+    setShownPaths(path.length ? [path] : []);
     show("graph");
     if (path.length) setPanel({ kind: "path", path, heading, back });
     else {
@@ -249,6 +252,12 @@ export function TrackerProvider({ children }: { children: ReactNode }) {
       setPanel({ kind: "node", address: back });
     }
   }, [show, requestFocus, setScope, setPanel]);
+  const showGroup = useCallback((address: string) => {
+    setScope(null);
+    setShownPaths(analysis.groups?.find((g) => g.wallets.includes(address))?.links.map((k) => k.path) ?? []);
+    show("graph");
+    setPanel({ kind: "group", address });
+  }, [analysis, show, setScope, setPanel]);
   const toggleFold = useCallback((address: string) => {
     const next = new Set(collapsed);
     if (!next.delete(address)) next.add(address);
@@ -268,7 +277,7 @@ export function TrackerProvider({ children }: { children: ReactNode }) {
   const value: Tracker = {
     graph, analysis, byAddress, loaded, status, setStatus: setNote, fail, refresh, act,
     view, show, panel, openPanel: setPanel, closePanel, openWallet, selectNode,
-    scope, setScope: lookAt, latest, shownPath, showPath, collapsed, toggleFold,
+    scope, setScope: lookAt, latest, shownPaths, showPath, showGroup, collapsed, toggleFold,
     minConf, setMinConf, spam, setSpam, focus, requestFocus, sync, startSync, nameOf,
   };
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

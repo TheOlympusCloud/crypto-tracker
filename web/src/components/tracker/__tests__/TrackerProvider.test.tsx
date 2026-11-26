@@ -35,8 +35,10 @@ function Probe() {
       <p data-testid="panel">{t.panel?.kind ?? "none"}</p>
       <p data-testid="view">{t.view}</p>
       <p data-testid="folded">{[...t.collapsed].join(",")}</p>
+      <p data-testid="paths">{JSON.stringify(t.shownPaths)}</p>
       <button type="button" onClick={() => t.toggleFold("cex")}>fold</button>
       <button type="button" onClick={() => void openLookup("addr")}>look</button>
+      <button type="button" onClick={() => t.showGroup(ANALYSIS.groups![0]!.wallets[1]!)}>group</button>
     </div>
   );
 }
@@ -92,6 +94,16 @@ describe("TrackerProvider", () => {
     await flush();
     fireEvent.click(screen.getByRole("button", { name: "fold" }));
     expect(text("folded")).toBe("cex");
+  });
+
+  it("shows a group in the graph: every link of it highlighted, and its panel", async () => {
+    serve(async () => IDLE);
+    render(<TrackerProvider><Probe /></TrackerProvider>);
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: "group" }));
+    expect(text("panel")).toBe("group");
+    expect(window.location.hash).toBe("#graph");
+    expect(JSON.parse(text("paths") ?? "")).toEqual(ANALYSIS.groups![0]!.links.map((k) => k.path));
   });
 
   it("drops a lookup whose panel was closed before it answered", async () => {
