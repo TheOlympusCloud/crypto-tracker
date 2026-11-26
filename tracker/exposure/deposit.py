@@ -4,14 +4,26 @@ address belongs to one exchange account, so the wallets are one customer to anyo
 
 
 def check(ctx):
-    rows = ctx.db.execute(
-        "SELECT a, b, evidence FROM link WHERE kind = 'deposit-address' AND ?1 IN (a, b)",
-        (ctx.address,),
-    ).fetchall()
+    # The link is kept on one address per wallet (deposits.link), so look for it on every
+    # address of this one's wallet, and keep the deposit addresses this address paid itself.
+    wallet = {ctx.address} | {
+        r[0]
+        for r in ctx.db.execute(
+            "SELECT address FROM node WHERE COALESCE(wallet, address) = "
+            "(SELECT COALESCE(wallet, address) FROM node WHERE address = ?)",
+            (ctx.address,),
+        )
+    }
+    sent = {r[0] for r in ctx.db.execute("SELECT dst FROM transfer WHERE src = ?", (ctx.address,))}
+    rows = [
+        r
+        for r in ctx.db.execute("SELECT a, b, evidence FROM link WHERE kind = 'deposit-address'")
+        if wallet & {r["a"], r["b"]} and r["evidence"].split(" > ", 1)[0] in sent
+    ]
     if not rows:
         return
     paid = dict(r["evidence"].split(" > ", 1) for r in rows)  # deposit address -> exchange
-    others = {r["b"] if r["a"] == ctx.address else r["a"] for r in rows}
+    others = {r["b"] if r["a"] in wallet else r["a"] for r in rows}
     marks = ",".join("?" * len(others))
     names = ctx.db.execute(
         f"SELECT COALESCE(NULLIF(name, ''), address) FROM node WHERE address IN ({marks})",

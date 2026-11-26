@@ -2,12 +2,13 @@
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
 from embit import base58
 from fastapi.testclient import TestClient
-from test_core import BINANCE, A, B, mine, transfer
+from test_core import BINANCE, A, B, C, D, mine, transfer
 
 from tracker import (
     alerts,
@@ -45,14 +46,19 @@ T1, T2, TDEP, THOT = (tron(n) for n in (1, 2, 3, 4))
 # txlist, and TronGrid under /transactions/trc20.
 EVM, TRC20 = {}, {}
 CALLS = []  # the address each request was about
+LIMITED = set()  # addresses the second EVM chain ("base", no history) rate-limits
+NOTOK = {"status": "0", "message": "NOTOK", "result": "Max calls per sec rate limit reached"}
 
 
 def internet(request):
     host, path = request.url.host, request.url.path
-    if host == "eth":
+    if host in ("eth", "base"):
         address, action = request.url.params["address"], request.url.params["action"]
         CALLS.append(address)
-        result = "0" if action == "balance" else EVM.get(address, {}).get(action, [])
+        if host == "base" and address in LIMITED:
+            return httpx.Response(200, json=NOTOK)
+        listed = EVM.get(address, {}) if host == "eth" else {}
+        result = "0" if action == "balance" else listed.get(action, [])
         return httpx.Response(200, json={"status": "1", "result": result})
     if host == "api.trongrid.io":
         address = path.split("/")[3]
@@ -114,7 +120,7 @@ def web(db, monkeypatch):
     monkeypatch.setattr(swaps, "sync", lambda db, client: [])
     monkeypatch.setattr(prices, "snapshot", lambda db, client: None)
     monkeypatch.setattr(tokens, "mark", lambda db, client: None)
-    for kept in (EVM, TRC20, CALLS):
+    for kept in (EVM, TRC20, CALLS, LIMITED):
         kept.clear()
 
 
@@ -176,6 +182,25 @@ def test_a_tron_usdt_deposit_address_never_read_before_links_two_wallets(db, web
     assert verdict(db, T1)["links"][0]["confidence"] == 0.85
     (alert,) = [r["text"] for r in db.execute("SELECT text FROM alert")]
     assert "85% confidence" in alert
+
+
+def test_a_read_that_failed_on_one_chain_is_read_again_and_makes_the_link(db, web, monkeypatch):
+    base = {"url": "http://base/api", "symbol": "ETH", "llama": "base"}
+    monkeypatch.setitem(chains.DEFAULT_EVM, "base", base)
+    wallet(db, A, "Savings")
+    wallet(db, B, "Spending")
+    label(db, BINANCE, "Binance 14")
+    pay(A, DEP, "h1", 1.0)
+    pay(B, DEP, "h2", 0.5)
+    pay(DEP, BINANCE, "h3", 1.5)
+    LIMITED.add(DEP)  # Base turns the deposit address's one read away
+    sync_all()
+    error = db.execute("SELECT error FROM node WHERE address = ?", (DEP,)).fetchone()[0]
+    assert error.startswith("base: ") and links(db) == []
+
+    LIMITED.clear()
+    sync_all()
+    assert links(db) == [(A, B, "deposit-address", 0.85, f"{DEP} > Binance")]
 
 
 def deposit(db):
@@ -243,6 +268,26 @@ def test_three_senders_still_make_one_customer(db):
     assert (link["count"], link["confidence"]) == (2, graph.combine([0.85, 0.85]))
 
 
+def test_every_address_of_a_wallet_that_paid_the_deposit_address_has_the_finding(db):
+    deposit(db)
+    for address in (A, C, D):  # one wallet of three addresses; D never paid DEP
+        db.execute("INSERT OR IGNORE INTO node(address, mine) VALUES (?, 1)", (address,))
+        db.execute("UPDATE node SET wallet = 'hd' WHERE address = ?", (address,))
+    transfer(db, "ethereum", "h8", C, DEP, 1)
+    deposits.link(db)
+    assert links(db) == [(A, B, "deposit-address", 0.85, f"{DEP} > Binance")]  # kept on A
+    scan = lambda address: list(
+        exposure.deposit.check(
+            SimpleNamespace(db=db, address=address, evidence=exposure.Context.evidence)
+        )
+    )
+    ((found, params, evidence),) = scan(C)
+    assert found == "x-deposit-address-shared"
+    assert params == {"exchange": "Binance", "count": 1, "wallets": B}
+    assert evidence == [{"chain": "ethereum", "txid": "h8"}]
+    assert scan(D) == []
+
+
 def test_a_sync_reads_ten_candidates_busiest_first_and_the_eleventh_waits(db, web):
     wallet(db, A, "Savings")
     wallet(db, B, "Spending")
@@ -266,6 +311,22 @@ def test_a_sync_reads_ten_candidates_busiest_first_and_the_eleventh_waits(db, we
     sync_all()
     assert read() == set(strangers)
     assert lonely not in CALLS and named not in CALLS
+
+
+def test_a_candidate_whose_read_failed_is_asked_again_after_the_unread_ones(db):
+    mine(db, A)
+    mine(db, B)
+    fresh = "0x" + "7" * 40
+    db.execute(
+        "INSERT INTO node(address, synced_at, error) VALUES (?, 1, 'base: HTTP 429')", (DEP,)
+    )
+    for i, src in enumerate((A, B, A, B)):  # the busier one
+        transfer(db, "ethereum", f"d{i}", src, DEP, 1)
+    for i, src in enumerate((A, B)):
+        transfer(db, "ethereum", f"f{i}", src, fresh, 1)
+    assert deposits.candidates(db) == [fresh, DEP]
+    db.execute("UPDATE node SET error = NULL WHERE address = ?", (DEP,))
+    assert deposits.candidates(db) == [fresh]  # read without an error: done
 
 
 def test_solana_candidates_take_one_call_each_and_dogecoin_none(db, monkeypatch):
