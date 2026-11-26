@@ -630,10 +630,15 @@ export function create3d(el: HTMLElement, { onSelect, tip }: RendererOptions): R
         head.position.lerpVectors(b, tipAt, 0.5);
         bar.quaternion.setFromUnitVectors(up, dir);
         head.quaternion.copy(bar.quaternion);
-        const number = hopSprite(k + 1, p);
-        number.position.lerpVectors(a, b, 0.5);
-        for (const part of [bar, head, number]) part.userData.hop = k + 1;
-        pathGroup.add(bar, head, number);
+        const parts: THREE.Object3D[] = [bar, head];
+        if (runs.length === 1) {
+          // Several paths (a group's links) have no one order to number.
+          const number = hopSprite(k + 1, p);
+          number.position.lerpVectors(a, b, 0.5);
+          parts.push(number);
+        }
+        for (const part of parts) part.userData.hop = k + 1;
+        pathGroup.add(...parts);
       });
       for (const i of faded) {
         if (at(i).label) continue; // strangers on the path get a name while it is shown

@@ -235,7 +235,8 @@ export function create2d(el: HTMLElement, { onSelect }: RendererOptions): Render
       if (!i) return;
       // The path draws itself hop by hop.
       const hop = cy.getElementById(a).edgesWith(cy.getElementById(path[i - 1] ?? ""));
-      hop.data({ hop: String(i), thick: PATH_WIDTH, hopFont: HOP_FONT });
+      // Several paths (a group's links) have no one order to number.
+      hop.data({ hop: paths.length > 1 ? "" : String(i), thick: PATH_WIDTH, hopFont: HOP_FONT });
       if (still) hop.addClass("path");
       else timers.push(setTimeout(() => hop.addClass("path"), (i - 1) * HOP));
       keep = keep.union(hop);
