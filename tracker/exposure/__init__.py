@@ -14,7 +14,7 @@ import httpx
 
 from .. import chains, lookup
 from .. import db as database
-from . import deposit, exchange, flagged, funder, multichain, names
+from . import deposit, exchange, flagged, funder, mixer, multichain, names
 
 # id -> (severity, scoreImpact, confidence, adversaryTiers, temporality). A first proposal, to
 # be tuned on real wallets (docs/design/multichain.md, 6.1).
@@ -37,6 +37,8 @@ IMPACT = {
     "x-funder-mine": ("medium", -10, "deterministic", ["passive_observer"], "historical"),
     "x-funder-shared": ("medium", -10, "deterministic", ["passive_observer"], "historical"),
     "x-mixer-counterparty": ("medium", -10, "deterministic", ["kyc_exchange"], "historical"),
+    # A bound of 30% at most: the link it rests on is a guess, and weighs on the grade as one.
+    "x-mixer-linked": ("medium", -5, "low", ["passive_observer"], "historical"),
     "x-multi-chain": ("low", -2, "deterministic", ["passive_observer"], "ongoing_pattern"),
     "x-name-addresses": ("medium", -5, "deterministic", ["passive_observer"], "active_risk"),
     "x-name-record": ("high", -15, "deterministic", ["passive_observer"], "active_risk"),
@@ -45,7 +47,7 @@ IMPACT = {
 # all its addresses' (wallets.py). A check that reads the address itself goes in its families'.
 CHECKS = {
     "any": [exchange.check, flagged.check],
-    "evm": [deposit.check, funder.check, multichain.check, names.check],
+    "evm": [deposit.check, funder.check, mixer.check, multichain.check, names.check],
     "solana": [deposit.check, funder.check, names.check],
     "tron": [deposit.check, funder.check],
     # Not scanned here (am-i-exposed scans Bitcoin), but in a wallet's grade.
