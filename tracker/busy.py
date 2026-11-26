@@ -14,7 +14,7 @@ deposit addresses) call this first, within the sync's budget.
 from . import chains, sync
 from . import db as database
 from .heuristics import SERVICE
-from .labels import CONFIDENCE
+from .labels import ends_paths
 
 SOLANA_BUSY = 1000  # signatures in one read: more than one person's wallet makes
 
@@ -33,9 +33,10 @@ def check(db, client, address):
     label = db.execute(
         "SELECT category, source FROM label WHERE address = ?", (address,)
     ).fetchone()
-    # As in graph.trace: only a service known for sure ends a path. A guessed label, or a
-    # person's name, is read like any stranger: a wrong guess must not hide a link.
-    if label and label["category"] in SERVICE and label["source"] not in CONFIDENCE:
+    # As in graph.trace: only a service known for sure ends a path. A guessed label, a
+    # person's name, or a name from a name-only set is read like any stranger: a wrong guess
+    # must not hide a link.
+    if label and label["category"] in SERVICE and ends_paths(label["source"]):
         hub = True
     elif chain == "solana":
         limit = {"limit": SOLANA_BUSY}

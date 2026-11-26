@@ -1770,6 +1770,28 @@ def test_a_guessed_service_weakens_a_path_and_a_known_one_cuts_it(db):
     assert graph.verdicts(db)[1]["links"] == []
 
 
+def test_an_address_on_okx_list_is_named_but_ends_no_path_nor_crawl(db):
+    from tracker import sync
+
+    deposit = "0x" + "3" * 40
+    mine(db, A, public=1)
+    mine(db, B)
+    transfer(db, "ethereum", "1", A, deposit, 1)
+    transfer(db, "ethereum", "2", B, deposit, 1)
+    listed = f"ETH,Non Staking,ETH,26313797,{deposit},0.5,I am an OKX address,0x8e8a0e53,,,,"
+    labels.store(db, labels.parse_okx([listed]))
+    # Mostly deposit addresses, each one customer's: a name, but no barrier, as a stranger's.
+    verdict = graph.verdicts(db)[1]
+    assert verdict["links"][0]["confidence"] == graph.HOP_DECAY
+    assert {"name": "OKX", "category": "cex", "guess": False} in verdict["services"]
+    assert sync.neighbours(db, [A]) == [deposit]  # crawled and judged like a stranger
+    # An open set that names the address an exchange's still ends the path, and the list
+    # does not take its place.
+    labels.store(db, [(deposit, "OKX 3", "cex", "exchange", "etherscan-labels")])
+    labels.store(db, labels.parse_okx([listed]))
+    assert graph.verdicts(db)[1]["links"] == [] and sync.neighbours(db, [A]) == []
+
+
 def test_contract_names_come_from_the_explorer_once_and_only_for_counterparties(db, monkeypatch):
     import httpx
 

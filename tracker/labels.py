@@ -79,17 +79,35 @@ REFRESH = 30 * 86400  # the sets are downloaded again when the copy is older tha
 
 LOADER = getattr(yaml, "CBaseLoader", yaml.BaseLoader)  # libyaml is ~10x faster
 
+# Sets of a service's own addresses that do not tell the ones all its users share from those
+# of one customer (OKX's proof of reserves is mostly deposit addresses). The name is a fact
+# and is shown, but it ends no path: the address is read and judged like a stranger's.
+NAME_ONLY = {"okx-por"}
+# SQL: the labelled addresses that paths, crawls and reads stop at (all but name-only ones).
+STOPS = "source NOT IN ({})".format(", ".join(f"'{s}'" for s in sorted(NAME_ONLY)))
+
 # The source column holds 'user', 'swap-protocol', 'explorer', 'heuristic' or a dataset's name.
 # A sanction or a freeze matters more to whoever sends money there than who runs the address
 # (Garantex is an exchange, and sanctioned), so they outrank the other datasets; OFAC first.
+# A name-only set ranks below the other datasets: it must not take the place of a label that
+# ends paths, such as an open set's name for an exchange's hot wallet.
 _RANK = (
     "(CASE {} WHEN 'user' THEN 6 WHEN 'ofac-sanctions' THEN 5 WHEN 'swap-protocol' THEN 4 "
     "WHEN 'freezes-ethereum' THEN 4 WHEN 'freezes-tron' THEN 4 WHEN 'explorer' THEN 2 "
-    "WHEN 'heuristic' THEN 1 ELSE 3 END)"
+    "WHEN 'heuristic' THEN 1 "
+    + "".join(f"WHEN '{s}' THEN 2.5 " for s in sorted(NAME_ONLY))
+    + "ELSE 3 END)"
 )
 # How sure a label is, by where it came from. Below 1 it is shown as a guess, and a path
 # through such an address is weakened instead of cut (graph.trace).
 CONFIDENCE = {"heuristic": 0.6, "explorer": 0.8}
+
+
+def ends_paths(source):
+    """Whether a service's label from `source` ends every path through its address: stated
+    as a fact (not a guess), by a source that names only addresses the service shares."""
+    return source not in CONFIDENCE and source not in NAME_ONLY
+
 
 CEX = [
     "binance", "bitfinex", "bitstamp", "bittrex", "bybit", "coinbase", "crypto-com", "ftx",

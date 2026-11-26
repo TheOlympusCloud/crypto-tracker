@@ -130,8 +130,9 @@ def sync_address(db, client, address):
 
 
 def neighbours(db, addresses):
-    """Unsynced, unlabelled counterparties of `addresses`, most transfers first.
-    Services and hubs are never expanded: everybody is two hops from Binance."""
+    """Unsynced, unlabelled counterparties of `addresses`, most transfers first; a label from
+    a name-only set does not count. Services and hubs are never expanded: everybody is two
+    hops from Binance."""
     if not addresses:
         return []
     marks = ",".join("?" * len(addresses))
@@ -140,7 +141,7 @@ def neighbours(db, addresses):
               SELECT dst other FROM transfer WHERE src IN ({marks}) AND NOT {graph.FAKE}
               UNION ALL SELECT src FROM transfer WHERE dst IN ({marks}) AND NOT {graph.FAKE})
             WHERE other NOT IN (SELECT address FROM node WHERE synced_at IS NOT NULL)
-              AND other NOT IN (SELECT address FROM label)
+              AND other NOT IN (SELECT address FROM label WHERE {labels.STOPS})
             GROUP BY other ORDER BY n DESC""",
         (*addresses, *addresses),
     )
