@@ -304,9 +304,9 @@ export type ServerFinding = Omit<Finding, "title" | "description" | "recommendat
 /** am-i-exposed's Finding, worded by the adapter, with the transactions it rests on (which upstream's components ignore). */
 export type TrackerFinding = Finding & { evidence: Evidence[] };
 
-/** Why a scan is partly checked: an indexer error, a read cut to the newest transactions, a check out of calls. */
+/** Why a scan is partly checked: an indexer error, a read cut to the newest transactions, a check out of calls; in a wallet's grade, a check that needs a read the page does not make. */
 export interface Gap {
-  id: "error" | "truncated" | "skipped";
+  id: "error" | "truncated" | "skipped" | "unread";
   params?: { error?: string; check?: string };
 }
 

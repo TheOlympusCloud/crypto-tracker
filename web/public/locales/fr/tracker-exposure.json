@@ -57,6 +57,7 @@
   "gap.error": "Tout n'a pas pu être lu ({{error}}).",
   "gap.skipped": "Une vérification a manqué d'appels et n'a pas tourné : {{check}}.",
   "gap.truncated": "L'adresse est très active : seules ses transactions les plus récentes ont été lues.",
+  "gap.unread": "Pas encore lu : {{check}}. La page ne fait aucun appel ; le Score de confidentialité le lit, une fois.",
   "new": "Analyser une autre adresse",
   "partly": "Vérifiée en partie",
   "title": "Analyse de confidentialité",

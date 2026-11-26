@@ -120,11 +120,20 @@ describe("WalletPanel", () => {
     expect(screen.queryByText("Wallet checks; addresses not deep-scanned")).toBeNull();
   });
 
+  it("lists the address's first funder under its chain family", () => {
+    const hot = ANALYSIS.exposure![HOT]!;
+    const funded = { ...hot.findings[0]!, id: "x-funder-mine", severity: "medium" as const, scoreImpact: -10, params: { funder: "Savings", chains: "Ethereum" } };
+    const exposure = { ...ANALYSIS.exposure, [HOT]: { ...hot, by_chain: { ...hot.by_chain, evm: [funded] } } };
+    renderTracker(<WalletPanel address={HOT} />, { analysis: { ...ANALYSIS, exposure } });
+    expect(screen.getByRole("heading", { level: 4, name: "EVM" })).toBeTruthy();
+    expect(screen.getByText("First funded by your wallet Savings")).toBeTruthy();
+  });
+
   it("says a grade is partly checked, why, and that no finding is no proof", () => {
-    const partial = { ...ANALYSIS.exposure![PHONE]!, partial: true, gaps: [{ id: "skipped" as const, params: { check: "funder" } }] };
+    const partial = { ...ANALYSIS.exposure![PHONE]!, partial: true, gaps: [{ id: "unread" as const, params: { check: "funder" } }] };
     renderTracker(<WalletPanel address={PHONE} />, { analysis: { ...ANALYSIS, exposure: { ...ANALYSIS.exposure, [PHONE]: partial } } });
     expect(screen.getByText("Partly checked")).toBeTruthy();
-    expect(screen.getByText("A check ran out of calls and did not run: funder.")).toBeTruthy();
+    expect(screen.getByText("Not read yet: funder. The page makes no call; Privacy score reads it, once.")).toBeTruthy();
     expect(screen.getByText("No finding among the checks made here. That is no proof of privacy.")).toBeTruthy();
   });
 

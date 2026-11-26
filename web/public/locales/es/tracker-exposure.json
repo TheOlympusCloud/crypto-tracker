@@ -57,6 +57,7 @@
   "gap.error": "No se pudo leer todo ({{error}}).",
   "gap.skipped": "Una comprobación se quedó sin llamadas y no se hizo: {{check}}.",
   "gap.truncated": "La dirección es muy activa: solo se leyeron sus transacciones más recientes.",
+  "gap.unread": "Aún sin leer: {{check}}. La página no hace llamadas; la Puntuación de privacidad lo lee, una vez.",
   "new": "Analizar otra dirección",
   "partly": "Comprobada en parte",
   "title": "Análisis de privacidad",

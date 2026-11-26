@@ -57,6 +57,7 @@
   "gap.error": "Nicht alles konnte gelesen werden ({{error}}).",
   "gap.skipped": "Einer Prüfung gingen die Abfragen aus, sie lief nicht: {{check}}.",
   "gap.truncated": "Die Adresse ist sehr aktiv: nur ihre neuesten Transaktionen wurden gelesen.",
+  "gap.unread": "Noch nicht gelesen: {{check}}. Die Seite fragt nichts ab; der Privatsphäre-Score liest es, einmal.",
   "new": "Andere Adresse prüfen",
   "partly": "Teilweise geprüft",
   "title": "Datenschutz-Prüfung",

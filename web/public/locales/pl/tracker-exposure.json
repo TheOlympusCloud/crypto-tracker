@@ -69,6 +69,7 @@
   "gap.error": "Nie wszystko udało się odczytać ({{error}}).",
   "gap.skipped": "Jednemu sprawdzeniu zabrakło zapytań i nie zostało wykonane: {{check}}.",
   "gap.truncated": "Adres jest bardzo aktywny: odczytano tylko jego najnowsze transakcje.",
+  "gap.unread": "Jeszcze nieodczytane: {{check}}. Strona nie wysyła zapytań; Wynik prywatności odczyta to raz.",
   "new": "Sprawdź inny adres",
   "partly": "Sprawdzono częściowo",
   "title": "Skan prywatności",
