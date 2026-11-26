@@ -129,6 +129,24 @@ describe("WalletPanel", () => {
     expect(screen.getByText("First funded by your wallet Savings")).toBeTruthy();
   });
 
+  it("shows open approvals and activity hours apart, under security and habits", () => {
+    const hot = ANALYSIS.exposure![HOT]!;
+    const base = { ...hot.findings[0]!, severity: "low" as const, evidence: [] };
+    const approvals = { ...base, id: "x-open-approvals", scoreImpact: 0, params: { count: 1, approvals: "WETH → Uniswap V3: Router 2 (Ethereum)" } };
+    const hours = { ...base, id: "x-activity-hours", scoreImpact: -2, params: { count: 143, quiet: "22:00–06:00", zone: "UTC+2" } };
+    const exposure = { ...ANALYSIS.exposure, [HOT]: { ...hot, by_chain: { ...hot.by_chain, evm: [approvals, hours] } } };
+    renderTracker(<WalletPanel address={HOT} />, { analysis: { ...ANALYSIS, exposure } });
+    const section = screen.getByRole("heading", { level: 4, name: "Security and habits" }).closest("section")!;
+    const open = within(section).getByText("Unlimited token approvals still open: 1").closest("details")!;
+    expect(open.textContent).toContain("WETH → Uniswap V3: Router 2 (Ethereum)");
+    expect(within(open).getByText("0")).toBeTruthy();
+    const night = within(section).getByText("Sends at hours that point to UTC+2").closest("details")!;
+    expect(night.textContent).toContain("Of the 143 transactions this wallet sent");
+    // Nothing else was found on EVM, so it has no heading of its own.
+    expect(screen.queryByRole("heading", { level: 4, name: "EVM" })).toBeNull();
+    expect(screen.getByRole("heading", { level: 4, name: "Ethereum" })).toBeTruthy();
+  });
+
   it("says a grade is partly checked, why, and that no finding is no proof", () => {
     const partial = { ...ANALYSIS.exposure![PHONE]!, partial: true, gaps: [{ id: "unread" as const, params: { check: "funder" } }] };
     renderTracker(<WalletPanel address={PHONE} />, { analysis: { ...ANALYSIS, exposure: { ...ANALYSIS.exposure, [PHONE]: partial } } });
