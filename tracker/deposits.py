@@ -7,8 +7,6 @@ address. A deposit address belongs to one exchange account, so two wallets of mi
 it are one customer: a `deposit-address` link.
 """
 
-import time
-
 import httpx
 
 from . import busy, detect, graph, sync
@@ -54,10 +52,7 @@ def read(db, client):
             sync.sync_address(db, client, address)  # a failed read is tried again next sync
             continue
         try:
-            if not busy.check(db, client, address):
-                # shortcut: a quiet stranger is never asked again, even if it gets busy later
-                db.execute("INSERT OR IGNORE INTO quiet VALUES (?, ?)", (address, int(time.time())))
-                db.commit()
+            busy.check(db, client, address)  # a quiet one is noted in `quiet`, never asked again
         except (httpx.HTTPError, RuntimeError, ValueError, KeyError, TypeError):
             continue  # unread is not quiet: asked again on the next sync
 

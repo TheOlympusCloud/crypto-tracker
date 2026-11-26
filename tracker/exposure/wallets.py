@@ -127,17 +127,22 @@ def scores(db, verdicts):
             f = finding("x-address-reuse", {"count": len(reused)}, receipts[:EVIDENCE])
             f["scoreImpact"] = max(REUSE_CAP, IMPACT["x-address-reuse"][1] * len(reused))
             found.append((database.chain_of(reused[0]), f))
-        worst, by_chain = {}, defaultdict(list)
+        worst, by_chain = {}, defaultdict(dict)
         for chain, f in found:
-            by_chain[chain].append(f)
-            if f["scoreImpact"] < worst.get(f["id"], {"scoreImpact": 1})["scoreImpact"]:
+            kept = by_chain[chain].setdefault(f["id"], f)
+            if kept is not f:  # another address of the wallet found it too: one row, its proof
+                # shortcut: the row keeps the first address's params; merge them per id if
+                # an HD wallet's addresses ever find one id with different ones.
+                more = [e for e in f["evidence"] if e not in kept["evidence"]]
+                kept["evidence"] = (kept["evidence"] + more)[:EVIDENCE]
+            elif f["scoreImpact"] < worst.get(f["id"], {"scoreImpact": 1})["scoreImpact"]:
                 worst[f["id"]] = f  # one exchange is enough to be exposed
         partial = v["checked"] != "full" or bool(gaps)
         # A check skipped here needed a call: the address's own scan makes it, once.
         gaps = [{**g, "id": "unread"} if g["id"] == "skipped" else g for g in gaps]
         out[v["address"]] = {
             **score(list(worst.values()), partial),
-            "by_chain": dict(by_chain),
+            "by_chain": {chain: list(rows.values()) for chain, rows in by_chain.items()},
             "gaps": [g for i, g in enumerate(gaps) if g not in gaps[:i]],  # once per HD wallet
         }
     return out

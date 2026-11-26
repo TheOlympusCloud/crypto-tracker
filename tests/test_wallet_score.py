@@ -143,6 +143,25 @@ def test_an_hd_wallet_lists_a_dealing_once_per_chain_counted_over_its_addresses(
     assert got["findings"] == [f]
 
 
+def test_an_hd_wallet_whose_addresses_paid_one_deposit_address_shows_it_once(db):
+    hd_wallet(db, BTC1, BTC2)
+    mine(db, BTC5)
+    synced(db, BTC5)
+    for i, a in enumerate((BTC1, BTC2, BTC5)):
+        transfer(db, "bitcoin", f"d{i}", a, BTC4, 0.1, asset="BTC")
+    db.execute(  # as deposits.link keeps it: one address per wallet
+        "INSERT INTO link VALUES (?, ?, 'deposit-address', 0.85, ?)",
+        (BTC1, BTC5, f"{BTC4} > Kraken"),
+    )
+
+    got = scores(db)
+
+    hd = next(s for a, s in got.items() if a != BTC5)
+    (f,) = hd["by_chain"]["bitcoin"]
+    assert f["id"] == "x-deposit-address-shared"
+    assert {e["txid"] for e in f["evidence"]} == {"d0", "d1"}  # both addresses' payments
+
+
 def test_reuse_costs_at_most_40(db):
     every = (BTC1, BTC2, BTC3, BTC4, BTC5)
     hd_wallet(db, *every)
@@ -242,7 +261,7 @@ def test_a_stranger_who_funded_two_wallets_is_named_as_last_read_and_unread_is_p
     assert got["partial"] is True
     assert got["gaps"] == [{"id": "unread", "params": {"check": "funder"}}]
 
-    db.execute("INSERT INTO quiet VALUES (?)", (D,))  # a scan read it, and it was quiet
+    db.execute("INSERT INTO quiet VALUES (?, 1)", (D,))  # a scan read it, and it was quiet
     got = scores(db)[A]
     assert (got["partial"], got["gaps"]) == (False, [])
     assert [f["id"] for f in got["by_chain"]["evm"]] == ["x-funder-shared"]

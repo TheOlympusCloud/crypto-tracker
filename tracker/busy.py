@@ -4,12 +4,14 @@ A link through such an address would join the wallets of everyone who used it, s
 to a stranger is stored only once the stranger has been read and found quiet
 (docs/design/multichain.md, 3.5). A busy stranger, or a service labelled by a sure source,
 is stored as a hub, which ends every path through it (graph.trace). A quiet one is noted in
-`quiet`, which nothing but this check reads, so it is read once.
+`quiet`, so it is read once.
 
 A sync reads strangers only on the deep chains and only when asked for depth, so the
 checks that link to strangers (Solana fee payers, Tron delegators, first funders, shared
 deposit addresses) call this first, within the sync's budget.
 """
+
+import time
 
 from . import chains
 from . import db as database
@@ -35,7 +37,7 @@ def known(db, address):
     if label and label["category"] in SERVICE and label["source"] not in CONFIDENCE:
         return True
     # shortcut: a quiet answer is kept for good, so a fresh hot wallet read while new stays
-    # one person. Store when it was read, and read it again after a while, if that happens.
+    # one person. Read it again once `quiet.ts` is old, if that happens.
     if db.execute("SELECT 1 FROM quiet WHERE address = ?", (address,)).fetchone():
         return False
     return None
@@ -58,7 +60,7 @@ def check(db, client, address):
             (address,),
         )
     else:
-        db.execute("INSERT OR IGNORE INTO quiet VALUES (?)", (address,))
+        db.execute("INSERT OR IGNORE INTO quiet VALUES (?, ?)", (address, int(time.time())))
     db.commit()
     return hub
 
