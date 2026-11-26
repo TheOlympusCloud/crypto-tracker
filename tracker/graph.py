@@ -6,7 +6,7 @@ import re
 from collections import defaultdict
 from itertools import combinations
 
-from . import bridges, chains, swaps
+from . import bridges, chains, mixers, swaps
 from . import db as database
 from .heuristics import COMMON_INPUT_COINJOIN, EXCHANGE_CAP, SERVICE, TRUSTED
 from .labels import CONFIDENCE, describe, ends_paths
@@ -197,6 +197,7 @@ def trace(db, max_hops=HOPS):
         a: 1 - CONFIDENCE[r["source"]] for a, r in services_.items() if r["source"] in CONFIDENCE
     }
     blocked |= {r["address"] for r in db.execute("SELECT address FROM node WHERE hub AND NOT mine")}
+    blocked |= mixers.CONTRACTS  # a mixer joins nobody, with a label or without (mixers.py)
 
     def best_paths(start):
         # Dijkstra over (node, hops) so the hop limit cannot hide a longer, stronger path.
