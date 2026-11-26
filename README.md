@@ -104,9 +104,11 @@ you declared it or not.
 
 Mixers: when one of your wallets deposits into a Tornado Cash pool (on Ethereum, BNB Chain,
 Polygon, Arbitrum, Optimism or Avalanche) and another withdraws from the same pool, the
-deposits made into that pool between the two are counted. Few of them hide little: the two
+deposits made into that pool around the two are counted. Few of them hide little: the two
 wallets get a `mixer` link of at most 30% ([below](#what-is-a-fact-and-what-is-a-guess)).
 BNB Chain read through NodeReal is left out: NodeReal does not serve the pool's logs.
+Tornado's pools and routers end every path, as a labelled service does, even where no label
+set names them.
 
 The privacy scan reads an address as deeply as a lookup does (the depths above), so a scan
 of a busy Solana or Tron address says "Partly checked". Its first funder comes from that read
@@ -490,7 +492,7 @@ am-i-exposed's scan with their own profile (below).
 | Has a public name | -15, high | The address's primary name: ENS, Basenames or SNS (.sol). Counted only when the name points back at the address, since anybody can point their own reverse record at any name. |
 | Its name lists addresses on other chains | -5, medium | The addresses of Bitcoin, Litecoin, Dogecoin, Tron, Solana or other EVM chains that the name publishes (ENSIP-9). |
 | Shares an exchange deposit address | -10, high | One of your own wallets only: it and another wallet of yours paid the same exchange deposit address (the `deposit-address` guess, 85%). |
-| The mixer hides little | -5, medium | One of your own wallets only: it deposited into a Tornado Cash pool and another wallet of yours withdrew from it, or the reverse, with fewer than 20 deposits in between (the `mixer` guess, 30% at most). |
+| The mixer hides little | -5, medium | One of your own wallets only: it deposited into a Tornado Cash pool and another wallet of yours withdrew from it, or the reverse, with fewer than 20 other deposits per deposit of the wallet in between (the `mixer` guess, 30% at most). |
 
 The score is am-i-exposed's address score: 93, plus the impacts, kept within 0 to 100;
 A+ from 90, B from 75, C from 50, D from 25, F below (`tracker/exposure/`, tested against
@@ -646,10 +648,11 @@ like a counterparty, to tell a stranger from a service.
 
 Mixers: the receipt of each transaction in which your wallet paid a Tornado Cash pool (or
 its router), or a pool paid your wallet, is read once from the indexer that already reads
-that wallet. For a deposit and a withdrawal of two of your wallets, the pool's deposits
-between their two blocks are asked of the same indexer, once per pair (its `logs` module,
-one page of 20). That question names only the pool and two block numbers, but they are the
-blocks of your own two transactions, which that indexer already served you.
+that wallet. For the deposits and a withdrawal of two of your wallets, the pool's deposits
+between them are asked of the same indexer, once per block range (its `logs` module, one
+page of 20 rows per deposit of the wallet, 1,000 at most). That question names only the pool
+and two block numbers, but they are the blocks of your own transactions, which that indexer
+already served you.
 
 Labels: the label sets and OFAC's sanctions lists are downloaded whole from GitHub, and OKX's
 list of its own addresses from OKX's site, so none of them learns which addresses you look
@@ -759,7 +762,7 @@ in `tracker/heuristics.py` and `tracker/graph.py`.
 | deposit-address | 0.85 | Two of your wallets paid the same address, which was read in full without an error, is not a very active address, has no label but the tracker's own guess or OKX's list's, sends everything to one labelled exchange, and was paid by 3 senders at most (two addresses of one wallet count once; the exchange topping up gas is one). A deposit address belongs to one exchange account. One row per deposit address: paying it again adds nothing, a second shared deposit address combines. EVM, Tron, Bitcoin, Litecoin and Bitcoin Cash. |
 | fee-payer | 0.9 | Solana: one address paid the fee of a transaction the other signed. Both hold a key of it: one owner, unless the payer is a relayer. |
 | co-signer | 0.9 | Solana: two addresses, neither of them the fee payer, signed one transaction: Solana's common input. |
-| mixer | 0.3 at most | One of your wallets deposited into a Tornado Cash pool and another of yours withdrew from the same pool later: with n deposits made in between, the withdrawal is the first wallet's with odds of at most 1/(1+n), held at 0.3, so it never raises an alert on its own. It is an upper bound: older deposits not yet withdrawn hide the pair further, and are not counted. From 20 deposits in between (under 5%) the pool hides the pair and no line is drawn. Each withdrawal is paired with each other wallet's latest deposit before it; two addresses of one HD wallet are not paired. Several pairs between the same two wallets stay at the strongest. |
+| mixer | 0.3 at most | One of your wallets deposited into a Tornado Cash pool and another of yours withdrew from the same pool later: with n deposits made in between, the withdrawal is the first wallet's with odds of at most 1/(1+n). A wallet that deposited several times could be behind any of its deposits: from each of them to the withdrawal, k of the deposits are the wallet's, with odds of at most k/(deposits in that stretch), and the strongest stretch counts. Held at 0.3, so it never raises an alert on its own. It is an upper bound: older deposits not yet withdrawn hide the pair further, and are not counted, nor are other people's deposits in the block of either end. From 20 deposits per deposit of the wallet (under 5%) the pool hides the pair and no line is drawn. Two addresses of one HD wallet are not paired. Several withdrawals between the same two wallets stay at the strongest. |
 
 Several transactions supporting the same guess combine as `1 - (1-c1)(1-c2)...`.
 
