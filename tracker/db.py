@@ -99,6 +99,12 @@ def connect(path=None):
     if "symbol" not in [r["name"] for r in db.execute("PRAGMA table_info(price)")]:
         db.execute("DROP TABLE price")  # only a cache; rebuilt with the new columns
         db.executescript(SCHEMA)
+    if not db.execute("SELECT 1 FROM meta WHERE key = 'solana_reread'").fetchone():
+        # Solana histories read before signer links and rent refunds are read once more, from
+        # the newest; the transfers stored stay.
+        db.execute("DELETE FROM history WHERE source = 'solana'")
+        db.execute("INSERT OR IGNORE INTO meta VALUES ('solana_reread', '1')")
+        db.commit()
     return db
 
 
