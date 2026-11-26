@@ -1,5 +1,7 @@
 import hmac
+import json
 import os
+import re
 import secrets
 import time
 from base64 import b64decode
@@ -399,6 +401,126 @@ def to_mempool(kind: str, ref: str, request: Request):
     host = request.url.hostname or "localhost"
     host = f"[{host}]" if ":" in host else host
     return RedirectResponse(f"http://{host}:{node.PORT}/{kind}/{ref}")
+
+
+# ---- The lite node for the privacy scanner: fee estimates, the chain tip and broadcasting, in
+# mempool's API shapes (node.py). Only with the node-lite profile; behind the password as all
+# of /api/tracker/. am-i-exposed's address and transaction scans stay on its public server.
+
+HEX = re.compile(r"(?:[0-9a-fA-F]{2})+")
+NOT_READY = -10  # Core's code for a node still downloading blocks: here, nothing was sent
+
+
+def lite_only():
+    if not node.BITCOIND:
+        raise HTTPException(404)
+
+
+def same_origin(request):
+    """A transaction is sent only from this app's own pages: a text/plain POST needs no CORS
+    check, so another site could otherwise have the browser post one with its session."""
+    if request.headers.get("sec-fetch-site", "same-origin") not in ("same-origin", "none"):
+        raise HTTPException(403, "only from this app's own pages")
+
+
+def unanswered(e):
+    return HTTPException(502, f"your Bitcoin node did not answer: {chains.describe(e)}")
+
+
+@app.get("/node")
+def get_lite_node():
+    """Whether there is a lite node, and how it stands: the scanner then takes its fees and
+    broadcasts there (404: no lite node)."""
+    lite_only()
+    return {"state": node.status()["state"]}
+
+
+@app.get("/node/v1/fees/recommended")
+def get_node_fees():
+    lite_only()
+    if why := node.unready():
+        raise HTTPException(503, why)
+    try:
+        rates = node.fees()
+    except (httpx.HTTPError, OSError, node.RpcError) as e:
+        raise unanswered(e) from None
+    if not rates:
+        raise HTTPException(503, node.NO_FEES)
+    return rates
+
+
+@app.get("/node/blocks/tip/height")
+def get_node_tip():
+    lite_only()
+    found = node.status()
+    if found["state"] != "ready":
+        return PlainTextResponse(node.notice(found, waits=False), 503)
+    return PlainTextResponse(str(found["height"]))
+
+
+@app.post("/node/tx")
+async def post_node_tx(request: Request):
+    """Broadcast by the lite node (sendrawtransaction), answered as mempool answers: the txid,
+    or the node's error as {"code", "message"}. A 502 without a code says only that it is
+    unknown whether the node took it; the scanner then offers to check before sending again."""
+    lite_only()
+    same_origin(request)
+    raw = (await request.body()).decode(errors="replace").strip()
+    if why := await run_in_threadpool(node.unready):
+        return JSONResponse({"code": NOT_READY, "message": why}, 503)
+    if not HEX.fullmatch(raw):
+        return JSONResponse({"code": -22, "message": "TX decode failed"}, 400)
+    try:
+        txid = await run_in_threadpool(node.rpc, "sendrawtransaction", raw)
+    except node.RpcError as e:
+        return JSONResponse({"code": e.code, "message": str(e)}, 400)
+    except (httpx.ConnectError, OSError):  # it never reached the node
+        down = node.notice({"state": "down", "height": None, "time": None}, waits=False)
+        return JSONResponse({"code": NOT_READY, "message": down}, 503)
+    except httpx.HTTPError as e:
+        return PlainTextResponse(unanswered(e).detail, 502)
+    return PlainTextResponse(txid)
+
+
+@app.post("/node/txs/test")
+async def post_node_test(request: Request):
+    """The scanner's dry run before a broadcast (testmempoolaccept). A node that is not ready
+    turns it down saying why, so the dialog says so before anything is sent."""
+    lite_only()
+    same_origin(request)
+    try:
+        raws = json.loads(await request.body())
+        if not (
+            isinstance(raws, list)
+            and raws
+            and all(isinstance(r, str) and HEX.fullmatch(r) for r in raws)
+        ):
+            raise ValueError
+    except ValueError:
+        raise HTTPException(400, "a JSON list of transactions in hex") from None
+    if why := await run_in_threadpool(node.unready):
+        return [{"allowed": False, "reject-reason": why} for _ in raws]
+    try:
+        return await run_in_threadpool(node.rpc, "testmempoolaccept", raws)
+    except (httpx.HTTPError, OSError, node.RpcError) as e:
+        raise unanswered(e) from None
+
+
+@app.get("/node/tx/{txid}/status")
+def get_node_tx_status(txid: str):
+    """After a broadcast of unknown outcome: whether it is in the node's mempool. Without a
+    transaction index the node cannot tell a confirmed one: the 404 then reads "probably not
+    sent", and sending it again is harmless: the node turns it down."""
+    lite_only()
+    if not re.fullmatch(r"[0-9a-f]{64}", txid):
+        raise HTTPException(404)
+    try:
+        node.rpc("getmempoolentry", txid)
+    except node.RpcError:
+        raise HTTPException(404, "not in your node's mempool") from None
+    except (httpx.HTTPError, OSError) as e:
+        raise unanswered(e) from None
+    return {"confirmed": False}
 
 
 if os.environ.get("CT_SYNC_EVERY"):  # minutes
