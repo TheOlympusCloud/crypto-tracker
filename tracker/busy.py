@@ -21,7 +21,8 @@ from .heuristics import SERVICE
 from .labels import ends_paths
 
 SOLANA_BUSY = 1000  # signatures in one read: more than one person's wallet makes
-CHECKED = {"fee-payer", "co-signer"}  # kinds of link that join a stranger only once it is read
+# kinds of link that join a stranger only once it is read
+CHECKED = {"fee-payer", "co-signer", "delegation"}
 
 
 def known(db, address):

@@ -15,6 +15,7 @@ CHANGE_ROUND = 0.5  # the non-round output of a payment is the change
 CHANGE_BOTH = 0.75  # both change rules point at the same output
 FEE_PAYER = 0.9  # Solana: one address paid the fee of another's transaction
 CO_SIGNER = 0.9  # Solana: two addresses signed one transaction
+DELEGATION = 0.8  # Tron: one address delegated energy or bandwidth to another
 
 BRIDGE_WINDOW = 6 * 3600  # seconds between the two legs
 BRIDGE_FEE = 0.03  # the destination leg may be this much smaller than the source leg
