@@ -42,7 +42,7 @@
   "groups.weakest": "Lien le plus faible : {{a}} ↔ {{b}}, {{pct}}",
   "groups.wallets": "Portefeuilles du groupe",
   "groups.links": "Ce qui le tient, du lien le plus faible au plus fort",
-  "groups.alone": "Ce lien tient seul le groupe : sans lui, {{a}} et {{b}} sont séparés.",
+  "groups.alone": "Ce lien tient seul le groupe : sans lui, il se scinde en {{a}} d’un côté et {{b}} de l’autre.",
   "card.unchecked": "Non vérifié, sa valeur est donc inconnue",
   "card.origin": "Provenance de {{asset}}",
   "addresses_one": "{{count}} adresse",

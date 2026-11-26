@@ -42,7 +42,7 @@
   "groups.weakest": "Weakest link: {{a}} ↔ {{b}}, {{pct}}",
   "groups.wallets": "Wallets in the group",
   "groups.links": "What holds it together, weakest first",
-  "groups.alone": "This link alone holds the group together: without it, {{a}} and {{b}} are apart.",
+  "groups.alone": "This link alone holds the group together: without it, the group splits into {{a}} on one side and {{b}} on the other.",
   "card.unchecked": "Not checked, so its value is unknown",
   "card.origin": "{{asset}} came from",
   "addresses_one": "{{count}} address",

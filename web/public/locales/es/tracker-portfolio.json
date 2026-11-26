@@ -42,7 +42,7 @@
   "groups.weakest": "Vínculo más débil: {{a}} ↔ {{b}}, {{pct}}",
   "groups.wallets": "Carteras del grupo",
   "groups.links": "Lo que lo mantiene unido, del vínculo más débil al más fuerte",
-  "groups.alone": "Solo este vínculo mantiene unido el grupo: sin él, {{a}} y {{b}} quedan separados.",
+  "groups.alone": "Solo este vínculo mantiene unido el grupo: sin él, se parte en {{a}} por un lado y {{b}} por otro.",
   "card.unchecked": "Sin comprobar, así que su valor es desconocido",
   "card.origin": "De dónde vino su {{asset}}",
   "addresses_one": "{{count}} dirección",

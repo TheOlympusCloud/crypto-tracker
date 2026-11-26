@@ -56,7 +56,7 @@ describe("GroupPanel", () => {
     expect(screen.getByText(/Partly checked/)).toBeTruthy();
     const links = within(screen.getAllByRole("list")[1]!).getAllByRole("button");
     expect(links.map((b) => b.textContent?.match(/\d+%/)?.[0])).toEqual(["55%", "60%", "80%", "100%"]);
-    expect(links[2]!.textContent).toContain("This link alone holds the group together: without it, Hot wallet, Savings, Phone and Cold storage are apart.");
+    expect(links[2]!.textContent).toContain("This link alone holds the group together: without it, the group splits into Hot wallet, Savings, Phone on one side and Cold storage on the other.");
     expect(links.filter((b) => b.textContent?.includes("alone"))).toHaveLength(1);
   });
 

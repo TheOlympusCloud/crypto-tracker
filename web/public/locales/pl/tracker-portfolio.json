@@ -48,7 +48,7 @@
   "groups.weakest": "Najsłabsze powiązanie: {{a}} ↔ {{b}}, {{pct}}",
   "groups.wallets": "Portfele w grupie",
   "groups.links": "Co ją spaja, od najsłabszego powiązania",
-  "groups.alone": "Tylko to powiązanie spaja grupę: bez niego {{a}} i {{b}} są osobno.",
+  "groups.alone": "Tylko to powiązanie spaja grupę: bez niego rozpada się na {{a}} z jednej strony i {{b}} z drugiej.",
   "card.unchecked": "Niesprawdzony, więc jego wartość jest nieznana",
   "card.origin": "Skąd pochodzi {{asset}}",
   "addresses_one": "{{count}} adres",

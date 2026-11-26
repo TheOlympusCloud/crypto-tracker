@@ -42,7 +42,7 @@
   "groups.weakest": "Schwächste Verknüpfung: {{a}} ↔ {{b}}, {{pct}}",
   "groups.wallets": "Wallets der Gruppe",
   "groups.links": "Was sie zusammenhält, die schwächste Verknüpfung zuerst",
-  "groups.alone": "Nur diese Verknüpfung hält die Gruppe zusammen: ohne sie sind {{a}} und {{b}} getrennt.",
+  "groups.alone": "Nur diese Verknüpfung hält die Gruppe zusammen: ohne sie zerfällt sie in {{a}} auf der einen und {{b}} auf der anderen Seite.",
   "card.unchecked": "Nicht geprüft, daher ist ihr Wert unbekannt",
   "card.origin": "Herkunft von {{asset}}",
   "addresses_one": "{{count}} Adresse",
