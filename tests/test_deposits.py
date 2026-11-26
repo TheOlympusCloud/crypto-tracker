@@ -185,6 +185,45 @@ def test_a_tron_usdt_deposit_address_never_read_before_links_two_wallets(db, web
     assert "85% confidence" in alert
 
 
+def okx_list(db, *addresses):
+    """Tron addresses as OKX's proof-of-reserves list names them: deposit addresses and hot
+    wallets alike."""
+    rows = [f"USDT-TRC20,Non Staking,TRON,87596323,{a},1.5,I am an OKX address,0x8cd7,,,," for a in addresses]  # fmt: skip
+    labels.store(db, labels.parse_okx(rows))
+
+
+def test_a_quiet_address_on_okx_list_that_sweeps_to_okx_links_two_wallets(db, web):
+    wallet(db, T1, "Tron savings")
+    wallet(db, T2, "Tron spending")
+    okx_list(db, TDEP, THOT)
+    pay_usdt(T1, TDEP, "u1", 100)
+    pay_usdt(T2, TDEP, "u2", 50)
+    pay_usdt(TDEP, THOT, "u3", 150)
+    sync_all()
+
+    assert CALLS.count(TDEP) == 3  # read, though named
+    assert links(db) == [(*sorted((T1, T2)), "deposit-address", 0.85, f"{TDEP} > OKX")]
+    assert verdict(db, T1)["links"][0]["confidence"] == 0.85
+    named = db.execute("SELECT name, source FROM label WHERE address = ?", (TDEP,)).fetchone()
+    assert tuple(named) == ("OKX", "okx-por")  # the list's name stays, not the guess
+
+
+def test_a_busy_address_on_okx_list_is_read_and_ends_the_path(db, web):
+    wallet(db, T1, "Tron savings")
+    wallet(db, T2, "Tron spending")
+    okx_list(db, THOT)
+    pay_usdt(THOT, T1, "w1", 100)  # both withdrew from OKX's hot wallet
+    pay_usdt(THOT, T2, "w2", 50)
+    pay_usdt(T1, tron(250), "s1", 10)  # USDT one of mine sent too: its receipts count
+    for n in range(chains.TRON_ROWS):
+        pay_usdt(THOT, tron(10 + n), f"o{n}", 1)
+    sync_all()
+
+    assert CALLS.count(THOT) == 3
+    assert db.execute("SELECT hub FROM node WHERE address = ?", (THOT,)).fetchone()["hub"] == 1
+    assert links(db) == [] and verdict(db, T1)["links"] == []
+
+
 def test_a_read_that_failed_on_one_chain_is_read_again_and_makes_the_link(db, web, monkeypatch):
     base = {"url": "http://base/api", "symbol": "ETH", "llama": "base"}
     monkeypatch.setitem(chains.DEFAULT_EVM, "base", base)

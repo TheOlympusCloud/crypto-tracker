@@ -9,7 +9,7 @@ from itertools import combinations
 from . import bridges, chains, swaps
 from . import db as database
 from .heuristics import COMMON_INPUT_COINJOIN, EXCHANGE_CAP, SERVICE, TRUSTED
-from .labels import CONFIDENCE, describe
+from .labels import CONFIDENCE, describe, ends_paths
 
 HOP_DECAY = 0.7  # each stranger a trace passes through weakens it by this factor
 HOPS = 4  # the default depth: the verdicts alerts compare, and every wallet grade
@@ -188,10 +188,13 @@ def trace(db, max_hops=HOPS):
     # A service everybody uses links nobody: a path never runs through one that is known
     # for sure. One that is only guessed to be a service (a label from a contract name or
     # from behaviour) weakens the path by how sure the guess is, and does not cut it:
-    # being wrong there must not hide a link.
+    # being wrong there must not hide a link. A name from a name-only set (an exchange's list
+    # of mostly deposit addresses) neither: that address is judged like a stranger's.
     services_ = {a: r for a, r in labels.items() if r["category"] in SERVICE}
-    blocked = {a for a, r in services_.items() if r["source"] not in CONFIDENCE}
-    damp = {a: 1 - CONFIDENCE[r["source"]] for a, r in services_.items() if a not in blocked}
+    blocked = {a for a, r in services_.items() if ends_paths(r["source"])}
+    damp = {
+        a: 1 - CONFIDENCE[r["source"]] for a, r in services_.items() if r["source"] in CONFIDENCE
+    }
     blocked |= {r["address"] for r in db.execute("SELECT address FROM node WHERE hub AND NOT mine")}
 
     def best_paths(start):

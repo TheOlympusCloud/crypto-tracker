@@ -1,9 +1,13 @@
+import io
+import sys
+import zipfile
+
 import httpx
 import pytest
 from fastapi.testclient import TestClient
 from test_core import BCH, DOGE, LTC, SATOSHI, SOL, TRX, A, B, C, D, mine, tx, vin, vout
 
-from tracker import chains, graph, lookup, tokens, uri
+from tracker import chains, graph, labels, lookup, tokens, uri
 from tracker import db as database
 
 SEGWIT = "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq"
@@ -15,6 +19,39 @@ MSTRX = "XsP7xzNPvEHS1m6qfanPUGjNmdnmsLKEoNAnHjdxxyZ"  # a Token-2022 mint
 WSOL = "So11111111111111111111111111111111111111112"
 FAKE_USDC = "0x" + "7" * 40
 SPL, TOKEN_2022 = chains.TOKEN_PROGRAMS
+OKX_SOL = "5VCwKtCXgCJ6kit5FybXjvriW3xELsFDhYrPSqtJNmcD"  # OKX's Solana hot wallet
+OKX_LIST = "https://static.okx.com/cdn/okx/por/chain/por_csv_2026110100_V10.zip"
+# Recorded from OKX's proof-of-reserves download page (cut): it links every month's list.
+# Versions 9 and 10 of one month are made up: OKX has gone up to 6 in a month so far.
+OKX_PAGE = (
+    '<a href="https://static.okx.com/cdn/okx/por/chain/por_csv_2026100300_V4.zip" download="">'
+    '<a href="https://static.okx.com/cdn/okx/por/chain/por_csv_2026110100_V9.zip" download="">'
+    f'<a href="{OKX_LIST}" download="">'
+    '"auditList":[{"auditId":"508756245","createTime":1793462400000,"typeNum":4,'
+    f'"download":"{OKX_LIST}",'
+    '"merkleTreeDownload":"https://static.okx.com/cdn/okx/por/merkel/por_508756245_proof_data.zip"}'
+)
+# Recorded rows of that list (signatures cut): totals per coin, then every signed address.
+OKX_CSV = """\
+coin,amount
+USDT,8265265024
+SOL,9118220
+coin,Type,Network,Snapshot Height,address,amount,message,signature1,signature2,redeem script/ public key,EOA1,EOA2
+BTC,Non Staking,BTC,973994,bc1qf8kep70t232jtajg2x4r8dhtuvtd7kuea8ve9w02qy5k4wncyl7spmnfme,9558.96262646,I am an OKX address,IA/3KVJK,H0uWIAQs,5221032530,,
+BCHN,Non Staking,BCH,975353,3JQrQQzsoqGZnDk3FaYS6EPia4sv5pGS2y,178014.51000383,I am an OKX address,H/Osgi2P,IEUBIJMu,522103ed0f,,
+ETH,Native ETH Staking,ETH,26313657,0x800065c9ae3346eccad09c1e72019ba7b06f5049dda287d4163dd95bb7b64dd23acb6a79fe351677ed09de67fd69ab8f,32.011817826000000000,I am an OKX address,0x91ff6f6a,,,0xe839a3e9,
+ETH,Non Staking,ETH,26313797,0xbe2ec156292587338d4e9f80f5439e6152d56fc5,80001.294962090482044761,I am an OKX address,0x8e8a0e53,,,,
+APTOS,Non Staking,APTOS,1151935162,0x4c1ef44079cb31851349fba50d385f708a10ec7ac612859fdbf28888d1f7b572,11207438.37268685,I am an OKX address,0xd21b9170,,0xd7aa6673,,
+USDT-TRC20,Non Staking,TRON,87596323,TCw6YaWm3y6DvxY7M8hrCDnrJGeGMumzGJ,472708183.276554,I am an OKX address,0x8cd71531,,,,
+SOL,Non Staking,SOL,463747826,5VCwKtCXgCJ6kit5FybXjvriW3xELsFDhYrPSqtJNmcD,0.200615060,I am an OKX address,0xaf71b5ae,,0x2a8f1c3e,,
+"""
+
+
+def zipped(name, text):
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(name, text)
+    return out.getvalue()
 
 
 @pytest.mark.parametrize(
@@ -117,6 +154,13 @@ def indexers(request):
     if host == "lite-api.jup.ag":
         asked = request.url.params["query"].split(",")
         return httpx.Response(200, json=[JUPITER[m] for m in asked if m in JUPITER])
+    if host == "www.okx.com":  # as OKX answers: the page in the reader's language
+        if path == "/proof-of-reserves/download":
+            return httpx.Response(302, headers={"location": "/en-eu/proof-of-reserves/download"})
+        if path == "/en-eu/proof-of-reserves/download":
+            return httpx.Response(200, text=OKX_PAGE)
+    if str(request.url) == OKX_LIST:
+        return httpx.Response(200, content=zipped("okx_por_2026110100_V10.csv", OKX_CSV))
     if host == "blockstream.info":
         if path.endswith("/txs/chain"):
             return httpx.Response(
@@ -410,6 +454,48 @@ def test_lookup_warns_before_sending_to_a_flagged_address(db, client):
     assert (risk["level"], risk["headline"]) == ("bad", "Risky to send to")
     assert "Ransomware wallet" in risk["reason"]
     assert any("Tornado.Cash" in r["text"] for r in risk["reasons"])  # it dealt with a mixer
+
+
+def test_an_exchange_hot_wallet_on_solana_is_named_from_its_proof_of_reserves(db, client):
+    with httpx.Client() as web:
+        _, failed = labels.import_open(db, web)
+    assert "okx-por" not in failed  # the newest list, read through the page that links it
+    named = db.execute("SELECT address FROM label WHERE source = 'okx-por' ORDER BY 1")
+    assert [r[0] for r in named] == [
+        "0xbe2ec156292587338d4e9f80f5439e6152d56fc5",
+        OKX_SOL,
+        "TCw6YaWm3y6DvxY7M8hrCDnrJGeGMumzGJ",
+        "bc1qf8kep70t232jtajg2x4r8dhtuvtd7kuea8ve9w02qy5k4wncyl7spmnfme",
+    ]  # not Bitcoin Cash (its legacy form reads as Bitcoin), Aptos, or a validator's key
+    v = client.get(f"/api/tracker/lookup/{OKX_SOL}").json()
+    assert (v["label"], v["category"], v["label_type"]) == ("OKX", "cex", "exchange")
+    assert (v["label_source"], v["label_guess"]) == ("dataset", False)
+
+
+def test_a_damaged_okx_list_is_one_failed_set_not_a_failed_sync(db, client, monkeypatch):
+    good = zipped("l.csv", OKX_CSV)
+    start = 30 + len("l.csv")  # past the zip's local header, the deflated data begins
+    bad = good[:start] + b"\xff" + good[start + 1 :]  # an invalid deflate block: zlib.error
+    monkeypatch.setattr(sys.modules[__name__], "zipped", lambda name, text: bad)
+    with httpx.Client() as web:
+        _, failed = labels.import_open(db, web)
+    assert "okx-por" in failed
+    assert not db.execute("SELECT 1 FROM label WHERE source = 'okx-por'").fetchone()
+
+
+def test_a_new_okx_list_replaces_the_old_one_but_an_empty_one_does_not(db, client, monkeypatch):
+    here = sys.modules[__name__]
+    okx = lambda: {r[0] for r in db.execute("SELECT address FROM label WHERE source = 'okx-por'")}
+    with httpx.Client() as web:
+        labels.import_open(db, web)
+        assert OKX_SOL in okx() and len(okx()) == 4
+        later = "\n".join(line for line in OKX_CSV.splitlines() if OKX_SOL not in line)
+        monkeypatch.setattr(here, "OKX_CSV", later)
+        labels.import_open(db, web, everything=True)
+        assert OKX_SOL not in okx() and len(okx()) == 3  # no longer OKX's: no longer named
+        monkeypatch.setattr(here, "OKX_CSV", "coin,amount\nUSDT,8265265024\n")
+        _, failed = labels.import_open(db, web, everything=True)
+    assert "okx-por" in failed and len(okx()) == 3  # a list come empty keeps the old copy
 
 
 def test_lookup_spots_an_address_made_to_look_like_one_i_use(db, client):

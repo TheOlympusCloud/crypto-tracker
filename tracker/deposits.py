@@ -9,7 +9,7 @@ it are one customer: a `deposit-address` link.
 
 import httpx
 
-from . import busy, detect, graph, sync
+from . import busy, detect, graph, labels, sync
 from . import db as database
 from .heuristics import TRUSTED, pair
 
@@ -21,7 +21,8 @@ CHAINS = {"evm", "tron", "bitcoin", "litecoin", "bitcoincash", "solana"}
 
 
 def candidates(db):
-    """Unread, unlabelled addresses that two or more of my wallets dealt with, busiest first.
+    """Unread, unlabelled addresses that two or more of my wallets dealt with, busiest first;
+    a label from a name-only set (labels.NAME_ONLY) does not count.
     A read with an error counts as unread (one EVM chain of six failing leaves synced_at set
     and rules the address out as a deposit address), but waits behind the never-read ones so
     a few that keep failing cannot take every slot."""
@@ -34,7 +35,7 @@ def candidates(db):
               WHERE {TRUSTED} AND NOT {graph.FAKE})
             WHERE other NOT IN (
                 SELECT address FROM node WHERE (synced_at AND error IS NULL) OR hub OR mine)
-              AND other NOT IN (SELECT address FROM label)
+              AND other NOT IN (SELECT address FROM label WHERE {labels.STOPS})
             GROUP BY other HAVING COUNT(DISTINCT w) >= 2
             ORDER BY other IN (SELECT address FROM node WHERE error IS NOT NULL),
                      COUNT(*) DESC, other"""

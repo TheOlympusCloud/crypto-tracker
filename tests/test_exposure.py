@@ -202,6 +202,7 @@ def test_a_full_tron_page_or_a_label_makes_a_hub(db, quick):
         ("Binance deposit address", "cex", "heuristic"),  # the tracker's own guess
         ("UniswapV2Router02", "dex", "explorer"),  # a contract name: the type is a guess
         ("Bob", "other", "user"),  # a person, named by the user: no service
+        ("OKX", "cex", "okx-por"),  # an exchange's own list: mostly one customer's addresses
     ],
 )
 def test_a_guessed_or_personal_label_is_no_hub(db, quick, name, category, source):

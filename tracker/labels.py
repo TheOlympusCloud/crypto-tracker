@@ -14,15 +14,20 @@ graphsense/graphsense-tagpacks, the program names of solana-labs/explorer and 0x
 OFAC lists. Tether's and Circle's freezes are read whole from the stablecoins' own events
 (docs/design/multichain.md, 2.2 #4). Sanctions and freezes are flagged labels that outrank
 the other datasets, and a list read anew replaces its old copy, so a delisted or unfrozen
-address loses its label.
+address loses its label. OKX publishes its proof-of-reserves list, every address signed "I am
+an OKX address", for anyone to check; it too is read whole and replaces its old copy.
 """
 
+import csv
 import io
 import json
 import os
 import re
 import tarfile
+import tempfile
 import time
+import zipfile
+import zlib
 
 import httpx
 import yaml
@@ -60,6 +65,13 @@ TRON_FREEZES = [
     ("Tether", "USDT", "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t", "AddedBlackList", "RemovedBlackList"),
     ("Circle", "USDC", "TEkxiTehnzSmSe2XqrBj4w32RUN966rdz8", "Blacklisted", "UnBlacklisted"),
 ]
+OKX_POR = "https://www.okx.com/proof-of-reserves/download"
+# A new list each month, named by its date and version; the download page links every one.
+OKX_LISTS = re.compile(r"https://static\.okx\.com/cdn/okx/por/chain/por_csv_(\d+)_V(\d+)\.zip")
+# The networks of OKX's list that are read here. Bitcoin Cash is left out: its addresses are
+# listed in the legacy form, which reads as Bitcoin.
+OKX_NETWORKS = {"BTC", "LTC", "DOGE", "TRON", "SOL", "ETH", "ARBITRUM", "AVAXC", "BASE",
+                "OPTIMISM", "POLYGON"}  # fmt: skip
 SPAN = 2_000_000  # blocks per getLogs query: Routescan gives up on wider ones in the busy years
 LOG_ROWS = 1000  # logs per answer, Etherscan's most
 TRON_PAUSE = 1.5  # seconds between TronGrid event pages: without a key it suspends the hasty
@@ -67,17 +79,35 @@ REFRESH = 30 * 86400  # the sets are downloaded again when the copy is older tha
 
 LOADER = getattr(yaml, "CBaseLoader", yaml.BaseLoader)  # libyaml is ~10x faster
 
+# Sets of a service's own addresses that do not tell the ones all its users share from those
+# of one customer (OKX's proof of reserves is mostly deposit addresses). The name is a fact
+# and is shown, but it ends no path: the address is read and judged like a stranger's.
+NAME_ONLY = {"okx-por"}
+# SQL: the labelled addresses that paths, crawls and reads stop at (all but name-only ones).
+STOPS = "source NOT IN ({})".format(", ".join(f"'{s}'" for s in sorted(NAME_ONLY)))
+
 # The source column holds 'user', 'swap-protocol', 'explorer', 'heuristic' or a dataset's name.
 # A sanction or a freeze matters more to whoever sends money there than who runs the address
 # (Garantex is an exchange, and sanctioned), so they outrank the other datasets; OFAC first.
+# A name-only set ranks below the other datasets: it must not take the place of a label that
+# ends paths, such as an open set's name for an exchange's hot wallet.
 _RANK = (
     "(CASE {} WHEN 'user' THEN 6 WHEN 'ofac-sanctions' THEN 5 WHEN 'swap-protocol' THEN 4 "
     "WHEN 'freezes-ethereum' THEN 4 WHEN 'freezes-tron' THEN 4 WHEN 'explorer' THEN 2 "
-    "WHEN 'heuristic' THEN 1 ELSE 3 END)"
+    "WHEN 'heuristic' THEN 1 "
+    + "".join(f"WHEN '{s}' THEN 2.5 " for s in sorted(NAME_ONLY))
+    + "ELSE 3 END)"
 )
 # How sure a label is, by where it came from. Below 1 it is shown as a guess, and a path
 # through such an address is weakened instead of cut (graph.trace).
 CONFIDENCE = {"heuristic": 0.6, "explorer": 0.8}
+
+
+def ends_paths(source):
+    """Whether a service's label from `source` ends every path through its address: stated
+    as a fact (not a guess), by a source that names only addresses the service shares."""
+    return source not in CONFIDENCE and source not in NAME_ONLY
+
 
 CEX = [
     "binance", "bitfinex", "bitstamp", "bittrex", "bybit", "coinbase", "crypto-com", "ftx",
@@ -325,8 +355,37 @@ def read_freezes_tron(client):
     return rows
 
 
+def parse_okx(lines):
+    """OKX's proof-of-reserves CSV: totals per coin, then one row per address and coin
+    (coin, Type, Network, Snapshot Height, address, ...). Mostly deposit addresses."""
+    for row in csv.reader(lines):
+        if len(row) > 4 and row[2] in OKX_NETWORKS:
+            try:
+                yield database.norm(row[4]), "OKX", "cex", "exchange", "okx-por"
+            except ValueError:
+                continue  # the keys of Ethereum validators, listed for staked ETH
+
+
+def read_okx(client):
+    page = client.get(OKX_POR, follow_redirects=True).raise_for_status().text
+    newest = max(OKX_LISTS.finditer(page), key=lambda m: (int(m[1]), int(m[2])))[0]
+    rows = []
+    with tempfile.TemporaryFile() as file:  # about 110 MB, so not kept in memory
+        with client.stream("GET", newest) as reply:
+            for chunk in reply.raise_for_status().iter_bytes():
+                file.write(chunk)
+        with zipfile.ZipFile(file) as archive:
+            for name in archive.namelist():
+                with archive.open(name) as text:
+                    rows += parse_okx(io.TextIOWrapper(text, "utf-8", errors="replace"))
+    if not rows:  # a changed format, not a closed exchange: it must not drop every label
+        raise RuntimeError("OKX's list came empty")
+    return rows
+
+
 # Lists read whole each time, replacing their old copy. Read last, so they are stored last.
 FACTS = {
+    "okx-por": read_okx,
     "freezes-ethereum": read_freezes_ethereum,
     "freezes-tron": read_freezes_tron,
     "ofac-sanctions": read_ofac,
@@ -417,7 +476,7 @@ def import_open(db, client, everything=False):
             replaced.append((name,))
         except (
             httpx.HTTPError, RuntimeError, ValueError, KeyError, TypeError, IndexError,
-            AttributeError,
+            AttributeError, OSError, zipfile.BadZipFile, zlib.error, csv.Error,
         ):  # fmt: skip
             failed.append(name)  # its old copy stays until a read succeeds
     db.executemany("DELETE FROM label WHERE source = ?", replaced)
