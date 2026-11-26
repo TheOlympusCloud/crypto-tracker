@@ -69,6 +69,8 @@
   "gap.skipped": "Una comprobación se quedó sin llamadas y no se hizo: {{check}}.",
   "gap.truncated": "La dirección es muy activa: solo se leyeron sus transacciones más recientes.",
   "gap.unread": "Aún sin leer: {{check}}. La página no hace llamadas; la Puntuación de privacidad lo lee.",
+  "headline.none": "Ningún hallazgo en lo comprobado",
+  "headline.partial": "Lo que el análisis ha encontrado hasta ahora",
   "new": "Analizar otra dirección",
   "partly": "Comprobada en parte",
   "title": "Análisis de privacidad",
@@ -81,6 +83,7 @@
   "wallet.habits": "Seguridad y hábitos",
   "wallet.none": "Ningún hallazgo en las comprobaciones hechas aquí. Eso no demuestra que sea privada.",
   "wallet.not_deep": "Comprobaciones de la cartera; direcciones sin análisis a fondo",
+  "wallet.once": "Un hallazgo en varias cadenas cuenta una sola vez en la calificación, con su peor impacto.",
   "wallet.score": "{{score}} de 100",
   "wallet.title": "Calificación de privacidad",
   "wallet.unchecked": "Aún sin calificación: sincroniza esta cartera"

@@ -140,14 +140,14 @@ read on its own: one whose indexer does not answer holds up no other.
 ### Shared counterparties
 
 Each sync also reads up to 10 addresses that two or more of your wallets dealt with and
-that were never read (with no label, or named only by OKX's list), busiest first: in full, as a lookup reads them (Tron: three TronGrid
-calls), or on Solana with one call that only tells whether the address is busy (1,000
-transactions or more). Dogecoin's are left out: its free indexer allows too few lookups.
-The others wait for the next sync. A busy address (an exchange's hot wallet, a payment
-processor) then ends every link through it, as a labelled service does. A quiet one that
-sends everything to one exchange is that exchange's deposit address, and two of your
-wallets that paid it get a `deposit-address` link (see
-[What is a fact and what is a guess](#what-is-a-fact-and-what-is-a-guess)).
+that were never read (with no label, or named only by OKX's list), busiest first: in full,
+as a lookup reads them (Tron: three TronGrid calls), or on Solana with one call that only
+tells whether the address is busy (1,000 transactions or more). Dogecoin's are left out:
+its free indexer allows too few lookups. The others wait for the next sync. A busy address
+(an exchange's hot wallet, a payment processor) then ends every link through it, as a
+labelled service does. A quiet one that sends everything to one exchange is that
+exchange's deposit address, and two of your wallets that paid it get a `deposit-address`
+link (see [What is a fact and what is a guess](#what-is-a-fact-and-what-is-a-guess)).
 
 ## Install
 
@@ -502,7 +502,7 @@ am-i-exposed's scan with their own profile (below).
 | Sends at hours that point to a time zone | -2, low | An estimate: 20 or more transactions the address sent (on EVM, only those it signed), of which eight hours of the day hold at most a tenth. That quiet stretch is taken as the night, midnight to 8:00 local time, which gives a time zone give or take two hours. Two quiet stretches apart (busy at noon and at midnight) give none. Never a link. |
 | First funded by your wallet | -10, medium | One of your wallets sent the address its first coins on a chain (on Tron: the TRX that activated it). |
 | First funded by the same address as your other wallets | -10, medium | A stranger sent the address, one of your wallets, its first coins and also sent coins to another of your wallets; it was read and is not busy. |
-| First funded by an exchange | 0, low | An address an open label set or you label as an exchange sent it its first coins. It costs nothing more: the withdrawal is one of the transfers "Dealt directly with an exchange" counts. |
+| First funded by an exchange | 0, low | An address an open label set or you label as an exchange sent it its first coins. It costs nothing more: the withdrawal is one of the transfers "Dealt directly with an exchange" counts. When the scan's read did not hold the withdrawal (a busy address read only back to its newest transactions, or a chain that did not answer), the withdrawal alone makes that finding, so the exchange still counts once. |
 | First funded by a busy address | 0, low | As two rows up, but the stranger turned out busy or a known service, so it is stored as a very active address and links nobody. |
 | Has a public name | -15, high | The address's primary name: ENS, Basenames or SNS (.sol). Counted only when the name points back at the address, since anybody can point their own reverse record at any name. |
 | Its name lists addresses on other chains | -5, medium | The addresses of Bitcoin, Litecoin, Dogecoin, Tron, Solana or other EVM chains that the name publishes (ENSIP-9). |
@@ -560,17 +560,17 @@ score (93 plus the impacts, the same grades) over:
 Each finding counts once, at its worst over the wallet's addresses and chains: one
 exchange is enough to be exposed. Reuse is the exception, counted per address, so one slip
 in an HD wallet costs 10 points instead of the F am-i-exposed gives that one address. The
-panel lists the findings by chain, the wallet's own first, then open approvals and activity
-hours apart, under **Security and habits**. Approvals cannot change the grade, but a chain
-whose approvals were not read yet (history still filling in, an indexer that did not
-answer) is named in the panel, and the grade says "Partly checked" until it is read: an empty
-list must not read as "none". A wallet never read has no
-grade, and one whose verdict says "Partly checked" (history still filling in, a source
-that failed) is graded "Partly checked" too. So is a wallet whose names were never looked
-up (each sync looks up those of 20 addresses, each once a day), and one first funded by a
-stranger who also funded another of your wallets, until that stranger has been read: the
-page makes no call, so the panel says what it waits for. **Privacy score** reads that
-stranger, and the answer is kept.
+panel lists the findings by chain, the wallet's own first, then open approvals and
+activity hours apart, under **Security and habits**. Approvals cannot change the grade,
+but a chain whose approvals were not read yet (history still filling in, an indexer that
+did not answer) is named in the panel, and the grade says "Partly checked" until it is
+read: an empty list must not read as "none". A wallet never read has no grade, and one
+whose verdict says "Partly checked" (history still filling in, a source that failed) is
+graded "Partly checked" too. So is a wallet whose names were never looked up (each sync
+looks up those of 20 addresses, each once a day), and one first funded by a stranger who
+also funded another of your wallets, until that stranger has been read: the page makes no
+call, so the panel says what it waits for. **Privacy score** reads that stranger, and the
+answer is kept.
 
 am-i-exposed's deep scan of a Bitcoin address (its 30-odd heuristics, run in the browser) is
 not part of the grade: the server cannot see it. A Bitcoin wallet's grade therefore says
@@ -605,18 +605,18 @@ it was mined, the age of coins spent together) are scaled to 2.5-minute blocks o
 1-minute blocks on Dogecoin.
 
 The browser asks the tracker's server (`/api/tracker/utxo/<chain>/`), which answers in
-Esplora's form from the indexers of [Chains](#chains): Litecoin's is passed through, Dogecoin's
-and Bitcoin Cash's are converted. It answers what a scan asks (an address, its transactions and
-unspent outputs, a transaction and where its outputs went), not the chain tip or prices, so
-these scans show no fiat values. The result page's graph and cluster read through it too, and
-its Wabisator and Chainalysis checks, which screen Bitcoin only, are not offered. So the depths
-are the tracker's: the 50 newest transactions
-of a Dogecoin address and the 100 newest of a Bitcoin Cash one, and the result says
-**Some data could not be fetched** when an address has more. Those two indexers do not count
-an address's outputs: they are counted in the transactions read, at least one when the totals
-say so. A Dogecoin address scan costs two lookups. Once Dogecoin's hourly quota is used up,
-what the scan still needs is skipped and the result says the same instead of failing; a scan
-that has read nothing yet says the indexer is not taking more requests. The quota is shared
+Esplora's form from the indexers of [Chains](#chains): Litecoin's is passed through,
+Dogecoin's and Bitcoin Cash's are converted. It answers what a scan asks (an address, its
+transactions and unspent outputs, a transaction and where its outputs went), not the chain
+tip or prices, so these scans show no fiat values. The result page's graph and cluster
+read through it too, and its Wabisator and Chainalysis checks, which screen Bitcoin only,
+are not offered. So the depths are the tracker's: the 50 newest transactions of a Dogecoin
+address and the 100 newest of a Bitcoin Cash one, and the result says **Some data could
+not be fetched** when an address has more. Those two indexers do not count an address's
+outputs: they are counted in the transactions read, at least one when the totals say so. A
+Dogecoin address scan costs two lookups. Once Dogecoin's hourly quota is used up, what the
+scan still needs is skipped and the result says the same instead of failing; a scan that
+has read nothing yet says the indexer is not taking more requests. The quota is shared
 with syncs.
 
 ## Privacy

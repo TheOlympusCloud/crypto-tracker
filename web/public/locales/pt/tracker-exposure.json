@@ -69,6 +69,8 @@
   "gap.skipped": "Uma verificação ficou sem chamadas e não correu: {{check}}.",
   "gap.truncated": "O endereço é muito ativo: só foram lidas as suas transações mais recentes.",
   "gap.unread": "Ainda não lido: {{check}}. A página não faz chamadas; a Pontuação de privacidade lê-o.",
+  "headline.none": "Nenhuma constatação no que foi verificado",
+  "headline.partial": "O que a análise encontrou até agora",
   "new": "Analisar outro endereço",
   "partly": "Verificado em parte",
   "title": "Análise de privacidade",
@@ -81,6 +83,7 @@
   "wallet.habits": "Segurança e hábitos",
   "wallet.none": "Nenhuma constatação nas verificações feitas aqui. Isso não prova que ela é privada.",
   "wallet.not_deep": "Verificações da carteira; endereços sem análise a fundo",
+  "wallet.once": "Uma constatação em várias cadeias conta uma só vez na nota, com o seu pior impacto.",
   "wallet.score": "{{score}} de 100",
   "wallet.title": "Nota de privacidade",
   "wallet.unchecked": "Ainda sem nota: sincronize esta carteira"

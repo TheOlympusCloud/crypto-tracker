@@ -77,6 +77,18 @@ describe("the account scan", () => {
     expect(note.textContent).toContain("only its newest transactions were read");
   });
 
+  // The dial shows the grade; the headline never says "excellent" for what was not checked.
+  it.each([
+    ["no finding", { findings: [], score: 93, grade: "A+" as const }, "No finding in what was checked"],
+    ["a partial read", { partial: true, gaps: [{ id: "truncated" as const }] }, "What the scan found so far"],
+  ])("gives a neutral headline for %s", async (_, over, headline) => {
+    window.location.hash = `#addr=${EVM}&chains=ethereum`;
+    stubApi({ [`exposure/${EVM}?chains=ethereum`]: scan(over) });
+    render(<AccountScan />);
+    expect(await screen.findByRole("heading", { level: 1, name: headline })).toBeTruthy();
+    expect(screen.queryByText(/Excellent|Good privacy/)).toBeNull();
+  });
+
   it("asks an EVM address for its chains, then scans those", async () => {
     window.location.hash = `#addr=${EVM}`;
     const fetch = stubApi({

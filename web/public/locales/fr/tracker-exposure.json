@@ -69,6 +69,8 @@
   "gap.skipped": "Une vérification a manqué d'appels et n'a pas tourné : {{check}}.",
   "gap.truncated": "L'adresse est très active : seules ses transactions les plus récentes ont été lues.",
   "gap.unread": "Pas encore lu : {{check}}. La page ne fait aucun appel ; le Score de confidentialité le lit.",
+  "headline.none": "Aucune constatation dans ce qui a été vérifié",
+  "headline.partial": "Ce que l'analyse a trouvé jusqu'ici",
   "new": "Analyser une autre adresse",
   "partly": "Vérifiée en partie",
   "title": "Analyse de confidentialité",
@@ -81,6 +83,7 @@
   "wallet.habits": "Sécurité et habitudes",
   "wallet.none": "Aucun constat parmi les vérifications faites ici. Ce n'est pas une preuve de confidentialité.",
   "wallet.not_deep": "Vérifications du portefeuille ; adresses sans analyse approfondie",
+  "wallet.once": "Un constat sur plusieurs chaînes ne compte qu'une fois dans la note, à son pire impact.",
   "wallet.score": "{{score}} sur 100",
   "wallet.title": "Note de confidentialité",
   "wallet.unchecked": "Pas encore de note : synchronisez ce portefeuille"

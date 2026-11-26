@@ -69,6 +69,8 @@
   "gap.skipped": "Einer Prüfung gingen die Abfragen aus, sie lief nicht: {{check}}.",
   "gap.truncated": "Die Adresse ist sehr aktiv: nur ihre neuesten Transaktionen wurden gelesen.",
   "gap.unread": "Noch nicht gelesen: {{check}}. Die Seite fragt nichts ab; der Privatsphäre-Score liest es.",
+  "headline.none": "Kein Befund in dem, was geprüft wurde",
+  "headline.partial": "Was die Prüfung bisher gefunden hat",
   "new": "Andere Adresse prüfen",
   "partly": "Teilweise geprüft",
   "title": "Datenschutz-Prüfung",
@@ -81,6 +83,7 @@
   "wallet.habits": "Sicherheit und Gewohnheiten",
   "wallet.none": "Kein Befund bei den Prüfungen hier. Das ist kein Beweis für Privatsphäre.",
   "wallet.not_deep": "Wallet-Prüfungen; Adressen nicht tiefengeprüft",
+  "wallet.once": "Ein Befund auf mehreren Chains zählt nur einmal in der Note, mit seinem stärksten Abzug.",
   "wallet.score": "{{score}} von 100",
   "wallet.title": "Privatsphäre-Note",
   "wallet.unchecked": "Noch keine Note: synchronisiere diese Wallet"

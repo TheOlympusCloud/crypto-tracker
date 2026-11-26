@@ -56,9 +56,23 @@ def check(ctx):
             src, txid, _ = min(rows, key=lambda r: r[2])
             if database.valid(src):  # indexer output is untrusted
                 funded.setdefault(src, []).append({"chain": chain, "txid": txid})
+    cex = []
     for src, evidence in funded.items():
         if found := name(ctx, src, evidence, mine):
             yield found
+            if found[0] == "x-funder-exchange":
+                cex.append(found)
+    # The withdrawal is one of the transfers exchange exposure counts, unless the read did
+    # not hold it (cut to the newest transactions, or a chain that did not answer): then the
+    # exposure is the funder's alone, and counts once.
+    if cex and not ctx.labelled("cex"):
+        evidence = [e for _, _, ev in cex for e in ev]
+        params = {
+            "exchange": ", ".join(sorted({p["exchange"] for _, p, _ in cex})),
+            "count": len(evidence),
+            "chains": ", ".join(sorted({chains.name(e["chain"]) for e in evidence})),
+        }
+        yield "x-exchange-exposure", params, evidence
     if failed:
         raise failed
 

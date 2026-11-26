@@ -69,6 +69,8 @@
   "gap.skipped": "A check ran out of calls and did not run: {{check}}.",
   "gap.truncated": "The address is very active: only its newest transactions were read.",
   "gap.unread": "Not read yet: {{check}}. The page makes no call; Privacy score reads it.",
+  "headline.none": "No finding in what was checked",
+  "headline.partial": "What the scan found so far",
   "new": "Scan another address",
   "partly": "Partly checked",
   "title": "Privacy scan",
@@ -81,6 +83,7 @@
   "wallet.habits": "Security and habits",
   "wallet.none": "No finding among the checks made here. That is no proof of privacy.",
   "wallet.not_deep": "Wallet checks; addresses not deep-scanned",
+  "wallet.once": "A finding on several chains counts once in the grade, at its worst.",
   "wallet.score": "{{score}} of 100",
   "wallet.title": "Privacy grade",
   "wallet.unchecked": "No grade yet: sync this wallet"

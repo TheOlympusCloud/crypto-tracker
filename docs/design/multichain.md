@@ -309,7 +309,9 @@ It scores:
   what an address is itself (on a sanctions list, frozen) and a family's checks (first
   funder, names, the same address on several chains) once per address,
   and for UTXO addresses their reuse. An exchange that first funded an address costs
-  nothing more: its withdrawal is one of the transfers exchange exposure counts;
+  nothing more: its withdrawal is one of the transfers exchange exposure counts. When the
+  read did not hold that withdrawal (cut to the newest transactions, or a chain that did
+  not answer), the funder check yields the exchange exposure from it, so it counts once;
 - each finding id once, with its worst impact across the wallet's addresses: one exchange
   exposure is enough to be exposed. Reuse is the exception, counted per address: −10 for
   each reused address, at most −40, where am-i-exposed's single-address score gives −70 to

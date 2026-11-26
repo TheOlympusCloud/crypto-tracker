@@ -8,7 +8,7 @@ from test_lookup import PAYER, stored
 from test_lookup import client as fake_internet
 
 from tracker import chains, exposure, history, lookup
-from tracker.exposure import funder
+from tracker.exposure import exchange, funder
 
 SOL2 = "4Nd1mBQtrMJVYVfKf2PJy9NZUZdTAsp7D4xWLs4gDB4T"  # another Solana wallet of mine
 FUNDER_TRX = "TXka46PPwttNPWfFDPtt3GUodbPThyufaV"  # hex 41ee...ee
@@ -55,12 +55,14 @@ def indexers(txlist=(), tron=(), signatures=0, down=()):
     return httpx.Client(transport=httpx.MockTransport(answer)), calls
 
 
-def scan(db, http, address, chains_read=(), truncated=False, read=None):
-    """The funder check alone, as exposure.run calls it, after a lookup read `read`."""
+def scan(db, http, address, chains_read=(), truncated=False, read=None, connections=()):
+    """The funder check alone, as exposure.run calls it, after a lookup read `read` that
+    lists `connections`."""
     chains_read = list(chains_read) or [db_chain(address)]
     if read is not None:
         lookup.READS[(address, tuple(chains_read))] = (time.time(), read)
-    view = {"chains": chains_read, "truncated": truncated, "errors": [], "connections": []}
+    view = {"chains": chains_read, "truncated": truncated, "errors": []}
+    view["connections"] = list(connections)
     return list(funder.check(exposure.Context(db, http, address, view)))
 
 
@@ -78,6 +80,10 @@ def transfer(db, chain, txid, src, dst, ts, asset="ETH", token=""):
         "INSERT INTO transfer VALUES (?, ?, ?, ?, ?, ?, 1.0, ?)",
         (chain, txid, src, dst, asset, token, ts),
     )
+
+
+BINANCE = {"address": D, "label": "Binance 14", "category": "cex", "label_guess": False}
+COINBASE = {**BINANCE, "label": "Coinbase 3"}
 
 
 def row(src, dst, txid, ts, value=10**18):
@@ -113,7 +119,7 @@ def test_while_my_history_fills_in_the_funder_is_read_as_any_other_addresss(db):
     read = {"transfers": [("ethereum", "h1", D, A, "ETH", "", 2.0, 5)], "hub": False}
     http, calls = indexers()
 
-    found = scan(db, http, A, ["ethereum"], read=read)
+    found = scan(db, http, A, ["ethereum"], read=read, connections=[BINANCE])
 
     assert [(id, params) for id, params, _ in found] == [
         ("x-funder-exchange", {"exchange": "Binance", "chains": "Ethereum"})
@@ -135,7 +141,7 @@ def test_an_exchange_funder_found_in_the_read_takes_no_call(db):
     }
     http, calls = indexers()
 
-    found = scan(db, http, A, ["ethereum", "polygon"], read=read)
+    found = scan(db, http, A, ["ethereum", "polygon"], read=read, connections=[BINANCE])
 
     evidence = [{"chain": "ethereum", "txid": "h1"}, {"chain": "polygon", "txid": "p1"}]
     params = {"exchange": "Binance", "chains": "Ethereum, Polygon"}
@@ -153,6 +159,10 @@ def test_a_busy_address_takes_one_ascending_call_per_chain_and_none_on_nodereal(
     assert found[0][:2] == (
         "x-funder-exchange",
         {"exchange": "Coinbase", "chains": "Ethereum, Polygon"},
+    )
+    assert found[1][:2] == (
+        "x-exchange-exposure",
+        {"exchange": "Coinbase", "count": 2, "chains": "Ethereum, Polygon"},
     )
 
 
@@ -172,7 +182,8 @@ def test_one_ascending_call_names_a_later_sender_when_the_first_coins_came_inter
     http, _ = indexers(txlist=[row(D, A, "h8", 6), row(A, B, "h9", 7, value=0)])
     found = scan(db, http, A, ["ethereum"], truncated=True)
     assert [(id, params["exchange"]) for id, params, _ in found] == [
-        ("x-funder-exchange", "Coinbase")
+        ("x-funder-exchange", "Coinbase"),
+        ("x-exchange-exposure", "Coinbase"),  # the cut read did not hold the withdrawal
     ]
 
 
@@ -187,13 +198,49 @@ def test_a_chain_that_does_not_answer_spares_the_funders_of_the_others(db, monke
     r = exposure.run(db, http, A, ["ethereum", "polygon"])
 
     assert [(f["id"], f["params"]["chains"]) for f in r["findings"]] == [
-        ("x-funder-exchange", "Ethereum")
+        ("x-exchange-exposure", "Ethereum"),
+        ("x-funder-exchange", "Ethereum"),
     ]
     assert (
         r["partial"]
         and {"id": "error", "params": {"error": "funder: polygon: txlist: NOTOK Max rate"}}
         in r["gaps"]
     )
+
+
+@pytest.mark.parametrize("read", ["cut short", "whole"])
+def test_an_exchange_funder_counts_once_whether_or_not_the_read_held_its_withdrawal(
+    db, monkeypatch, read
+):
+    """A busy address's read holds only its newest transactions: the withdrawal that first
+    funded it, found by the ascending call, is then the only exchange exposure. B either way:
+    never A+ for a cut read, never counted twice for a whole one."""
+    label(db, D, "Coinbase 3", "cex")
+    http, _ = indexers(txlist=[row(D, A, "h6", 6)])
+    view = {"chains": ["ethereum"], "errors": [], "icon": "evm", "explorer_address": ""}
+    if read == "cut short":  # no labelled counterparty among its newest transactions
+        view |= {"truncated": True, "connections": []}
+    else:
+        withdrawal = ("ethereum", "h6", D, A, "ETH", "", 1.0, 6)
+        lookup.READS[(A, ("ethereum",))] = (time.time(), {"transfers": [withdrawal]})
+        received = [{"chain": "ethereum", "asset": "ETH", "amount": 1.0}]
+        evidence = [{"chain": "ethereum", "txid": "h6"}]
+        party = {**COINBASE, "count": 1, "sent": [], "received": received, "evidence": evidence}
+        view |= {"truncated": False, "connections": [party]}
+    monkeypatch.setattr(lookup, "view", lambda *a, **k: view)
+    monkeypatch.setattr(exposure, "CHECKS", {"any": [exchange.check], "evm": [funder.check]})
+
+    r = exposure.run(db, http, A, ["ethereum"])
+
+    by = {f["id"]: f for f in r["findings"]}
+    assert {id: f["scoreImpact"] for id, f in by.items()} == {
+        "x-exchange-exposure": -15,
+        "x-funder-exchange": 0,
+    }
+    cex = by["x-exchange-exposure"]
+    assert cex["params"] == {"exchange": "Coinbase", "count": 1, "chains": "Ethereum"}
+    assert [e["txid"] for e in cex["evidence"]] == ["h6"]
+    assert (r["score"], r["grade"], r["partial"]) == (78, "B", read == "cut short")
 
 
 @pytest.mark.parametrize(
