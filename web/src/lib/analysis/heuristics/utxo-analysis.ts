@@ -1,6 +1,6 @@
 import type { AddressHeuristic } from "./types";
 import type { Finding } from "@/lib/types";
-import { DUST_THRESHOLD } from "@/lib/constants";
+import { chain } from "@/lib/bitcoin/chain-profile";
 
 /**
  * H9: UTXO Set Analysis + H12: Dust Detection
@@ -19,7 +19,7 @@ export const analyzeUtxos: AddressHeuristic = (_address, utxos) => {
   }
 
   // --- Dust detection ---
-  const dustUtxos = utxos.filter((u) => u.value < DUST_THRESHOLD);
+  const dustUtxos = utxos.filter((u) => u.value < chain().dust);
 
   if (dustUtxos.length > 0) {
     const totalDust = dustUtxos.reduce((sum, u) => sum + u.value, 0);
@@ -28,9 +28,9 @@ export const analyzeUtxos: AddressHeuristic = (_address, utxos) => {
       severity: dustUtxos.length >= 3 ? "high" : "medium",
       confidence: "high",
       title: `${dustUtxos.length} potential dust UTXO${dustUtxos.length > 1 ? "s" : ""} detected`,
-      params: { count: dustUtxos.length, dustCount: dustUtxos.length, totalDust, threshold: DUST_THRESHOLD },
+      params: { count: dustUtxos.length, dustCount: dustUtxos.length, totalDust, threshold: chain().dust },
       description:
-        `Found ${dustUtxos.length} UTXO${dustUtxos.length > 1 ? "s" : ""} below ${DUST_THRESHOLD} sats (total: ${totalDust} sats). ` +
+        `Found ${dustUtxos.length} UTXO${dustUtxos.length > 1 ? "s" : ""} below ${chain().dust} sats (total: ${totalDust} sats). ` +
         `Tiny unsolicited UTXOs are often "dusting attacks" - surveillance entities send small amounts to track your spending. ` +
         `When you spend dust alongside other UTXOs, it links those UTXOs together via the common-input-ownership heuristic.`,
       recommendation:

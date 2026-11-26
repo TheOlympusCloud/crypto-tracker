@@ -9,6 +9,7 @@ import { checkOfac } from "./cex-risk/ofac-check";
 import { ADDRESS_HEURISTICS, tick } from "./heuristic-registry";
 import { runTxHeuristics, finalizeTxResult } from "./tx-pipeline";
 import { enrichFindingsWithMetadata } from "./finding-metadata";
+import { enabled } from "./heuristic-steps";
 
 /**
  * Run every address heuristic, reporting each to the diagnostic loader
@@ -23,7 +24,7 @@ export async function runAddressHeuristics(
   label: string,
 ): Promise<Finding[]> {
   const findings: Finding[] = [];
-  for (const heuristic of ADDRESS_HEURISTICS) {
+  for (const heuristic of ADDRESS_HEURISTICS.filter(enabled)) {
     onStep?.(heuristic.id);
     await tick();
     try {

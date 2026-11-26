@@ -1,4 +1,9 @@
 import type { HeuristicTranslator } from "./heuristics/types";
+import { has, type Feature } from "@/lib/bitcoin/chain-profile";
+
+/** crypto-tracker: whether the active chain has what a heuristic `needs` (chain-profile.ts). */
+export const enabled = (h: object): boolean => !("needs" in h) || (h.needs as readonly Feature[]).every(has);
+const WALLETS = ["bitcoin-wallets"] as const;
 
 /**
  * Heuristic step ids and labels for the diagnostic loader. Kept apart from the
@@ -14,7 +19,7 @@ export const TX_HEURISTIC_META = [
   { id: "h5", label: "Transaction entropy" },
   { id: "h6", label: "Fee fingerprinting" },
   { id: "h7", label: "OP_RETURN metadata" },
-  { id: "h11", label: "Wallet fingerprinting" },
+  { id: "h11", label: "Wallet fingerprinting", needs: WALLETS },
   { id: "anon", label: "Anonymity sets" },
   { id: "timing", label: "Timing analysis" },
   { id: "script", label: "Script type analysis" },
@@ -24,22 +29,22 @@ export const TX_HEURISTIC_META = [
   { id: "peel", label: "Peel chain detection" },
   { id: "consolidation", label: "Consolidation patterns" },
   { id: "unnecessary", label: "Unnecessary inputs" },
-  { id: "tx0", label: "CoinJoin premix (tx0)" },
+  { id: "tx0", label: "CoinJoin premix (tx0)", needs: WALLETS },
   { id: "bip69", label: "BIP69 ordering" },
-  { id: "bip47", label: "BIP47 notification detection" },
+  { id: "bip47", label: "BIP47 notification detection", needs: WALLETS },
   { id: "exchange", label: "Exchange pattern detection" },
   { id: "coinsel", label: "Coin selection patterns" },
-  { id: "witness", label: "Witness data analysis" },
-  { id: "postmix", label: "Post-mix consolidation" },
-  { id: "entity", label: "Known entity detection" },
-  { id: "ricochet", label: "Ricochet detection" },
+  { id: "witness", label: "Witness data analysis", needs: ["segwit"] as const },
+  { id: "postmix", label: "Post-mix consolidation", needs: WALLETS },
+  { id: "entity", label: "Known entity detection", needs: ["entity-index"] as const },
+  { id: "ricochet", label: "Ricochet detection", needs: WALLETS },
   { id: "utxo-age", label: "UTXO age spread" },
 ] as const;
 
 export const ADDRESS_HEURISTIC_META = [
   { id: "h8", label: "Address reuse" },
   { id: "h9", label: "UTXO analysis" },
-  { id: "h10", label: "Address type" },
+  { id: "h10", label: "Address type", needs: ["segwit"] as const },
   { id: "spending", label: "Spending patterns" },
   { id: "recurring", label: "Recurring payment detection" },
   { id: "highactivity", label: "High activity detection" },
@@ -63,7 +68,7 @@ const CHAIN_STEPS = [
 
 export function getTxHeuristicSteps(t?: HeuristicTranslator): HeuristicStep[] {
   return [
-    ...TX_HEURISTIC_META.map((h) => ({
+    ...TX_HEURISTIC_META.filter(enabled).map((h) => ({
       id: h.id,
       label: t ? t(`step.${h.id}.label`, { defaultValue: h.label }) : h.label,
       status: "pending" as const,
@@ -77,7 +82,7 @@ export function getTxHeuristicSteps(t?: HeuristicTranslator): HeuristicStep[] {
 }
 
 export function getAddressHeuristicSteps(t?: HeuristicTranslator): HeuristicStep[] {
-  return ADDRESS_HEURISTIC_META.map((h) => ({
+  return ADDRESS_HEURISTIC_META.filter(enabled).map((h) => ({
     id: h.id,
     label: t ? t(`step.${h.id}.label`, { defaultValue: h.label }) : h.label,
     status: "pending" as const,

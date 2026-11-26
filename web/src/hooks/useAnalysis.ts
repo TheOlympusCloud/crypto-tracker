@@ -12,6 +12,7 @@ import { mapApiErrorMessage } from "@/lib/api/error-message";
 import { NETWORK_CONFIG, type BitcoinNetwork } from "@/lib/bitcoin/networks";
 import { cleanInput, detectInputType } from "@/lib/analysis/detect-input";
 import { accountScanHref } from "@/lib/tracker/exposure";
+import { chain as activeChain, isChainId, otherChain, setChain } from "@/lib/bitcoin/chain-profile";
 import { getTxHeuristicSteps, getAddressHeuristicSteps } from "@/lib/analysis/heuristic-steps";
 import { loadEngine } from "@/lib/analysis/load-engine";
 import { parseLocalTx, localTxLabel, type LocalTx } from "@/lib/input/local-tx";
@@ -78,13 +79,17 @@ export function useAnalysis() {
   }, []);
 
   const analyze = useCallback(
-    async (input: string, opts?: { awaitIndexing?: boolean }) => {
+    async (input: string, opts?: { awaitIndexing?: boolean; chain?: string }) => {
       // Cancel any in-flight request
       abortRef.current?.abort();
       const controller = new AbortController();
       abortRef.current = controller;
       pendingCacheRef.current = null;
       const inputType = detectInputType(input, network);
+      // crypto-tracker: the chain the hash names, else the address's own; Bitcoin keeps its backend,
+      // the others are read through the tracker's server (chain-profile.ts)
+      setChain(isChainId(opts?.chain) ? opts.chain : (inputType === "address" && otherChain(cleanInput(input))) || "bitcoin");
+      const other = activeChain().id !== "bitcoin";
       // The signed hex of a previous local scan must not linger once another scan starts
       if (inputType !== "psbt" && inputType !== "rawtx") localInputRef.current = null;
 
@@ -127,10 +132,10 @@ export function useAnalysis() {
       // bc1 on testnet) is scanned on the network it belongs to, with the same
       // switch notice as a txid found elsewhere. Public mempool.space only.
       let net = network;
-      let cfg = config;
+      let cfg = other ? { ...config, mempoolBaseUrl: activeChain().api } : config;
       let switchedTo: BitcoinNetwork | undefined;
       // A self-hosted backend serves one network: an address of another one is refused
-      if (inputType === "address" && (isUmbrel || !!customApiUrl) && isMainnetAddress(cleanInput(input)) !== (network === "mainnet")) {
+      if (!other && inputType === "address" && (isUmbrel || !!customApiUrl) && isMainnetAddress(cleanInput(input)) !== (network === "mainnet")) {
         const vars = {
           addressNetwork: network === "mainnet" ? "Testnet/Signet" : "Mainnet",
           network: NETWORK_CONFIG[network].label,
@@ -153,7 +158,7 @@ export function useAnalysis() {
         });
         return;
       }
-      if (inputType === "address" && !isUmbrel && !customApiUrl) {
+      if (!other && inputType === "address" && !isUmbrel && !customApiUrl) {
         const detected = await detectAddressNetwork(input, network, controller.signal, (n) => configFor(n).mempoolBaseUrl);
         if (controller.signal.aborted) return;
         if (detected) {
@@ -311,7 +316,7 @@ export function useAnalysis() {
        */
       const complete = (fields: Partial<AnalysisState>, cacheNetwork?: BitcoinNetwork) => {
         if (cacheNetwork && !fields.result?.partial && !unverifiedBackend) {
-          const cacheKey = cacheKeyPrefix(configFor(cacheNetwork).mempoolBaseUrl, cacheNetwork);
+          const cacheKey = cacheKeyPrefix(other ? cfg.mempoolBaseUrl : configFor(cacheNetwork).mempoolBaseUrl, cacheNetwork);
           pendingCacheRef.current = { cacheKey, input, settings: analysisSettingsForCache };
         }
         const durationMs = Date.now() - startTime;
@@ -415,6 +420,7 @@ export function useAnalysis() {
           err instanceof ApiError &&
           err.code === "NOT_FOUND" &&
           inputType === "txid" &&
+          !other &&
           !isUmbrel &&
           !customApiUrl &&
           !opts?.awaitIndexing
@@ -486,6 +492,7 @@ export function useAnalysis() {
   const reset = useCallback(() => {
     abortRef.current?.abort();
     abortRef.current = null;
+    setChain("bitcoin");
     pendingCacheRef.current = null;
     localInputRef.current = null;
     setState(INITIAL_STATE);
@@ -527,9 +534,9 @@ export function useAnalysis() {
     }
   }, [state.localTx, state.localLookup?.status, config, isCustomApi]);
 
-  // Abort in-flight requests on unmount
+  // Abort in-flight requests on unmount; other pages scan Bitcoin (crypto-tracker)
   useEffect(() => {
-    return () => { abortRef.current?.abort(); };
+    return () => { abortRef.current?.abort(); setChain("bitcoin"); };
   }, []);
 
   return { ...state, analyze, reset, retryLocal, completeLocalLookup };

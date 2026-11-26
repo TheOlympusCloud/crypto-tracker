@@ -3,6 +3,7 @@ import type { Finding } from "@/lib/types";
 import { fmtN, calcVsize } from "@/lib/format";
 import { isRoundAmount } from "./round-amount";
 import { isCoinbase, getSpendableOutputs, isRbfSignaling } from "./tx-utils";
+import { has } from "@/lib/bitcoin/chain-profile";
 
 /**
  * H6: Fee Analysis
@@ -30,7 +31,8 @@ export const analyzeFees: TxHeuristic = (tx, _rawHex?, ctx?) => {
   // the exact product fires on ~1/vsize of them.
   // Exclude low rates (1-5 sat/vB) since these are common during low-fee periods
   // and being in a large cohort is actually privacy-neutral
-  if (tx.fee % vsize === 0 && feeRate > 5) {
+  // crypto-tracker: not where every wallet pays a fixed rate (Dogecoin, chain-profile.ts)
+  if (has("fee-market") && tx.fee % vsize === 0 && feeRate > 5) {
     findings.push({
       id: "h6-round-fee-rate",
       severity: "low",

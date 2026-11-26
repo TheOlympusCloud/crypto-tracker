@@ -3,6 +3,7 @@ import type { BitcoinNetwork } from "@/lib/bitcoin/networks";
 import { isXpubOrDescriptor } from "@/lib/bitcoin/descriptor";
 import { isPSBT } from "@/lib/bitcoin/psbt";
 import { isRawTxHex } from "@/lib/input/local-tx";
+import { otherChain } from "@/lib/bitcoin/chain-profile";
 
 /** Extract a txid or address from a mempool.space / blockstream URL. */
 function extractFromUrl(input: string): string | null {
@@ -38,7 +39,8 @@ function looksLikePayload(s: string): boolean {
   return isLocalPayloadPrefix(compact) || (compact.length > 64 && /^[0-9a-fA-F]+$/.test(compact));
 }
 
-const BIP21_RE = /^bitcoin:([a-z0-9]+)(?:\?.*)?$/i;
+// crypto-tracker: Litecoin's and Dogecoin's URIs too, and Bitcoin Cash's prefix (its address is what follows)
+const BIP21_RE = /^(?:bitcoin|litecoin|dogecoin|bitcoincash):([a-z0-9]+)(?:\?.*)?$/i;
 const UPPER_BECH32_RE = /^(BC1|TB1)[02-9AC-HJ-NP-Z]+$/;
 
 /** Clean user input, extracting from URLs / BIP21 if needed. Payloads keep their full length. */
@@ -93,6 +95,9 @@ export function detectInputType(
   if (/^[mn][a-km-zA-HJ-NP-Z1-9]{24,33}$/.test(trimmed)) return "address";
   // Testnet P2SH (2...) - version 0xC4 can encode up to 35 chars total
   if (/^2[a-km-zA-HJ-NP-Z1-9]{24,34}$/.test(trimmed)) return "address";
+
+  // crypto-tracker: a Litecoin, Dogecoin or Bitcoin Cash address, scanned with its chain's profile
+  if (otherChain(trimmed)) return "address";
 
   // Network parameter kept for API compatibility but validation is
   // permissive - on Umbrel the local mempool determines the network,

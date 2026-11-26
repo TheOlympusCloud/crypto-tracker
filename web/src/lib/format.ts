@@ -1,10 +1,12 @@
 import { SATS_PER_BTC } from "@/lib/constants";
+import { chain } from "@/lib/bitcoin/chain-profile";
 
 /**
  * Unified satoshi formatting for the entire app.
  * Always displays amounts in sats with locale-aware thousand separators.
  */
 export function formatSats(sats: number, locale?: string): string {
+  if (chain().id !== "bitcoin") return formatBtc(sats); // crypto-tracker: sats are Bitcoin's
   return `${sats.toLocaleString(locale)} sats`;
 }
 
@@ -15,12 +17,12 @@ export function fmtN(n: number): string {
 
 /** Format satoshis as a human-readable BTC string (e.g. "0.001 BTC"). */
 export function formatBtc(sats: number): string {
-  return `${(sats / SATS_PER_BTC).toFixed(8).replace(/\.?0+$/, "")} BTC`;
+  return `${(sats / SATS_PER_BTC).toFixed(8).replace(/\.?0+$/, "")} ${chain().unit}`;
 }
 
 /** Format a value as sats or BTC depending on magnitude. */
 export function formatSatsOrBtc(sats: number): string {
-  if (sats >= SATS_PER_BTC) {
+  if (sats >= SATS_PER_BTC || chain().id !== "bitcoin") {
     return formatBtc(sats);
   }
   return `${fmtN(sats)} sats`;

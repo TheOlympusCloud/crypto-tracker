@@ -1,6 +1,7 @@
 import type { TxHeuristic } from "./types";
 import type { Finding } from "@/lib/types";
-import { DUST_THRESHOLD, P2PKH_DUST_LIMIT } from "@/lib/constants";
+import { P2PKH_DUST_LIMIT } from "@/lib/constants";
+import { chain } from "@/lib/bitcoin/chain-profile";
 import { isCoinbase, isOpReturnOutput, inputAddressSet } from "./tx-utils";
 
 /**
@@ -47,7 +48,7 @@ export const analyzeDustOutputs: TxHeuristic = (tx) => {
   // Collect dust outputs with their vout indices, using per-script-type thresholds
   const dustEntries: { index: number; value: number; address?: string; belowEconThreshold: boolean }[] = [];
   for (const [i, out] of tx.vout.entries()) {
-    if (out.value > 0 && out.value < DUST_THRESHOLD && !isOpReturnOutput(out)) {
+    if (out.value > 0 && out.value < chain().dust && !isOpReturnOutput(out)) {
       const econThreshold = getDustThreshold(out.scriptpubkey_type);
       dustEntries.push({
         index: i,
@@ -120,11 +121,11 @@ export const analyzeDustOutputs: TxHeuristic = (tx) => {
       id: "dust-outputs",
       severity,
       confidence: "high",
-      title: `${dustEntries.length} dust output${dustEntries.length > 1 ? "s" : ""} detected (< ${DUST_THRESHOLD} sats)`,
-      params: { dustCount: dustEntries.length, count: dustEntries.length, threshold: DUST_THRESHOLD, totalDustValue, econDustCount, dustIndices: dustIndicesStr },
+      title: `${dustEntries.length} dust output${dustEntries.length > 1 ? "s" : ""} detected (< ${chain().dust} sats)`,
+      params: { dustCount: dustEntries.length, count: dustEntries.length, threshold: chain().dust, totalDustValue, econDustCount, dustIndices: dustIndicesStr },
       description:
         `This transaction contains ${dustEntries.length} output${dustEntries.length > 1 ? "s" : ""} ` +
-        `below ${DUST_THRESHOLD} sats (total: ${totalDustValue} sats). ` +
+        `below ${chain().dust} sats (total: ${totalDustValue} sats). ` +
         "Tiny outputs are uneconomical to spend and may indicate dust for tracking purposes or a wallet deficiency." +
         walletDeficiency,
       recommendation:

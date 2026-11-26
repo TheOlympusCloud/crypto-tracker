@@ -39,6 +39,14 @@ describe("useHashRouting", () => {
     expect(callbacks.analyze).toHaveBeenCalledWith(TXID);
   });
 
+  it("passes on the chain a hash names (crypto-tracker: Litecoin, Dogecoin, Bitcoin Cash)", () => {
+    window.history.replaceState(null, "", `/#tx=${TXID}&chain=litecoin`);
+    const callbacks = makeCallbacks();
+    net.apiReady = true;
+    renderHook(() => useHashRouting(callbacks));
+    expect(callbacks.analyze).toHaveBeenCalledWith(TXID, { chain: "litecoin" });
+  });
+
   it("a locked wallet's placeholder hash asks for the password, never scans the placeholder, and scans the key once unlocked", async () => {
     localStorage.clear(); bookmarkStore.remove(); vaultStore.remove(); lockNow();
     bookmarkStore.set([{ input: ZPUB, type: "wallet", grade: "C", score: 50, savedAt: 1, scriptType: "p2wpkh", network: "mainnet" }]);
