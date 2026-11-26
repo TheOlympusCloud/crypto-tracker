@@ -130,7 +130,11 @@ function ScanResult({ exposure, onRetry }: { exposure: Exposure; onRetry: () => 
   const { t } = useTranslation();
   const result = toResult(exposure, t);
   const vm = buildResultViewModel({ result, baseScore: ADDRESS_BASE_SCORE });
+  // Nothing found, or a partial read, is no clean bill: the dial shows the grade, the headline
+  // stays neutral, as the wallet verdicts never say "safe".
+  const neutral = exposure.findings.length === 0 ? "none" : exposure.partial ? "partial" : null;
   const tagline = gradeTagline(vm.grade, vm.all);
+  const headline = neutral ? t(`tracker-exposure:headline.${neutral}`) : t(tagline.key, { defaultValue: tagline.defaultValue });
   const [hoverId, setHoverId] = useState<string | null>(null);
   const [openIds, setOpenIds] = useState<ReadonlySet<string>>(() => new Set(vm.groups.leaks.slice(0, 1).map((f) => f.id as string)));
   const toggle = useCallback((id: string) => {
@@ -162,7 +166,7 @@ function ScanResult({ exposure, onRetry }: { exposure: Exposure; onRetry: () => 
             <ExternalLink size={13} className="shrink-0" aria-hidden="true" />
           </a>
           <h1 id="verdict-title" className="text-3xl sm:text-4xl font-semibold tracking-tight text-balance leading-tight">
-            {t(tagline.key, { defaultValue: tagline.defaultValue })}
+            {headline}
           </h1>
           {exposure.chain === "evm" && <p className="text-sm text-muted">{t("tracker-exposure:chains.read", { chains: exposure.chains.map(chainLabel).join(", ") })}</p>}
           {exposure.partial && (
