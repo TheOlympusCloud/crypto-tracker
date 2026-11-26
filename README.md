@@ -583,7 +583,7 @@ shown wherever the address appears, together with where the name comes from:
 | you | A label set by hand in the app. | Always wins. |
 | the protocol | THORChain and Maya vaults, from the protocols' own swap records. | Fact. |
 | sanctions and freezes | [OFAC's sanctions lists](https://github.com/0xB10C/ofac-sanctioned-digital-currency-addresses) per currency, as extracted by 0xB10C (MIT), for every chain the tracker reads; the addresses Tether (USDT) and Circle (USDC) froze and did not unfreeze, from their contracts' events on Ethereum and Tron. | Fact; outranks the open label sets. |
-| an open label set | [etherscan-labels](https://github.com/brianleect/etherscan-labels) for Ethereum, BNB Chain, Polygon, Arbitrum, Optimism, Avalanche and Fantom (a 2023 snapshot), [GraphSense TagPacks](https://github.com/graphsense/graphsense-tagpacks) for Bitcoin, Ethereum, Litecoin and Tron, the program names of the [Solana explorer](https://github.com/solana-labs/explorer) (all MIT), and OKX's [proof-of-reserves](https://www.okx.com/proof-of-reserves) list: every address OKX signs as its own ("I am an OKX address") on Bitcoin, Litecoin, Dogecoin, the EVM chains, Tron and Solana, about 570,000, mostly deposit addresses. | Fact. |
+| an open label set | [etherscan-labels](https://github.com/brianleect/etherscan-labels) for Ethereum, BNB Chain, Polygon, Arbitrum, Optimism, Avalanche and Fantom (a 2023 snapshot), [GraphSense TagPacks](https://github.com/graphsense/graphsense-tagpacks) for Bitcoin, Ethereum, Litecoin and Tron, the program names of the [Solana explorer](https://github.com/solana-labs/explorer) (all MIT), and OKX's [proof-of-reserves](https://www.okx.com/proof-of-reserves) list: every address OKX signs as its own ("I am an OKX address") on Bitcoin, Litecoin, Dogecoin, the EVM chains, Tron and Solana, about 570,000, mostly deposit addresses. | Fact, but no barrier: see below. |
 | the explorer | The verified contract name of an EVM address ("UniswapV2Router02"). The name is a fact; the type read from it is a guess. | Guess, 80%. |
 | behaviour | An address that forwards everything to an exchange (a deposit address); one that takes one asset from you and returns another in the same transaction (a pool or router); one with too much history to read (some service). | Guess, 60%. |
 
@@ -610,6 +610,13 @@ A known service ends a trace: two people using Binance are not linked. A guessed
 does not end it, it weakens it by how sure the guess is, because a wrong guess must not
 hide a link. A guess is always shown as "(guess)", and disappears again when the
 behaviour it was read from is no longer in the data.
+
+An address named only by OKX's list is OKX's, but most of them are deposit addresses, each
+one customer's: two wallets that paid the same one are one OKX account. So its name is shown
+and counts as an exchange in the privacy scan and the check before sending, but it does not
+end a trace. It is read and judged like a stranger: cut once found busy (a hot wallet),
+passed through at 0.7 otherwise. Where an open set also names it (OKX's hot wallets often
+are), that label wins and ends the trace.
 
 ## What is a fact and what is a guess
 
