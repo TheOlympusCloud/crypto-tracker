@@ -13,6 +13,7 @@ import type { MempoolTransaction } from "@/lib/api/types";
 import { ChecksStrip } from "./ChecksStrip";
 import { ScanStage } from "./ScanStage";
 import { scanStages, summarizeSteps, impactSeverity, apiHost, type StageId } from "./scan-model";
+import { chain } from "@/lib/bitcoin/chain-profile";
 
 export interface ScanScreenProps {
   query: string;
@@ -83,7 +84,9 @@ export function ScanScreen({ query, inputType, phase, steps, fetchProgress, txDa
   };
 
   const host = apiHost(config.mempoolBaseUrl);
-  const source = awaitingIndex
+  const source = chain().id !== "bitcoin" // crypto-tracker: read through this server
+    ? t("tracker-exposure:utxo.source", { chain: chain().name })
+    : awaitingIndex
     ? t("scan.awaitingIndex", { host: endpointHost(config.mempoolBaseUrl), defaultValue: "Just broadcast. Waiting for {{host}} to index it." })
     : isPsbt
     ? t("scan.sourcePsbt", { defaultValue: "Parsed in this browser, nothing is sent" })

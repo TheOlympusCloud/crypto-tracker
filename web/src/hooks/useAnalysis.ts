@@ -12,7 +12,7 @@ import { mapApiErrorMessage } from "@/lib/api/error-message";
 import { NETWORK_CONFIG, type BitcoinNetwork } from "@/lib/bitcoin/networks";
 import { cleanInput, detectInputType } from "@/lib/analysis/detect-input";
 import { accountScanHref } from "@/lib/tracker/exposure";
-import { chain as activeChain, isChainId, otherChain, setChain } from "@/lib/bitcoin/chain-profile";
+import { chain as activeChain, isChainId, otherChain, scanConfig, setChain } from "@/lib/bitcoin/chain-profile";
 import { getTxHeuristicSteps, getAddressHeuristicSteps } from "@/lib/analysis/heuristic-steps";
 import { loadEngine } from "@/lib/analysis/load-engine";
 import { parseLocalTx, localTxLabel, type LocalTx } from "@/lib/input/local-tx";
@@ -132,7 +132,7 @@ export function useAnalysis() {
       // bc1 on testnet) is scanned on the network it belongs to, with the same
       // switch notice as a txid found elsewhere. Public mempool.space only.
       let net = network;
-      let cfg = other ? { ...config, mempoolBaseUrl: activeChain().api } : config;
+      let cfg = scanConfig(config);
       let switchedTo: BitcoinNetwork | undefined;
       // A self-hosted backend serves one network: an address of another one is refused
       if (!other && inputType === "address" && (isUmbrel || !!customApiUrl) && isMainnetAddress(cleanInput(input)) !== (network === "mainnet")) {
@@ -467,7 +467,13 @@ export function useAnalysis() {
           }
         }
 
-        const { message, retryable } = mapApiErrorMessage(err, ht, { isUmbrel, isCustomApi });
+        // crypto-tracker: on these chains the answer is the tracker's, about its own indexer
+        const rejected = other && err instanceof ApiError && (err.code === "RATE_LIMITED" || err.status === 422);
+        const { message, retryable } = rejected
+          ? err.code === "RATE_LIMITED"
+            ? { message: t("tracker-exposure:utxo.rate_limited", { chain: activeChain().name }), retryable: true }
+            : { message: t("tracker-exposure:utxo.invalid", { chain: activeChain().name }), retryable: false }
+          : mapApiErrorMessage(err, ht, { isUmbrel, isCustomApi });
         setState((prev) => ({
           ...prev,
           phase: "error",

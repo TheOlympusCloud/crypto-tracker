@@ -38,5 +38,8 @@
   "gap.truncated": "Die Adresse ist sehr aktiv: nur ihre neuesten Transaktionen wurden gelesen.",
   "new": "Andere Adresse prüfen",
   "partly": "Teilweise geprüft",
-  "title": "Datenschutz-Prüfung"
+  "title": "Datenschutz-Prüfung",
+  "utxo.invalid": "Das ist keine gültige {{chain}}-Adresse. Prüfe sie auf Tippfehler.",
+  "utxo.rate_limited": "Der {{chain}}-Indexer nimmt von diesem Server vorerst keine weiteren Anfragen an. Versuche es später erneut.",
+  "utxo.source": "Dieser Server, über seinen {{chain}}-Indexer"
 }

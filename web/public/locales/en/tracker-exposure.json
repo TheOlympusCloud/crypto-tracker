@@ -38,5 +38,8 @@
   "gap.truncated": "The address is very active: only its newest transactions were read.",
   "new": "Scan another address",
   "partly": "Partly checked",
-  "title": "Privacy scan"
+  "title": "Privacy scan",
+  "utxo.invalid": "This is not a valid {{chain}} address. Check it for a typo.",
+  "utxo.rate_limited": "The {{chain}} indexer is not taking more requests from this server for now. Try again later.",
+  "utxo.source": "This server, from its {{chain}} indexer"
 }

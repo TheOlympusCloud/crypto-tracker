@@ -44,5 +44,8 @@
   "gap.truncated": "Adres jest bardzo aktywny: odczytano tylko jego najnowsze transakcje.",
   "new": "Sprawdź inny adres",
   "partly": "Sprawdzono częściowo",
-  "title": "Skan prywatności"
+  "title": "Skan prywatności",
+  "utxo.invalid": "To nie jest prawidłowy adres {{chain}}. Sprawdź, czy nie ma literówki.",
+  "utxo.rate_limited": "Indekser {{chain}} na razie nie przyjmuje kolejnych zapytań od tego serwera. Spróbuj ponownie później.",
+  "utxo.source": "Ten serwer, przez swój indekser {{chain}}"
 }

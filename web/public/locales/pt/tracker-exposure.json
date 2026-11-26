@@ -38,5 +38,8 @@
   "gap.truncated": "O endereço é muito ativo: só foram lidas as suas transações mais recentes.",
   "new": "Analisar outro endereço",
   "partly": "Verificado em parte",
-  "title": "Análise de privacidade"
+  "title": "Análise de privacidade",
+  "utxo.invalid": "Este não é um endereço de {{chain}} válido. Verifique se há um erro de digitação.",
+  "utxo.rate_limited": "O indexador de {{chain}} não está aceitando mais pedidos deste servidor por enquanto. Tente novamente mais tarde.",
+  "utxo.source": "Este servidor, a partir do seu indexador de {{chain}}"
 }
