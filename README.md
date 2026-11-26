@@ -542,6 +542,9 @@ Token checks: Uniswap's token list is downloaded whole, so it learns nothing. Th
 mints a looked-up address holds go to Jupiter's token API, like token contracts to the
 price API; `CT_PRICES=off` spares it too.
 
+Labels: the label sets are downloaded whole, from GitHub and from OKX's site, so neither
+learns which addresses you look up. `CT_LABELS=off` skips them.
+
 ## Data sources
 
 - Bitcoin and Litecoin: any Esplora API (blockstream.info, litecoinspace.org). No key.
@@ -570,12 +573,12 @@ shown wherever the address appears, together with where the name comes from:
 |---|---|---|
 | you | A label set by hand in the app. | Always wins. |
 | the protocol | THORChain and Maya vaults, from the protocols' own swap records. | Fact. |
-| an open label set | [etherscan-labels](https://github.com/brianleect/etherscan-labels) for Ethereum, BNB Chain, Polygon, Arbitrum, Optimism, Avalanche and Fantom (a 2023 snapshot), [GraphSense TagPacks](https://github.com/graphsense/graphsense-tagpacks) for Bitcoin, Ethereum, Litecoin and Tron, and the program names of the [Solana explorer](https://github.com/solana-labs/explorer). All MIT. | Fact. |
+| an open label set | [etherscan-labels](https://github.com/brianleect/etherscan-labels) for Ethereum, BNB Chain, Polygon, Arbitrum, Optimism, Avalanche and Fantom (a 2023 snapshot), [GraphSense TagPacks](https://github.com/graphsense/graphsense-tagpacks) for Bitcoin, Ethereum, Litecoin and Tron, the program names of the [Solana explorer](https://github.com/solana-labs/explorer) (all MIT), and OKX's [proof-of-reserves](https://www.okx.com/proof-of-reserves) list: every address OKX signs as its own ("I am an OKX address") on Bitcoin, Litecoin, Dogecoin, the EVM chains, Tron and Solana, about 570,000, mostly deposit addresses. | Fact. |
 | the explorer | The verified contract name of an EVM address ("UniswapV2Router02"). The name is a fact; the type read from it is a guess. | Guess, 80%. |
 | behaviour | An address that forwards everything to an exchange (a deposit address); one that takes one asset from you and returns another in the same transaction (a pool or router); one with too much history to read (some service). | Guess, 60%. |
 
-The label sets are downloaded whole (about 540,000 labels) on the first sync and again
-every 30 days, and looked up locally, so naming an address tells nobody which addresses
+The label sets are downloaded whole (about 1.1 million labels; OKX's list alone is a
+110 MB file, published anew each month) on the first sync and again every 30 days, and looked up locally, so naming an address tells nobody which addresses
 you care about. Contract names are asked from the explorer that already served your
 wallets' histories, 15 addresses per sync, each only once. `CT_LABELS=off` turns both off.
 
@@ -678,7 +681,9 @@ or at the hop limit, and says which.
 - Address checksums are verified, except the mixed-case form of EVM addresses and
   Bitcoin Cash's cashaddr.
 - An unlabelled exchange wallet looks like a stranger and can produce a false link;
-  label it in the UI and the link disappears.
+  label it in the UI and the link disappears. On Solana the only exchange labels are
+  OKX's own list, on Tron OKX's and GraphSense's: other exchanges' wallets there are
+  strangers until you label them.
 
 ## Built on am-i-exposed
 
