@@ -158,9 +158,11 @@ def decode(chain, receipt):
 
 def normal(result):
     """An eth_getTransactionReceipt result, or a Blockscout transaction page: who sent the
-    transaction, and its logs with lower-case hex and no empty topics."""
+    transaction, its block, and its logs with lower-case hex and no empty topics."""
     return {
         "from": result["from"].lower(),
+        # Hex from a node or a proxy module, decimal from Blockscout's transaction page.
+        "block": int(str(result.get("blockNumber") or 0), 0),
         "logs": [
             {
                 "address": log["address"].lower(),
