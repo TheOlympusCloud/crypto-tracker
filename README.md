@@ -112,7 +112,7 @@ not of its indexer. Bitcoin Cash addresses that a name lists are not read yet.
 ### Shared counterparties
 
 Each sync also reads up to 10 addresses that two or more of your wallets dealt with and
-that were never read, busiest first: in full, as a lookup reads them (Tron: three TronGrid
+that were never read (with no label, or named only by OKX's list), busiest first: in full, as a lookup reads them (Tron: three TronGrid
 calls), or on Solana with one call that only tells whether the address is busy (1,000
 transactions or more). Dogecoin's are left out: its free indexer allows too few lookups.
 The others wait for the next sync. A busy address (an exchange's hot wallet, a payment
@@ -633,8 +633,9 @@ An address named only by OKX's list is OKX's, but most of them are deposit addre
 one customer's: two wallets that paid the same one are one OKX account. So its name is shown
 and counts as an exchange in the privacy scan and the check before sending, but it does not
 end a trace. It is read and judged like a stranger: cut once found busy (a hot wallet),
-passed through at 0.7 otherwise. Where an open set also names it (OKX's hot wallets often
-are), that label wins and ends the trace.
+passed through at 0.7 otherwise, and two wallets that paid one that sends everything to OKX
+get the `deposit-address` link (85%). Where an open set also names it (OKX's hot wallets
+often are), that label wins and ends the trace.
 
 ## What is a fact and what is a guess
 
@@ -653,7 +654,7 @@ in `tracker/heuristics.py` and `tracker/graph.py`.
 | swap | 0.95 | THORChain or Maya Protocol recorded a swap from one address to the other (for example ETH in, BTC out). The record is public and names the destination, so this is close to a fact. Several swaps between the same two addresses stay at 0.95. |
 | name | 0.8 | The primary name of one of your EVM addresses (ENS, Basenames), checked forward, lists the other address (a Bitcoin, Solana... address, ENSIP-9). The name's owner published it, but anybody can type any address into their records. A stranger it lists is read first: a busy one, or a labelled service, links nobody. Several names listing the same address stay at 0.8. |
 | bridge-record | 0.95 | A bridge's own event, in the receipt of a transaction in which your wallet paid it, names the recipient on the other chain: Circle CCTP (`DepositForBurn`), Across (`FundsDeposited`), Wormhole's Token Bridge (a plain transfer), the OP Stack bridges into Base and Optimism (`ETHDepositInitiated`, `ERC20DepositInitiated`), Arbitrum's gateway router (`TransferRouted`). On Solana the token account it names is replaced by the account's owner; a token account closed since links nobody, and the verdict says so. A recipient that is not yours is read first: a busy address or a service links nobody, a quiet one is listed in the wallet's verdict. Declare it yours later and the next sync links it, without reading the receipt again. Several deposits to the same address stay at 0.95. |
-| deposit-address | 0.85 | Two of your wallets paid the same address, which was read in full without an error, is not a very active address, has no label but the tracker's own guess, sends everything to one labelled exchange, and was paid by 3 senders at most (two addresses of one wallet count once; the exchange topping up gas is one). A deposit address belongs to one exchange account. One row per deposit address: paying it again adds nothing, a second shared deposit address combines. EVM, Tron, Bitcoin, Litecoin and Bitcoin Cash. |
+| deposit-address | 0.85 | Two of your wallets paid the same address, which was read in full without an error, is not a very active address, has no label but the tracker's own guess or OKX's list's, sends everything to one labelled exchange, and was paid by 3 senders at most (two addresses of one wallet count once; the exchange topping up gas is one). A deposit address belongs to one exchange account. One row per deposit address: paying it again adds nothing, a second shared deposit address combines. EVM, Tron, Bitcoin, Litecoin and Bitcoin Cash. |
 
 Several transactions supporting the same guess combine as `1 - (1-c1)(1-c2)...`.
 
