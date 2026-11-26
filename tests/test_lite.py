@@ -658,7 +658,7 @@ def test_the_scanner_takes_its_fee_estimates_from_the_node(web, lite):
     assert not lite.public.asked  # nothing went to a public server
 
 
-def test_the_scanner_broadcasts_through_the_node(web, lite):
+def test_the_scanner_broadcasts_through_the_node(web, lite, monkeypatch):
     plain = {"content-type": "text/plain", "sec-fetch-site": "same-origin"}
     txid = lite.txid_of(SIGNED)
     dry = web.post("/api/tracker/node/txs/test", content=f'["{SIGNED}"]', headers=plain)
@@ -683,6 +683,11 @@ def test_the_scanner_broadcasts_through_the_node(web, lite):
     assert not [m for m, _ in lite.asked[asked:] if m == "sendrawtransaction"]
     bad = web.post("/api/tracker/node/txs/test", content="[12]", headers=plain)
     assert bad.status_code == 400
+    # The node's own refusal of the dry run shows before sending, as one of its answers.
+    monkeypatch.setattr(lite, "testmempoolaccept", lambda raws: (_ for _ in ()).throw(
+        Fault(-22, "TX decode failed")))  # fmt: skip
+    dry = web.post("/api/tracker/node/txs/test", content=f'["{SIGNED}"]', headers=plain).json()
+    assert dry == [{"allowed": False, "reject-reason": "your Bitcoin node: TX decode failed"}]
 
 
 def test_a_node_that_is_not_ready_says_so_and_sends_nothing(web, lite, monkeypatch):
@@ -706,8 +711,14 @@ def test_a_node_that_is_not_ready_says_so_and_sends_nothing(web, lite, monkeypat
     assert r.json()["code"] == NOT_READY and "does not answer" in r.json()["message"]
     assert not [m for m, _ in lite.asked if m == "sendrawtransaction"]
 
-    # Lost on the way back: it may have gone out. No code, so the scanner offers to check.
+    # A connection never made is a refusal too.
     lite.up = True
+    monkeypatch.setattr(lite, "sendrawtransaction", lambda h: (_ for _ in ()).throw(
+        httpx.ConnectTimeout("no connection")))  # fmt: skip
+    r = web.post("/api/tracker/node/tx", content=SIGNED)
+    assert r.json()["code"] == NOT_READY and "does not answer" in r.json()["message"]
+
+    # Lost on the way back: it may have gone out. No code, so the scanner offers to check.
     monkeypatch.setattr(lite, "sendrawtransaction", lambda h: (_ for _ in ()).throw(
         httpx.ReadTimeout("timed out")))  # fmt: skip
     r = web.post("/api/tracker/node/tx", content=SIGNED)
@@ -717,6 +728,10 @@ def test_a_node_that_is_not_ready_says_so_and_sends_nothing(web, lite, monkeypat
 def test_broadcasts_take_the_password_and_this_app_s_own_pages(web, lite, monkeypatch):
     other_site = {"content-type": "text/plain", "sec-fetch-site": "cross-site"}
     assert web.post("/api/tracker/node/tx", content=SIGNED, headers=other_site).status_code == 403
+    # Over plain http on a LAN address browsers send no Sec-Fetch-Site: the Origin then counts.
+    for origin in ("http://evil.example", "http://localhost:8000", "null"):
+        r = web.post("/api/tracker/node/tx", content=SIGNED, headers={"origin": origin})
+        assert r.status_code == 403, origin
     dry = web.post("/api/tracker/node/txs/test", content=f'["{SIGNED}"]', headers=other_site)
     assert dry.status_code == 403
     monkeypatch.setenv("CT_PASSWORD", "s3cret")
@@ -726,6 +741,9 @@ def test_broadcasts_take_the_password_and_this_app_s_own_pages(web, lite, monkey
     assert not [m for m, _ in lite.asked if m in ("sendrawtransaction", "estimatesmartfee")]
     signed_in = web.post("/api/tracker/node/tx", content=SIGNED, auth=("", "s3cret"))
     assert signed_in.text == lite.txid_of(SIGNED)
+    own_page = {"origin": "http://localhost"}
+    r = web.post("/api/tracker/node/tx", content=SIGNED, auth=("", "s3cret"), headers=own_page)
+    assert r.text == lite.txid_of(SIGNED)
 
 
 def test_without_a_lite_node_the_scanner_keeps_its_own_servers(web, monkeypatch):

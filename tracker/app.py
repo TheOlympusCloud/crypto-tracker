@@ -5,6 +5,7 @@ import re
 import secrets
 import time
 from base64 import b64decode
+from urllib.parse import urlsplit
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query, Request, Response
@@ -418,8 +419,15 @@ def lite_only():
 
 def same_origin(request):
     """A transaction is sent only from this app's own pages: a text/plain POST needs no CORS
-    check, so another site could otherwise have the browser post one with its session."""
-    if request.headers.get("sec-fetch-site", "same-origin") not in ("same-origin", "none"):
+    check, so another site could otherwise have the browser post one with its session.
+    Browsers send Sec-Fetch-Site over https and to loopback only; over plain http on a LAN
+    address, a page's Origin must name the host it was sent to."""
+    site, origin = request.headers.get("sec-fetch-site"), request.headers.get("origin")
+    if site:
+        allowed = site in ("same-origin", "none")
+    else:
+        allowed = not origin or urlsplit(origin).netloc == request.headers.get("host")
+    if not allowed:
         raise HTTPException(403, "only from this app's own pages")
 
 
@@ -474,7 +482,7 @@ async def post_node_tx(request: Request):
         txid = await run_in_threadpool(node.rpc, "sendrawtransaction", raw)
     except node.RpcError as e:
         return JSONResponse({"code": e.code, "message": str(e)}, 400)
-    except (httpx.ConnectError, OSError):  # it never reached the node
+    except (httpx.ConnectError, httpx.ConnectTimeout, OSError):  # it never reached the node
         down = node.notice({"state": "down", "height": None, "time": None}, waits=False)
         return JSONResponse({"code": NOT_READY, "message": down}, 503)
     except httpx.HTTPError as e:
@@ -502,7 +510,9 @@ async def post_node_test(request: Request):
         return [{"allowed": False, "reject-reason": why} for _ in raws]
     try:
         return await run_in_threadpool(node.rpc, "testmempoolaccept", raws)
-    except (httpx.HTTPError, OSError, node.RpcError) as e:
+    except node.RpcError as e:  # e.g. -22, not a transaction: the dialog says so before sending
+        return [{"allowed": False, "reject-reason": str(e)} for _ in raws]
+    except (httpx.HTTPError, OSError) as e:
         raise unanswered(e) from None
 
 
