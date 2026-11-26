@@ -527,16 +527,18 @@ score (93 plus the impacts, the same grades) over:
 |---|---|---|
 | Tied to your public wallet | -70 x the link's confidence (-49 at 70%); critical from 50% | The strongest link of the wallet's verdict to a wallet you marked public (`tracker/exposure/wallets.py`). A public wallet does not get it: it is tied to you anyway. |
 | Reused addresses | -10 per address, at most -40; medium | A Bitcoin, Litecoin, Dogecoin or Bitcoin Cash address of the wallet paid in two or more transactions. |
-| The scan's findings | as above | Exchanges, flagged addresses and mixers, once per chain, from the stored transfers of all the wallet's addresses (the trusted ones, as the verdict reads them); the same address on several EVM chains; the first funder of an EVM, Solana or Tron address, from its stored history. |
+| The scan's findings | as above | Exchanges, flagged addresses and mixers, once per chain, from the stored transfers of all the wallet's addresses (the trusted ones, as the verdict reads them); the same address on several EVM chains; the first funder of an EVM, Solana or Tron address, from its stored history; its names, as the last sync looked them up. |
 
 Each finding counts once, at its worst over the wallet's addresses and chains: one
 exchange is enough to be exposed. Reuse is the exception, counted per address, so one slip
 in an HD wallet costs 10 points instead of the F am-i-exposed gives that one address. The
 panel lists the findings by chain, the wallet's own first. A wallet never read has no
 grade, and one whose verdict says "Partly checked" (history still filling in, a source
-that failed) is graded "Partly checked" too. So is a wallet first funded by a stranger who
-also funded another of your wallets, until that stranger has been read: the page makes no
-call, so its panel says so, and **Privacy score** reads it once. The answer is kept.
+that failed) is graded "Partly checked" too. So is a wallet whose names were never looked
+up (each sync looks up those of 20 addresses, each once a day), and one first funded by a
+stranger who also funded another of your wallets, until that stranger has been read: the
+page makes no call, so the panel says what it waits for. **Privacy score** reads that
+stranger, and the answer is kept.
 
 am-i-exposed's deep scan of a Bitcoin address (its 30-odd heuristics, run in the browser) is
 not part of the grade: the server cannot see it. A Bitcoin wallet's grade therefore says

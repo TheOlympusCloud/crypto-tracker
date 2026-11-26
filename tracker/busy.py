@@ -11,7 +11,7 @@ checks that link to strangers (Solana fee payers, Tron delegators, first funders
 deposit addresses) call this first, within the sync's budget.
 """
 
-from . import chains, sync
+from . import chains
 from . import db as database
 from .heuristics import SERVICE
 from .labels import CONFIDENCE
@@ -70,7 +70,10 @@ def _read(db, client, address):
         return len(chains._rpc(client, "getSignaturesForAddress", address, limit)) >= SOLANA_BUSY
     if chain == "tron":
         return len(chains.page_tron(client, address, "native").items) >= chains.TRON_ROWS
-    # Elsewhere a sync reads it, keeps what it read and sets node.hub.
+    # Elsewhere a sync reads it, keeps what it read and sets node.hub. Imported here: a sync
+    # runs the checks (names, bridges, the scan's) that ask this module.
+    from . import sync
+
     sync.sync_address(db, client, address)
     row = db.execute("SELECT hub, error FROM node WHERE address = ?", (address,)).fetchone()
     if row["error"]:

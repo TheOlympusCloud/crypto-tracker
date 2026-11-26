@@ -314,9 +314,10 @@ It scores:
   each reused address, at most −40, where am-i-exposed's single-address score gives −70 to
   −93 and would make a whole HD wallet F for one slip;
 - `partial` exactly when the verdict is not "full" (history filling in, a source down), or
-  a check needs a call the page does not make: a stranger who first funded two of my
-  wallets and was never read. The address's own scan reads it, and its answer is kept (a
-  busy one as a hub, a quiet one in `quiet`), so the next grade is complete.
+  a check needs a call the page does not make: names a sync has not looked up yet, or a
+  stranger who first funded two of my wallets and was never read. The address's own scan
+  reads that stranger, and its answer is kept (a busy one as a hub, a quiet one in
+  `quiet`), so the next grade is complete; the next syncs look the names up.
 
 am-i-exposed's deep scan of a Bitcoin or Litecoin address (its 30-odd heuristics, run in the
 browser) is not part of the wallet grade: the server cannot see it. It stays one click away,

@@ -133,7 +133,7 @@ describe("WalletPanel", () => {
     const partial = { ...ANALYSIS.exposure![PHONE]!, partial: true, gaps: [{ id: "unread" as const, params: { check: "funder" } }] };
     renderTracker(<WalletPanel address={PHONE} />, { analysis: { ...ANALYSIS, exposure: { ...ANALYSIS.exposure, [PHONE]: partial } } });
     expect(screen.getByText("Partly checked")).toBeTruthy();
-    expect(screen.getByText("Not read yet: funder. The page makes no call; Privacy score reads it, once.")).toBeTruthy();
+    expect(screen.getByText("Not read yet: funder. The page makes no call; Privacy score reads it.")).toBeTruthy();
     expect(screen.getByText("No finding among the checks made here. That is no proof of privacy.")).toBeTruthy();
   });
 

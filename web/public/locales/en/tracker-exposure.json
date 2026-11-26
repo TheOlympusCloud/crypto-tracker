@@ -57,7 +57,7 @@
   "gap.error": "Not everything could be read ({{error}}).",
   "gap.skipped": "A check ran out of calls and did not run: {{check}}.",
   "gap.truncated": "The address is very active: only its newest transactions were read.",
-  "gap.unread": "Not read yet: {{check}}. The page makes no call; Privacy score reads it, once.",
+  "gap.unread": "Not read yet: {{check}}. The page makes no call; Privacy score reads it.",
   "new": "Scan another address",
   "partly": "Partly checked",
   "title": "Privacy scan",

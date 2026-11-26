@@ -23,6 +23,8 @@ BTC3, BTC4, BTC5 = (
 def synced(db, *addresses):
     for a in addresses:
         db.execute("UPDATE node SET synced_at = 1 WHERE address = ?", (a,))
+        # A sync also looks up the names of my EVM and Solana addresses (names.sync).
+        db.execute("INSERT OR REPLACE INTO meta VALUES (?, '1')", (f"names_at:{a}",))
     db.commit()
 
 
@@ -249,8 +251,28 @@ def test_a_stranger_who_funded_two_wallets_is_named_as_last_read_and_unread_is_p
     assert [f["id"] for f in scores(db)[A]["by_chain"]["evm"]] == ["x-funder-hub"]
 
 
-@pytest.mark.parametrize("module", ["tracker.exposure", "tracker.exposure.wallets"])
-def test_the_scan_imports_on_its_own(module):
+def test_a_wallets_names_come_from_its_last_lookup_and_one_never_looked_up_says_so(db):
+    account(db, A)
+    db.execute(
+        "INSERT INTO name VALUES (?, 'ethereum', 'alice.eth', ?)", (A, f'{{"bitcoin": "{BTC1}"}}')
+    )
+    account(db, B)
+    db.execute("DELETE FROM meta WHERE key = ?", (f"names_at:{B}",))
+
+    got = scores(db)
+
+    by = {f["id"]: f["params"] for f in got[A]["by_chain"]["evm"]}
+    assert by["x-name-record"] == {"name": "alice.eth"}
+    assert by["x-name-addresses"]["addresses"] == BTC1
+    assert (got[A]["partial"], got[A]["gaps"]) == (False, [])
+    assert got[B]["partial"] is True  # the next sync looks them up
+    assert got[B]["gaps"] == [{"id": "unread", "params": {"check": "names"}}]
+
+
+@pytest.mark.parametrize(
+    "module", ["tracker.app", "tracker.graph", "tracker.exposure", "tracker.exposure.wallets"]
+)
+def test_each_entry_point_imports_on_its_own(module):  # the test run imports them in one order
     subprocess.run([sys.executable, "-c", f"import {module}"], check=True)
 
 
