@@ -575,12 +575,18 @@ it was mined, the age of coins spent together) are scaled to 2.5-minute blocks o
 
 The browser asks the tracker's server (`/api/tracker/utxo/<chain>/`), which answers in
 Esplora's form from the indexers of [Chains](#chains): Litecoin's is passed through, Dogecoin's
-and Bitcoin Cash's are converted. So the depths are the tracker's: the 50 newest transactions
+and Bitcoin Cash's are converted. It answers what a scan asks (an address, its transactions and
+unspent outputs, a transaction and where its outputs went), not the chain tip or prices, so
+these scans show no fiat values. The result page's graph and cluster read through it too, and
+its Wabisator and Chainalysis checks, which screen Bitcoin only, are not offered. So the depths
+are the tracker's: the 50 newest transactions
 of a Dogecoin address and the 100 newest of a Bitcoin Cash one, and the result says
 **Some data could not be fetched** when an address has more. Those two indexers do not count
 an address's outputs: they are counted in the transactions read, at least one when the totals
-say so. Once Dogecoin's hourly quota is used up, what the scan still needs is skipped and the
-result says the same instead of failing; the quota is shared with syncs.
+say so. A Dogecoin address scan costs two lookups. Once Dogecoin's hourly quota is used up,
+what the scan still needs is skipped and the result says the same instead of failing; a scan
+that has read nothing yet says the indexer is not taking more requests. The quota is shared
+with syncs.
 
 ## Privacy
 
@@ -852,7 +858,8 @@ or at the hop limit, and says which.
   the top recommendation speak of sats, sat/vB and Bitcoin wallets, and the clearnet notice
   still names mempool.space although the scan goes through this server. A recent scan of one
   of their transactions reopens on Bitcoin (their addresses find their chain again); open it
-  from the address instead.
+  from the address instead. The other way round, a transaction id typed while one of their
+  results is shown is looked up on that chain.
 
 ## Built on am-i-exposed
 
@@ -884,8 +891,9 @@ its look, its two themes and its six languages.
   `dust-output`, `utxo-analysis`, `anonymity-set`, `timing`, `utxo-age-spread`),
   `chain/backward.ts`, `chain/entity-proximity.ts`, `entity-filter/` (`entity-match`,
   `entity-index`), `bitcoin/address-type.ts`, `format.ts`, `useAnalysis.ts`,
-  `useHashRouting.ts`, `useScanner.ts`, `Results.tsx`, `FindingCardTables.tsx` and
-  `GraphSidebar.tsx`.
+  `useHashRouting.ts`, `useScanner.ts`, `useClusterAnalysis.ts`, `Results.tsx`,
+  `ContextSection.tsx`, `ScanScreen.tsx`, `GraphExplorerPanel.tsx`, `FindingCardTables.tsx`
+  and `GraphSidebar.tsx`.
 - The tracker's server (`tracker/`, Python) stays behind the app: it keeps the database,
   syncs, and answers under `/api/tracker/`. `/api/` itself is left to am-i-exposed, which
   looks there for a self-hosted mempool.

@@ -701,7 +701,7 @@ Privacy, the fact-and-guess table) and a review before it is merged.
 | Stage | Issues | Notes |
 |---|---|---|
 | 2 | M1 | Foundation, small: three findings on existing data, and the busy check stage 3 shares. |
-| 3 | M2, M3, M4, M5, M6, M7, M8, M9, M10 | Each in its own module; shared files (`kinds.ts`, `sync.py`, the locale files, `app.py`) get one-line or alphabetical additions. M9 is the only one in `chains.py`. |
+| 3 | M2, M3, M4, M5, M6, M7, M8, M9, M10 | Each in its own module; shared files (`kinds.ts`, `sync.py`, the locale files, `app.py`) get one-line or alphabetical additions. M9 is the only one in `chains.py`, besides M7's changes to the BlockCypher and Haskoin converters and their quota helper. |
 | 4 | M11, M12, M13, M14, M15, M16 | M11 needs M6; M12 is most useful once stage 3 links exist. M14 and M15 both edit `chains.py`, in different functions. |
 
 Expected conflicts are trivial: registry lines, `LINKS`/`DASHES` entries, locale keys and
