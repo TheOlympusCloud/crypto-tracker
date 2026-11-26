@@ -6,13 +6,15 @@ from base64 import b64decode
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, field_validator
+from starlette.concurrency import run_in_threadpool
 from starlette.routing import Mount
 
-from . import alerts, chains, graph, hd, lookup, prices, sync, uri
+from . import alerts, chains, clusters, exposure, graph, hd, lookup, node, prices, sync, uri, utxo
 from . import db as database
+from .exposure import wallets
 
 app = FastAPI(title="Crypto tracker", docs_url=None, redoc_url=None)
 CATEGORIES = {"cex", "dex", "bridge", "mixer", "flagged", "defi", "service", "other"}
@@ -130,10 +132,13 @@ def get_graph(spam: bool = False):
 
 
 @app.get("/analysis")
-def get_analysis(max_hops: int = 4):
+def get_analysis(max_hops: int = graph.HOPS):
     max_hops = max(1, min(max_hops, 6))
     db = database.connect()
     try:
+        verdicts = graph.verdicts(db, max_hops)
+        # The grades are always at the default hops: the ones alerts compare.
+        graded = verdicts if max_hops == graph.HOPS else graph.verdicts(db)
         return {
             "max_hops": max_hops,
             "hop_decay": graph.HOP_DECAY,
@@ -147,8 +152,10 @@ def get_analysis(max_hops: int = 4):
                     "LEFT JOIN label l USING (address) ORDER BY w.ts DESC"
                 )
             ],
-            "verdicts": graph.verdicts(db, max_hops),
+            "verdicts": verdicts,
             "origins": graph.origins(db, max_hops),
+            "exposure": wallets.scores(db, graded),  # by the wallet's first address
+            "groups": clusters.groups(db, verdicts),
         }
     finally:
         db.close()
@@ -246,22 +253,65 @@ def resolve(pasted: Pasted):
     }
 
 
-@app.get("/lookup/{raw}")
-def get_lookup(raw: str, only: str = Query("", alias="chains")):
-    """Read-only view of any address: assets, counterparties and links to my wallets."""
-    one = address(raw)
+def readable(only):
+    """The EVM chains a ?chains= list names, each one this server reads."""
     picked = [c for c in only.split(",") if c]
     for c in picked:
         if chains.evm_chains().get(c, {"needs_key": True}).get("needs_key"):
             raise HTTPException(422, f"{c} is not a chain this server can read")
+    return picked
+
+
+def live(read, *args):
+    """`read(db, client, *args)`, answered from the indexers."""
     db = database.connect()
     try:
         with httpx.Client(timeout=30, headers={"User-Agent": "crypto-tracker"}) as client:
-            return lookup.view(db, client, one, picked)
+            return read(db, client, *args)
     except (httpx.HTTPError, RuntimeError, ValueError, KeyError, TypeError) as e:
         raise HTTPException(502, f"the indexer did not answer: {chains.describe(e)}") from None
     finally:
         db.close()
+
+
+@app.get("/lookup/{raw}")
+def get_lookup(raw: str, only: str = Query("", alias="chains")):
+    """Read-only view of any address: assets, counterparties and links to my wallets."""
+    one = address(raw)
+    return live(lookup.view, one, readable(only))
+
+
+@app.get("/exposure/{raw}")
+def get_exposure(raw: str, only: str = Query("", alias="chains")):
+    """Privacy scan of any EVM, Solana or Tron address: findings, score and grade. Like a
+    lookup it stores nothing. Bitcoin addresses are scanned by am-i-exposed in the browser."""
+    one = address(raw)
+    if database.chain_of(one) not in exposure.FAMILIES:
+        raise HTTPException(422, "only EVM, Solana and Tron addresses are scanned here")
+    return live(exposure.run, one, readable(only))
+
+
+@app.get("/utxo/{chain}/{path:path}")
+def get_utxo(chain: str, path: str):
+    """am-i-exposed's Esplora calls for a Litecoin, Dogecoin or Bitcoin Cash scan, answered from
+    the tracker's indexers (tracker/utxo.py). Like a lookup it stores nothing."""
+    try:
+        read = utxo.route(chain, path)
+    except LookupError:
+        raise HTTPException(404) from None
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from None
+    try:
+        with httpx.Client(timeout=30, headers={"User-Agent": "crypto-tracker"}) as client:
+            return read(client)
+    except chains.RateLimited as e:  # Dogecoin's hourly quota: the scan says partly checked
+        raise HTTPException(429, str(e)) from None
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            raise HTTPException(404, "not found at the indexer") from None
+        raise HTTPException(502, f"the indexer did not answer: {chains.describe(e)}") from None
+    except (httpx.HTTPError, RuntimeError, ValueError, KeyError, TypeError) as e:
+        raise HTTPException(502, f"the indexer did not answer: {chains.describe(e)}") from None
 
 
 @app.post("/watch")
@@ -337,15 +387,70 @@ def post_sync(req: Sync):
 
 @app.get("/sync")
 def get_sync():
-    return sync.status
+    # A node of your own that is not ready yet is said with the sync's notes, on every view.
+    return {**sync.status, "notes": sync.status["notes"] + node.notes()}
+
+
+@app.get("/mempool/{kind}/{ref}")
+def to_mempool(kind: str, ref: str, request: Request):
+    """An explorer link to the profile's mempool site, on its own port of this host."""
+    if kind not in ("address", "tx") or not node.PORT or not ref.isalnum():
+        raise HTTPException(404)
+    host = request.url.hostname or "localhost"
+    host = f"[{host}]" if ":" in host else host
+    return RedirectResponse(f"http://{host}:{node.PORT}/{kind}/{ref}")
 
 
 if os.environ.get("CT_SYNC_EVERY"):  # minutes
     sync.every(float(os.environ["CT_SYNC_EVERY"]))
 
+
+async def local_info():
+    """am-i-exposed asks here whether a mempool of the host's own is behind /api (Umbrel's
+    answer, from its web server). Ours has no Tor sidecar: am-i-exposed keeps reaching its
+    other services as on its public site, and never says they went through Tor."""
+    site = os.environ.get("CT_MEMPOOL", "")
+    return {
+        "mempoolPort": "" if site else node.PORT,  # the profile's site, on this host
+        "mempoolExternalUrl": site if site.startswith(("http://", "https://")) else "",
+        "mempoolOnion": "",
+        "bitcoinNetwork": "",
+        "torProxy": False,
+    }
+
+
+async def mempool_api(path: str, request: Request):
+    """am-i-exposed's Bitcoin requests, passed on to the mempool of your own. While it is not
+    ready they get the notice and a 503, never an answer from a public server: am-i-exposed
+    then says the local mempool is unreachable and to wait for it to finish syncing."""
+    parts = path.split("/")
+    # mempool's own web server would hand v1/services to mempool.space; and no way out of /api/
+    if parts[:2] == ["v1", "services"] or {"", ".", ".."} & set(parts):
+        raise HTTPException(404)
+    found = await run_in_threadpool(node.status)
+    if found["state"] != "ready":
+        return PlainTextResponse(node.notice(found), status_code=503)
+    # Only what the request is: no cookie or password of this app goes to the mempool.
+    headers = {k: v for k, v in request.headers.items() if k in ("accept", "content-type")}
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            r = await client.request(
+                request.method, f"{node.MEMPOOL}/api/{path}", params=request.query_params,
+                content=await request.body(), headers=headers,
+            )  # fmt: skip
+    except httpx.HTTPError as e:
+        return PlainTextResponse(f"your mempool did not answer: {chains.describe(e)}", 502)
+    kind = r.headers.get("content-type")
+    return Response(r.content, r.status_code, media_type=kind)
+
+
 # The API answers under /api/tracker/; /api/ itself is the web app's, which looks for a
-# self-hosted mempool there. CT_WEB is the web app's static build, served on everything else
-# behind the same password.
+# self-hosted mempool there: with one of your own (node.MEMPOOL) this server passes /api/ on
+# to it. CT_WEB is the web app's static build, served on everything else behind the same
+# password.
 app.router.routes = [Mount("/api/tracker", routes=list(app.routes))]
+if node.MEMPOOL:
+    app.add_api_route("/api/local-info", local_info)
+    app.add_api_route("/api/{path:path}", mempool_api, methods=["GET", "HEAD", "POST"])
 if web := os.environ.get("CT_WEB"):
     app.mount("/", StaticFiles(directory=web, html=True))

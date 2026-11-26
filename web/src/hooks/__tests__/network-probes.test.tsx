@@ -238,6 +238,59 @@ describe("NetworkProvider", () => {
   });
 });
 
+describe("NetworkProvider on a host with its own mempool and no Tor sidecar (crypto-tracker)", () => {
+  const OWN_ROUTES: Record<string, Route> = {
+    ...UMBREL_ROUTES,
+    "/api/local-info": { delay: 50, body: { mempoolPort: "8080", mempoolOnion: "", mempoolExternalUrl: "", bitcoinNetwork: "", torProxy: false } },
+  };
+
+  it("uses its mempool like Umbrel's, but routes no service through /tor-proxy/", async () => {
+    const fetchFn = mockFetch(OWN_ROUTES);
+    const { NetworkProvider, useNetwork } = await import("@/context/NetworkContext");
+    const { serviceUrl } = await import("@/lib/services/route");
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <StrictMode><NetworkProvider>{children}</NetworkProvider></StrictMode>
+    );
+    const { result } = renderHook(() => useNetwork(), { wrapper });
+    await flush();
+    expect(result.current.isUmbrel).toBe(true);
+    expect(result.current.torProxy).toBe(false);
+    expect(result.current.config.mempoolBaseUrl).toBe("/api");
+    expect(result.current.localApiStatus).toBe("available");
+    expect(result.current.routeReady && result.current.apiReady).toBe(true);
+    expect(serviceUrl("whirlpoolstats", "", { isUmbrel: result.current.torProxy })).not.toContain("/tor-proxy");
+    expect(calledUrls(fetchFn).some((u) => u.includes("mempool.space") || u.includes("tor-check"))).toBe(false);
+  });
+
+  it("Umbrel, whose local-info says nothing of it, keeps its Tor sidecar", async () => {
+    mockFetch(UMBREL_ROUTES);
+    const { NetworkProvider, useNetwork } = await import("@/context/NetworkContext");
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <StrictMode><NetworkProvider>{children}</NetworkProvider></StrictMode>
+    );
+    const { result } = renderHook(() => useNetwork(), { wrapper });
+    await flush();
+    expect(result.current.isUmbrel && result.current.torProxy).toBe(true);
+  });
+
+  it("a node that is not ready (503) shows as unavailable, still on /api, never mempool.space", async () => {
+    const fetchFn = mockFetch({
+      ...OWN_ROUTES,
+      "/api/blocks/tip/height": { delay: 20, status: 503, body: "Bitcoin: your own node is still syncing" },
+      "/api/block-height/0": { delay: 20, status: 503, body: "Bitcoin: your own node is still syncing" },
+    });
+    const { NetworkProvider, useNetwork } = await import("@/context/NetworkContext");
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <StrictMode><NetworkProvider>{children}</NetworkProvider></StrictMode>
+    );
+    const { result } = renderHook(() => useNetwork(), { wrapper });
+    await flush(15_000);
+    expect(result.current.localApiStatus).toBe("unavailable"); // MempoolDownDialog: wait for it to sync
+    expect(result.current.config.mempoolBaseUrl).toBe("/api");
+    expect(calledUrls(fetchFn).some((u) => u.includes("mempool.space"))).toBe(false);
+  });
+});
+
 describe("NetworkProvider backend network (genesis check)", () => {
   async function renderNetwork() {
     const { NetworkProvider, useNetwork } = await import("@/context/NetworkContext");

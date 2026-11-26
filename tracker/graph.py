@@ -2,17 +2,18 @@
 
 import heapq
 import math
-import os
 import re
 from collections import defaultdict
 from itertools import combinations
+from typing import NamedTuple
 
-from . import chains, swaps
+from . import bridges, chains, mixers, swaps
 from . import db as database
-from .heuristics import COMMON_INPUT_COINJOIN, EXCHANGE_CAP, SERVICE, TRUSTED
-from .labels import CONFIDENCE, describe
+from .heuristics import COMMON_INPUT_COINJOIN, EXCHANGE_CAP, NFT, SERVICE, TRUSTED
+from .labels import CONFIDENCE, describe, ends_paths
 
 HOP_DECAY = 0.7  # each stranger a trace passes through weakens it by this factor
+HOPS = 4  # the default depth: the verdicts alerts compare, and every wallet grade
 
 
 def combine(confidences):
@@ -31,7 +32,8 @@ MIXED = (
 )
 # How several rows of one kind of guess between the same pair combine. Independent evidence
 # compounds (`combine`); the same observation made again does not.
-COMBINE = {"exchange-flow": lambda c: repeated(c), "swap": max}
+COMBINE = {"exchange-flow": lambda c: repeated(c), "name": max, "swap": max, "bridge-record": max,
+           "mixer": max}  # fmt: skip
 
 
 def repeated(confidences, cap=EXCHANGE_CAP):
@@ -62,6 +64,8 @@ def _links(db):
 # Transfers of a token judged fake in one of my wallets: never drawn, not even with "Unknown
 # tokens", so an address that only sent me such tokens is not in the graph at all.
 FAKE = "token IN (SELECT token FROM balance WHERE trust = 'scam')"
+# An NFT's contract: its NFTs are drawn as one edge, not one each.
+COLLECTION = f"CASE WHEN {NFT} THEN substr(token, 1, {NFT} - 1) ELSE token END"
 
 
 def build(db, spam=False):
@@ -69,9 +73,10 @@ def build(db, spam=False):
     edges = [
         dict(r)
         for r in db.execute(
-            f"""SELECT chain, src, dst, asset, token, COUNT(*) count, SUM(amount) amount,
-                       MIN(ts) first, MAX(ts) last, MIN(txid) txid, MIN({MIXED}) coinjoin
-                FROM transfer WHERE {where} GROUP BY chain, src, dst, token"""
+            f"""SELECT chain, src, dst, asset, {COLLECTION} token, COUNT(*) count,
+                       SUM(amount) amount, MIN(ts) first, MAX(ts) last, MIN(txid) txid,
+                       MIN({MIXED}) coinjoin
+                FROM transfer WHERE {where} GROUP BY chain, src, dst, {COLLECTION}"""
         )
     ]
     links = _links(db)
@@ -154,7 +159,7 @@ def _entity(name):
     return re.sub(r"[\s:#]+\d+$", "", name)  # "Binance 14" -> "Binance"
 
 
-def trace(db, max_hops=4):
+def trace(db, max_hops=HOPS):
     """For every pair of my wallets: the most convincing path linking them on-chain.
 
     Confidence of a path = product of its edge confidences (a transfer is 1.0, a heuristic
@@ -188,11 +193,15 @@ def trace(db, max_hops=4):
     # A service everybody uses links nobody: a path never runs through one that is known
     # for sure. One that is only guessed to be a service (a label from a contract name or
     # from behaviour) weakens the path by how sure the guess is, and does not cut it:
-    # being wrong there must not hide a link.
+    # being wrong there must not hide a link. A name from a name-only set (an exchange's list
+    # of mostly deposit addresses) neither: that address is judged like a stranger's.
     services_ = {a: r for a, r in labels.items() if r["category"] in SERVICE}
-    blocked = {a for a, r in services_.items() if r["source"] not in CONFIDENCE}
-    damp = {a: 1 - CONFIDENCE[r["source"]] for a, r in services_.items() if a not in blocked}
+    blocked = {a for a, r in services_.items() if ends_paths(r["source"])}
+    damp = {
+        a: 1 - CONFIDENCE[r["source"]] for a, r in services_.items() if r["source"] in CONFIDENCE
+    }
     blocked |= {r["address"] for r in db.execute("SELECT address FROM node WHERE hub AND NOT mine")}
+    blocked |= mixers.CONTRACTS  # a mixer joins nobody, with a label or without (mixers.py)
 
     def best_paths(start):
         # Dijkstra over (node, hops) so the hop limit cannot hide a longer, stronger path.
@@ -239,7 +248,7 @@ def trace(db, max_hops=4):
     return out
 
 
-def verdicts(db, max_hops=4):
+def verdicts(db, max_hops=HOPS):
     """Per wallet: every other wallet of mine it can be tied to, directly or through a chain
     of my own wallets (public A - private B - private C exposes C), plus what the answer
     rests on, so that "nothing found" is never read as "safe".
@@ -282,8 +291,9 @@ def verdicts(db, max_hops=4):
     out = [
         {  # an HD wallet no address of which was found: say so, never show it as clean
             "address": w, "wallet": w, "addresses": [], "name": r["name"], "checked": "none",
-            "public": bool(r["public"]), "links": [], "services": [], "shared_services": [],
-            "coverage": {
+            "public": bool(r["public"]), "links": [], "direct": [], "services": [],
+            "shared_services": [],
+            "bridged": [], "coverage": {
                 "synced": False, "truncated": False, "error": r["error"], "counterparties": 0,
                 "expanded": 0, "notes": chains.notes("bitcoin"),
             },
@@ -353,6 +363,12 @@ def verdicts(db, max_hops=4):
                 "name": rows[0]["name"],
                 "public": bool(rows[0]["public"]),
                 "links": sorted(links, key=lambda k: -k["confidence"]),
+                # Each wallet it is tied to without passing through a third wallet of mine,
+                # even where a chain through one is stronger: what holds a group (clusters.py).
+                "direct": [
+                    {"wallet": first[v], "confidence": round(conf, 3), "path": path, "kinds": kinds}
+                    for v, (conf, path, kinds) in direct[w].items()
+                ],
                 "services": [
                     {"name": n, "category": c, "guess": g} for n, c, g in sorted(services)
                 ],
@@ -360,6 +376,9 @@ def verdicts(db, max_hops=4):
                     {"wallet": first[v], "services": sorted(names)}
                     for v, names in sorted(shared[w].items())
                 ],
+                # Bridged to an address that is not a wallet of mine: the bridge's record ties
+                # it to this wallet for anyone who reads it.
+                "bridged": bridges.strangers(db, members[w]),
                 "coverage": {
                     "synced": all(a in synced for a in members[w]),
                     "truncated": any(r["hub"] for r in rows),
@@ -380,7 +399,7 @@ def verdicts(db, max_hops=4):
                     # Where this wallet's chains are read less thoroughly than Bitcoin or EVM.
                     "notes": sorted(
                         {n for a in members[w] for n in chains.notes(database.chain_of(a))}
-                        | ({swaps.NOTE} if os.environ.get("CT_SWAPS", "on") != "off" else set())
+                        | set(swaps.notes({database.chain_of(a) for a in members[w]}))
                         | ({CUT.format(n=cut)} if (cut := sum(r["cut"] for r in rows)) else set())
                     ),
                 },
@@ -389,22 +408,27 @@ def verdicts(db, max_hops=4):
     return out
 
 
-def origins(db, max_hops=4):
+def origins(db, max_hops=HOPS):
     """Per wallet and asset: where the money received came from, followed upstream to a
     labelled source, another of my wallets, or the edge of what is known. Keyed by the
     wallet's first address; moves between addresses of one HD wallet are not a source.
 
     An address that forwards money passes on its own sources pro rata to what it received
     of that asset. This ignores timing, so it is an estimate of the mix, not a coin trace.
+
+    A swap or bridge record (docs/design/multichain.md, 3.3) carries the money on from its
+    sender, on the source chain and in the source asset, as one hop: the sources reached
+    through it name the protocol in `via`.
     """
-    inbound = defaultdict(dict)  # (address, chain, token) -> src -> amount
+    inbound = defaultdict(dict)  # (address, chain, token) -> src or record -> amount
     symbols = {}
     for r in db.execute(
         f"""SELECT chain, src, dst, asset, token, SUM(amount) amount FROM transfer
-            WHERE {TRUSTED} GROUP BY chain, src, dst, token"""
+            WHERE {TRUSTED} AND NOT {NFT} GROUP BY chain, src, dst, token"""
     ):
         inbound[(r["dst"], r["chain"], r["token"])][r["src"]] = r["amount"]
         symbols[(r["chain"], r["token"])] = r["asset"]
+    _records(db, inbound, symbols)
     nodes = {r["address"]: r for r in db.execute("SELECT * FROM node")}
     labels = _labels(db)
     wallet = _wallets(db)
@@ -438,7 +462,7 @@ def origins(db, max_hops=4):
     memo = {}
 
     def upstream(address, chain, token, hops):
-        """terminal address -> (share of the money, kind, path to it)."""
+        """terminal address -> (share of the money, kind, path to it, protocols crossed)."""
         key = (address, chain, token, hops)
         if key in memo:  # without this the walk repeats shared ancestors exponentially
             return memo[key]
@@ -446,38 +470,57 @@ def origins(db, max_hops=4):
         total = sum(srcs.values())
         out = memo[key] = {}
         for src, amount in srcs.items():
-            for terminal, (share, why, path) in resolve(src, chain, token, hops).items():
+            for terminal, (share, why, path, via) in resolve(src, chain, token, hops).items():
                 old = out.get(terminal)
                 share = amount / total * share + (old[0] if old else 0)
-                out[terminal] = (share, old[1], old[2]) if old else (share, why, path)
+                out[terminal] = (share, *old[1:]) if old else (share, why, path, via)
         return out
 
     def resolve(src, chain, token, hops):
+        if isinstance(src, Record):
+            return across(src, hops)
         why = kind(src, hops, chain, token)
         if why:
-            return {src: (1.0, why, (src,))}
+            return {src: (1.0, why, (src,), ())}
         # Money going round in a circle ends at the hop limit.
         return {
-            t: (share, why, (src, *path))
-            for t, (share, why, path) in upstream(src, chain, token, hops + 1).items()
+            t: (share, why, (src, *path), via)
+            for t, (share, why, path, via) in upstream(src, chain, token, hops + 1).items()
+        }
+
+    def across(record, hops):
+        """The sources of a record's sender, in what it paid in. The money changed chain or
+        asset there, so a sender of mine is passed through too, not an answer."""
+        sender = record.sender
+        why = kind(sender, hops, record.chain, record.token)
+        found = {}
+        if why is None or (why == "own" and hops < max_hops):
+            found = upstream(sender, record.chain, record.token, hops + 1)
+        if not found:  # a sender not read, a service, or one with no earlier transfer of it
+            why = why or "unknown:no earlier transfer of this asset"
+            return {sender: (1.0, why, (sender,), (record.protocol,))}
+        return {
+            t: (share, why, (sender, *path), (record.protocol, *via))
+            for t, (share, why, path, via) in found.items()
         }
 
     out = {}
     for w, addresses in members.items():
         assets = []
-        for chain, token in sorted({k[1:] for k in inbound if k[0] in addresses}):
+        # A bridged-in key has a (chain, token) pair as its token: sorted as text.
+        for chain, token in sorted({k[1:] for k in inbound if k[0] in addresses}, key=str):
             received, found = 0.0, {}
             for a in addresses:
                 for src, amount in inbound.get((a, chain, token), {}).items():
-                    if wallet.get(src) == w:
+                    if not isinstance(src, Record) and wallet.get(src) == w:
                         continue  # change and reshuffling inside the wallet
                     received += amount
-                    for terminal, (share, why, path) in resolve(src, chain, token, 1).items():
+                    for terminal, (share, why, path, via) in resolve(src, chain, token, 1).items():
                         old = found.get(terminal)
                         found[terminal] = (
-                            (old[0] + amount * share, old[1], old[2])
+                            (old[0] + amount * share, *old[1:])
                             if old
-                            else (amount * share, why, (a, *path))
+                            else (amount * share, why, (a, *path), via)
                         )
             if not received:
                 continue
@@ -494,18 +537,79 @@ def origins(db, max_hops=4):
                     "reason": why.partition(":")[2],
                     "share": round(amount / received, 4),
                     "amount": amount,
-                    "path": list(path),
+                    # An address bridging to itself on another chain is named once.
+                    "path": [x for i, x in enumerate(path) if not i or x != path[i - 1]],
+                    # The swaps and bridges the money crossed, from this wallet upstream.
+                    "via": list(via),
                 }
-                for terminal, (amount, why, path) in found.items()
+                for terminal, (amount, why, path, via) in found.items()
             ]
+            source_chain, coin = token if isinstance(token, tuple) else ("", token)
             assets.append(
                 {
                     "chain": chain,
                     "asset": symbols[(chain, token)],
-                    "token": token,
+                    "token": coin,
+                    # The chain it was bridged from, when only a bridge record shows it came in.
+                    "bridged_from": source_chain,
                     "received": received,
                     "sources": sorted(sources, key=lambda x: -x["share"])[:12],
                 }
             )
-        out[addresses[0]] = sorted(assets, key=lambda x: (x["token"] != "", x["chain"], x["asset"]))
+        out[addresses[0]] = sorted(
+            assets,
+            key=lambda x: (x["bridged_from"], x["token"] != "", x["chain"], x["asset"]),
+        )
     return out
+
+
+class Record(NamedTuple):
+    """A swap or bridge record as a source in `origins`: where its money was paid in. Chain
+    and token are None when the sender's side was never read."""
+
+    protocol: str
+    sender: str
+    chain: str | None
+    token: str | None
+
+
+def _records(db, inbound, symbols):
+    """Put the swap and bridge records into `origins`' inbound money.
+
+    A record with a payout transaction (THORChain, Maya) takes over that payout from the vault
+    that sent it. A bridge record has none: on Solana CCTP and Wormhole mint the tokens, which
+    no transfer shows, so the record is the inbound itself, kept apart per source chain and
+    asset as a key ((source chain, token)) no transfer has.
+    """
+    same_tx = "lower(t.txid) IN (lower({0}), '0x' || lower({0}))"
+    paid_in = {}  # (protocol, tx_in, recipient) -> the sender's transfer in it
+    for r in db.execute(
+        f"""SELECT s.protocol, s.tx_in, s.recipient, t.chain, t.token, t.asset, t.amount
+            FROM swap s JOIN transfer t ON t.src = s.sender AND {same_tx.format("s.tx_in")}
+            WHERE s.note = '' ORDER BY t.token = '', t.amount DESC"""
+    ):  # the token bridged before the coin for gas, as bridges._link
+        paid_in.setdefault((r["protocol"], r["tx_in"], r["recipient"]), r)
+    for s in db.execute("SELECT * FROM swap WHERE note = ''"):
+        leg = paid_in.get((s["protocol"], s["tx_in"], s["recipient"]))
+        record = Record(s["protocol"], s["sender"], leg and leg["chain"], leg and leg["token"])
+        if s["tx_out"]:
+            for t in db.execute(
+                f"""SELECT chain, src, token, SUM(amount) amount FROM transfer t
+                    WHERE dst = ? AND {same_tx.format("?")} AND {TRUSTED}
+                    GROUP BY chain, src, token""",
+                (s["recipient"], s["tx_out"], s["tx_out"]),
+            ):
+                srcs = inbound[(s["recipient"], t["chain"], t["token"])]
+                had = srcs.pop(t["src"], 0)
+                moved = min(had, t["amount"])  # a payout two records name moves once
+                if had - moved > 1e-12:
+                    srcs[t["src"]] = had - moved
+                if moved:
+                    srcs[record] = srcs.get(record, 0) + moved
+        elif leg and s["protocol"] in bridges.PROTOCOLS:
+            # shortcut: the payout of a bridge into an EVM chain (a mint, a relayer's fill) is
+            # a transfer of its own that no record names; it stays a source apart, next to the
+            # bridged-in money. Tie them when a bridge's destination transaction is read.
+            key = (s["recipient"], s["chain"], (leg["chain"], leg["token"]))
+            inbound[key][record] = inbound[key].get(record, 0) + leg["amount"]
+            symbols[key[1:]] = leg["asset"]

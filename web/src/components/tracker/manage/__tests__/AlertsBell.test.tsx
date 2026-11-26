@@ -51,6 +51,14 @@ describe("AlertsBell", () => {
     expect(tracker.openWallet).toHaveBeenCalledWith(COLD);
   });
 
+  it("words a grade alert in the reader's language, naming the wallet", () => {
+    const grade = { time: 1795435550, text: "", address: COLD, seen: false, kind: "grade" as const, params: { from: "B" as const, to: "D" as const, score: 34 } };
+    const { tracker } = renderTracker(<AlertsBell />, withAlerts({ unread: 1, items: [grade] }));
+    fireEvent.click(bell());
+    fireEvent.click(screen.getByRole("button", { name: /^Cold storage: privacy grade down from B to D \(34 of 100\)/ }));
+    expect(tracker.openWallet).toHaveBeenCalledWith(COLD);
+  });
+
   it("marks nothing when all alerts are read, and disables one about a wallet that is gone", () => {
     renderTracker(<AlertsBell />, withAlerts({ unread: 0, items: [{ time: 1795435550, text: "Old news", address: "bc1qgone", seen: true }] }));
     expect(bell().getAttribute("aria-label")).toBe("Alerts, 0 unread");

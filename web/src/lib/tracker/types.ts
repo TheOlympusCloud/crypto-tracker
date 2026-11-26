@@ -3,6 +3,8 @@
  * Field names are the server's; see tracker/graph.py, lookup.py, prices.py, sync.py.
  */
 
+import type { Finding, Grade } from "@/lib/types";
+
 export type TrustLevel = "verified" | "unknown" | "scam";
 
 /** A token or coin held, as the graph and the lookup list it. */
@@ -115,7 +117,19 @@ export interface Verdict {
   links: VerdictLink[];
   services: { name: string; category: string; guess: boolean }[];
   shared_services: { wallet: string; services: string[] }[];
+  /** Bridged to an address that is not a wallet of mine (tracker/bridges.py). */
+  bridged?: BridgedTo[];
   coverage: Coverage;
+}
+
+export interface BridgedTo {
+  protocol: string;
+  address: string;
+  chain: string;
+  /** Linked to the wallet: read first, and quiet. Not linked: busy, or a service. */
+  linked: boolean;
+  /** A Solana token account closed since: its owner can no longer be read. */
+  closed: boolean;
 }
 
 export interface OriginSource {
@@ -131,12 +145,16 @@ export interface OriginSource {
   share: number;
   amount: number;
   path: string[];
+  /** The swaps and bridges the money crossed on its way, from the wallet upstream. */
+  via: string[];
 }
 
 export interface OriginAsset {
   chain: string;
   asset: string;
   token: string;
+  /** The chain it was bridged from, when only a bridge record shows it came in; else "". */
+  bridged_from: string;
   received: number;
   sources: OriginSource[];
 }
@@ -166,9 +184,12 @@ export interface Fiat {
 
 export interface Alert {
   time: number;
+  /** A link alert's text; empty for a grade alert, which the page words from `params`. */
   text: string;
   address: string;
   seen: boolean;
+  kind?: "link" | "grade";
+  params?: { from: Grade; to: Grade; score: number } | null;
 }
 
 export interface Alerts {
@@ -192,6 +213,34 @@ export interface Analysis {
   watched: Watched[];
   verdicts: Verdict[];
   origins: Record<string, OriginAsset[]>;
+  /** Each wallet's privacy score, by its first address; null for a wallet never read. */
+  exposure?: Record<string, WalletExposure | null>;
+  /** My wallets an observer can join into one person (tracker/clusters.py). */
+  groups?: WalletGroup[];
+}
+
+/** A direct link between two wallets of a group, each named by its first address. */
+export interface GroupLink {
+  a: string;
+  b: string;
+  confidence: number;
+  path: string[];
+  kinds: string[];
+  /** The two parts this link alone holds together; null when the group holds without it. */
+  apart: [string[], string[]] | null;
+}
+
+/** Wallets joined by links of 50% or more, across chains. */
+export interface WalletGroup {
+  /** First addresses of its wallets. */
+  wallets: string[];
+  /** The public ones among them. */
+  public: string[];
+  chains: string[];
+  /** As far as its least checked wallet. */
+  checked: "none" | "partial" | "full";
+  /** Weakest first. */
+  links: GroupLink[];
 }
 
 export interface SyncStatus {
@@ -270,4 +319,50 @@ export interface PortfolioAsset {
   value: number | null;
   private_value: number | null;
   public_value: number | null;
+}
+
+/** A transaction a finding rests on, with its page at the chain's explorer. */
+export interface Evidence {
+  chain: string;
+  txid: string;
+  url: string;
+}
+
+/** A finding as the server sends it (tracker/exposure): ids and parameters, never sentences. */
+export type ServerFinding = Omit<Finding, "title" | "description" | "recommendation" | "id"> & { id: string; evidence: Evidence[] };
+
+/** am-i-exposed's Finding, worded by the adapter, with the transactions it rests on (which upstream's components ignore). */
+export type TrackerFinding = Finding & { evidence: Evidence[] };
+
+/** Why a scan is partly checked: an indexer error, a read cut to the newest transactions, a check out of calls; in a wallet's grade, a check that needs a read the page does not make. */
+export interface Gap {
+  id: "error" | "truncated" | "skipped" | "unread";
+  params?: { error?: string; check?: string };
+}
+
+/** The privacy scan of an EVM, Solana or Tron address (GET exposure/<address>), in ScoringResult's shape. */
+export interface Exposure {
+  address: string;
+  chain: string;
+  chains: string[];
+  icon: string;
+  score: number;
+  grade: Grade;
+  partial: boolean;
+  findings: ServerFinding[];
+  gaps: Gap[];
+  explorer_address: string;
+}
+
+/**
+ * One privacy score per wallet of mine (tracker/exposure/wallets.py), in ScoringResult's shape: the
+ * findings counted once each, and every finding by the chain it was found on ("" for the wallet's own).
+ */
+export interface WalletExposure {
+  score: number;
+  grade: Grade;
+  partial: boolean;
+  findings: ServerFinding[];
+  by_chain: Record<string, ServerFinding[]>;
+  gaps: Gap[];
 }

@@ -2,6 +2,7 @@ import type { MempoolTransaction } from "@/lib/api/types";
 import type { EntityMatch } from "./types";
 import { getFilter, lookupEntityName, lookupEntityCategory } from "./filter-loader";
 import { checkOfac } from "../cex-risk/ofac-check";
+import { has } from "@/lib/bitcoin/chain-profile";
 import { getEntity } from "../entities";
 import { WHIRLPOOL_DENOMS } from "@/lib/constants";
 import { isCoinbase, getSpendableOutputs, getValuedOutputs } from "../heuristics/tx-utils";
@@ -26,6 +27,7 @@ function resolveEntity(
  * Synchronous version that only checks already-loaded data (OFAC + filter if loaded).
  */
 export function matchEntitySync(address: string): EntityMatch | null {
+  if (!has("entity-index")) return null; // crypto-tracker: Bitcoin data only
   // OFAC check (always available)
   const ofacResult = checkOfac([address]);
   if (ofacResult.sanctioned) {

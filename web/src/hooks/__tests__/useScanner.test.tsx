@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 
 const m = vi.hoisted(() => ({
@@ -27,6 +27,7 @@ vi.mock("@/context/NetworkContext", () => ({
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (k: string, o?: { defaultValue?: string }) => o?.defaultValue ?? k }) }));
 
 import { useScanner } from "../useScanner";
+import { setChain } from "@/lib/bitcoin/chain-profile";
 
 const TXID = "b".repeat(64);
 
@@ -48,5 +49,21 @@ describe("useScanner.handleBroadcastSuccess", () => {
     act(() => { result.current.handleBroadcastSuccess(TXID); });
     expect(m.skip.current).toBe(false);
     expect(m.analyze).toHaveBeenCalledWith(TXID, { awaitIndexing: true });
+  });
+});
+
+describe("useScanner.handleSubmit on other chains (crypto-tracker)", () => {
+  afterEach(() => setChain("bitcoin"));
+
+  it("puts the chain in the hash: an address's own, a txid the one shown", () => {
+    const LTC = "ltc1q4rdwpcksqmsv6nxxze6ls8f0e3a4z3u3z43kjr";
+    const { result } = renderHook(() => useScanner());
+    act(() => { result.current.handleSubmit(LTC); });
+    expect(m.setHash).toHaveBeenLastCalledWith(`addr=${LTC}&chain=litecoin`);
+    act(() => { result.current.handleSubmit(TXID); });
+    expect(m.setHash).toHaveBeenLastCalledWith(`tx=${TXID}`);
+    setChain("dogecoin"); // a Dogecoin result is shown: its transactions are Dogecoin's
+    act(() => { result.current.handleSubmit(TXID); });
+    expect(m.setHash).toHaveBeenLastCalledWith(`tx=${TXID}&chain=dogecoin`);
   });
 });

@@ -10,32 +10,55 @@ import time
 
 import httpx
 
-from . import chains, labels
+from . import chains, graph, labels
 
 ASKED = 15  # contracts looked up at the explorer per sync, busiest first
+SENDERS = 3  # a deposit address paid by more is no one customer's (the exchange's gas is one)
+ME = "SELECT address, COALESCE(wallet, address) w FROM node WHERE mine"
+
+
+def deposit_addresses(db):
+    """address -> exchange, for each address that behaves like one exchange's deposit address:
+    read in full without an error, not a hub, not mine, named by no source but this module
+    or a name-only set (an exchange's list of mostly deposit addresses), every payment it
+    made going to that one exchange, and paid by no more than SENDERS senders (two addresses
+    of one wallet of mine are one sender). One that also pays anybody else is more likely a
+    wallet nobody registered, perhaps the user's own."""
+    exchange = {
+        r["address"]: r["name"].rstrip("0123456789 #:")  # "Binance 14" -> "Binance"
+        for r in db.execute(
+            "SELECT address, name FROM label WHERE category = 'cex' AND source != 'heuristic' "
+            "AND address IN (SELECT dst FROM transfer)"
+        )
+    }
+    read = f"""SELECT address FROM node WHERE synced_at AND NOT hub AND NOT mine
+              AND error IS NULL AND address NOT IN (
+                SELECT address FROM label WHERE source != 'heuristic' AND {labels.STOPS})"""
+    paid = {}  # address -> the exchanges it paid; None for anybody else
+    for r in db.execute(
+        f"SELECT src, dst FROM transfer WHERE src IN ({read}) AND NOT {graph.FAKE}"
+    ):
+        paid.setdefault(r["src"], set()).add(exchange.get(r["dst"]))
+    found = {a: next(iter(to)) for a, to in paid.items() if len(to) == 1 and None not in to}
+    for r in db.execute(
+        f"""WITH me AS ({ME})
+            SELECT dst, COUNT(DISTINCT COALESCE(me.w, src)) n FROM transfer
+            LEFT JOIN me ON me.address = src WHERE dst IN ({read}) AND NOT {graph.FAKE}
+            GROUP BY dst"""
+    ):
+        if r["n"] > SENDERS:
+            found.pop(r["dst"], None)
+    return found
 
 
 def behaviour(db):
     """Heuristic labels from the synced transfers. Returns how many were set."""
     mine = "(SELECT address FROM node WHERE mine)"
     known = "(SELECT address FROM label WHERE source != 'heuristic')"
-    rows = []
-    # An address that was read in full and whose every payment went to a known exchange
-    # behaves like one of that exchange's deposit addresses. One that also pays anybody
-    # else does not: it is more likely a wallet nobody registered, perhaps the user's own.
-    exchanges = "(SELECT address FROM label WHERE category = 'cex' AND source != 'heuristic')"
-    for r in db.execute(
-        f"""SELECT t.src, MIN(l.name) name FROM transfer t JOIN label l ON l.address = t.dst
-            WHERE l.category = 'cex' AND l.source != 'heuristic'
-              AND t.src NOT IN {mine} AND t.src NOT IN {known}
-              AND t.src IN (SELECT address FROM node WHERE synced_at AND NOT hub)
-              AND NOT EXISTS (SELECT 1 FROM transfer x WHERE x.src = t.src AND x.dst NOT IN {exchanges})
-            GROUP BY t.src"""
-    ):
-        exchange = r["name"].rstrip("0123456789 #:")
-        rows.append(
-            (r["src"], f"{exchange} deposit address"[:80], "cex", "exchange deposit address")
-        )
+    rows = [
+        (address, f"{exchange} deposit address"[:80], "cex", "exchange deposit address")
+        for address, exchange in deposit_addresses(db).items()
+    ]
     # In one transaction a wallet of mine pays one asset out and gets another one back: the
     # addresses on the other side are a pool or a router, whatever they are called.
     # shortcut: exactly one unit of a token is taken for an NFT changing hands, where the

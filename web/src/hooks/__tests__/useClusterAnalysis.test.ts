@@ -2,10 +2,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 
-const m = vi.hoisted(() => ({ build: vi.fn() }));
+const m = vi.hoisted(() => ({ build: vi.fn(), createApiClient: vi.fn((..._args: unknown[]) => ({})) }));
 
 vi.mock("@/lib/analysis/cluster/build-cluster", () => ({ buildFirstDegreeCluster: m.build }));
-vi.mock("@/lib/api/client", () => ({ createApiClient: () => ({}) }));
+vi.mock("@/lib/api/client", () => ({ createApiClient: m.createApiClient }));
 vi.mock("@/context/NetworkContext", () => ({
   useNetwork: () => ({ config: { mempoolBaseUrl: "https://mempool.space/api" }, isUmbrel: false, isCustomApi: false }),
 }));
@@ -14,6 +14,7 @@ vi.mock("react-i18next", () => ({
 }));
 
 import { useClusterAnalysis } from "../useClusterAnalysis";
+import { setChain } from "@/lib/bitcoin/chain-profile";
 
 const ADDR = "bc1qtarget";
 
@@ -67,5 +68,19 @@ describe("useClusterAnalysis", () => {
     await act(async () => { finish(); await done; });
     expect(result.current.phase).toBe("idle");
     expect(result.current.result).toBeNull();
+  });
+});
+
+describe("useClusterAnalysis on another chain (crypto-tracker)", () => {
+  it("builds the cluster from the scanned chain's backend, not mempool.space", async () => {
+    m.build.mockResolvedValue({ addresses: [ADDR] });
+    setChain("litecoin");
+    try {
+      const { result } = renderHook(() => useClusterAnalysis());
+      await act(async () => { await result.current.analyze("ltc1qtarget", []); });
+    } finally {
+      setChain("bitcoin");
+    }
+    expect(m.createApiClient.mock.calls.at(-1)![0]).toEqual({ mempoolBaseUrl: "/api/tracker/utxo/litecoin" });
   });
 });

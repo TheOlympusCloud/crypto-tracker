@@ -14,10 +14,7 @@ import type { MempoolTransaction } from "@/lib/api/types";
 import type { Finding } from "@/lib/types";
 import type { TxContext } from "./types";
 import { fmtN } from "@/lib/format";
-
-const BLOCKS_PER_YEAR = 52_560;  // ~365.25 * 144
-const ONE_YEAR = BLOCKS_PER_YEAR;
-const FOUR_YEARS = BLOCKS_PER_YEAR * 4;
+import { chain } from "@/lib/bitcoin/chain-profile";
 
 export function analyzeUtxoAgeSpread(
   tx: MempoolTransaction,
@@ -51,8 +48,11 @@ export function analyzeUtxoAgeSpread(
   const minHeight = Math.min(...inputHeights);
   const maxHeight = Math.max(...inputHeights);
   const spread = maxHeight - minHeight;
+  // 52,560 blocks on Bitcoin; per chain (crypto-tracker: chain-profile.ts)
+  const BLOCKS_PER_YEAR = (365 * 86_400) / chain().blockSeconds;
+  const FOUR_YEARS = BLOCKS_PER_YEAR * 4;
 
-  if (spread < ONE_YEAR) return { findings };
+  if (spread < BLOCKS_PER_YEAR) return { findings };
 
   const years = Math.round((spread / BLOCKS_PER_YEAR) * 10) / 10;
   const isSevere = spread >= FOUR_YEARS;

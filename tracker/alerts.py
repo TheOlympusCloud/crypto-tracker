@@ -1,8 +1,11 @@
-"""Tell the user when a verdict gets worse: a new link between two wallets, or a stronger one."""
+"""Tell the user when a verdict gets worse: a new link between two wallets, or a stronger one,
+or a wallet's privacy grade that drops."""
 
+import json
 import time
 
 from . import graph
+from .exposure import GRADES, wallets
 from .heuristics import pair
 
 BASELINE = ("baseline", "")  # marker row: a comparison point exists
@@ -11,9 +14,11 @@ STEP = 0.05  # a confidence rise smaller than this is not news
 
 
 def check(db):
-    """Compare the links between my wallets with those known after the last sync."""
+    """Compare the links between my wallets, and their grades, with those known after the last
+    sync."""
     names, public, now = {}, {}, {}
-    for v in graph.verdicts(db):
+    verdicts = graph.verdicts(db)
+    for v in verdicts:
         names[v["wallet"]] = v["name"] or v["address"][:12]
         public[v["wallet"]] = v["public"]
         for k in v["links"]:
@@ -42,7 +47,32 @@ def check(db):
         "INSERT INTO known_link VALUES (?, ?, ?)",
         [(*BASELINE, 0), *[(a, b, c) for (a, b), c in now.items()]],
     )
+    _grades(db, verdicts)
     db.commit()
+
+
+ORDER = [g for _, g in GRADES] + ["F"]  # best first
+
+
+def _grades(db, verdicts):
+    """An alert when a wallet's grade drops, naming the grade its page shows: both come from
+    exposure.wallets on the same verdicts. A wallet seen for the first time sets its baseline.
+    The page words the alert (`kind` and `params`), as it words the findings."""
+    known = {r["wallet"]: r["grade"] for r in db.execute("SELECT * FROM known_grade")}
+    scores = wallets.scores(db, verdicts)
+    grades = {v["wallet"]: scores[v["address"]] for v in verdicts if scores[v["address"]]}
+    for wallet, s in grades.items():
+        before = known.get(wallet)
+        if before and ORDER.index(s["grade"]) > ORDER.index(before):
+            params = {"from": before, "to": s["grade"], "score": s["score"]}
+            db.execute(
+                "INSERT INTO alert(ts, wallet, text, kind, params) VALUES (?, ?, '', 'grade', ?)",
+                (int(time.time()), wallet, json.dumps(params)),
+            )
+    db.execute("DELETE FROM known_grade")
+    db.executemany(
+        "INSERT INTO known_grade VALUES (?, ?)", [(w, s["grade"]) for w, s in grades.items()]
+    )
 
 
 def recent(db):
@@ -59,6 +89,8 @@ def recent(db):
                 "text": r["text"],
                 "address": first.get(r["wallet"], r["wallet"]),
                 "seen": bool(r["seen"]),
+                "kind": r["kind"],  # "link": `text` says it; "grade": the page words `params`
+                "params": json.loads(r["params"]) if r["params"] else None,
             }
             for r in rows
         ],

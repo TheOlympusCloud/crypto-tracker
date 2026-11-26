@@ -29,7 +29,7 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
  * A changed txid set or unmount aborts in-flight lookups and drops their results.
  */
 export function useServiceCheck(txids: string[], isLocalCoinJoin: (txid: string) => boolean): ServiceCheck {
-  const { isUmbrel } = useNetwork();
+  const { torProxy: isUmbrel } = useNetwork();
   const key = txids.join(",");
   const [state, setState] = useState<State>({ key, phase: "idle", done: 0, total: 0, results: [] });
   const ctrlRef = useRef<AbortController | null>(null);

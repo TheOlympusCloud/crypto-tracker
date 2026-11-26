@@ -13,6 +13,9 @@ COMMON_INPUT_COINJOIN = 0.2  # ...unless the transaction looks like a CoinJoin
 CHANGE_SCRIPT = 0.6  # the output with the same script type as the inputs is the change
 CHANGE_ROUND = 0.5  # the non-round output of a payment is the change
 CHANGE_BOTH = 0.75  # both change rules point at the same output
+FEE_PAYER = 0.9  # Solana: one address paid the fee of another's transaction
+CO_SIGNER = 0.9  # Solana: two addresses signed one transaction
+DELEGATION = 0.8  # Tron: one address delegated energy or bandwidth to another
 
 BRIDGE_WINDOW = 6 * 3600  # seconds between the two legs
 BRIDGE_FEE = 0.03  # the destination leg may be this much smaller than the source leg
@@ -24,6 +27,9 @@ TRUSTED = (
     "(token = '' OR token IN "
     "(SELECT token FROM transfer WHERE src IN (SELECT address FROM node WHERE mine)))"
 )
+# An NFT, whose key holds its id after a "#" (chains.nft_transfers). An NFT is no money: never
+# an amount to match, a balance or a funds origin.
+NFT = "instr(token, '#')"
 
 _SYMBOL = {"WETH": "ETH", "USDC.E": "USDC", "USDBC": "USDC", "USDT0": "USDT", "XDAI": "DAI"}
 
@@ -88,6 +94,24 @@ def btc_links(address, tx, cap=50):
     return links
 
 
+def solana_links(address, sig, tx, cap=50):
+    """Links (a, b, kind, confidence, evidence) that one Solana transaction implies for
+    `address`, one of its signers: the fee payer (the first signer) to each other signer,
+    `fee-payer`; two signers that are not the payer, `co-signer`. Each signer holds a key, as
+    each input of a Bitcoin transaction does. A stranger among them may be a relayer or a
+    marketplace: busy.vet reads it before any link to it is stored."""
+    keys = tx["transaction"]["message"]["accountKeys"]
+    signers = [k["pubkey"] for k in keys if isinstance(k, dict) and k.get("signer")]
+    if address not in signers:
+        return []
+    links = []
+    for other in [s for s in signers if s != address][:cap]:
+        payer = signers[0] in (address, other)
+        kind, conf = ("fee-payer", FEE_PAYER) if payer else ("co-signer", CO_SIGNER)
+        links.append((*pair(address, other), kind, conf, sig))
+    return links
+
+
 def symbol(asset):
     asset = asset.upper()
     return _SYMBOL.get(asset, asset)
@@ -105,10 +129,11 @@ def match_bridges(db):
     # also trusted when it comes from a labelled bridge.
     from_bridge = "src IN (SELECT address FROM label WHERE category = 'bridge')"
     outs = db.execute(
-        f"SELECT * FROM transfer WHERE {TRUSTED} AND src IN {mine} ORDER BY ts"
+        f"SELECT * FROM transfer WHERE {TRUSTED} AND NOT {NFT} AND src IN {mine} ORDER BY ts"
     ).fetchall()
     ins = db.execute(
-        f"SELECT * FROM transfer WHERE ({TRUSTED} OR {from_bridge}) AND dst IN {mine} ORDER BY ts"
+        f"SELECT * FROM transfer WHERE ({TRUSTED} OR {from_bridge}) AND NOT {NFT} AND dst IN {mine} "
+        "ORDER BY ts"
     ).fetchall()
     times = [i["ts"] for i in ins]
     bridges = {
@@ -194,7 +219,9 @@ def match_exchange_flows(db):
         if r["dst"] in exchange and r["src"] not in exchange and r["src"] not in wallet:
             exchange.setdefault(r["src"], exchange[r["dst"]])
     expanded = {r["address"] for r in db.execute("SELECT address FROM node WHERE synced_at")}
-    rows = db.execute(f"SELECT * FROM transfer WHERE {TRUSTED} ORDER BY ts").fetchall()
+    rows = db.execute(
+        f"SELECT * FROM transfer WHERE {TRUSTED} AND NOT {NFT} ORDER BY ts"
+    ).fetchall()
     outs = [
         t
         for t in rows

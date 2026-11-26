@@ -15,9 +15,14 @@ import httpx
 from embit import base58
 
 from . import db as database
-from .heuristics import btc_inputs, btc_links, looks_like_coinjoin
+from . import node
+from .heuristics import DELEGATION, btc_inputs, btc_links, looks_like_coinjoin, pair, solana_links
 
-ESPLORA = os.environ.get("CT_ESPLORA", "https://blockstream.info/api").rstrip("/")
+# Your own mempool when there is one (node.MEMPOOL), else a public Esplora.
+ESPLORA = (
+    os.environ.get("CT_ESPLORA") or (node.MEMPOOL and f"{node.MEMPOOL}/api")
+    or "https://blockstream.info/api"
+).rstrip("/")  # fmt: skip
 # chain -> asset, API flavour, base URL, and what a reader of a verdict must know about it.
 UTXO = {
     "bitcoin": ("BTC", "esplora", ESPLORA, ""),
@@ -171,16 +176,23 @@ EXPLORER = {
 
 
 def explorer(chain):
-    """Link templates for a chain; an EVM address without a chain opens on Ethereum's."""
+    """Link templates for a chain; an EVM address without a chain opens on Ethereum's. With a
+    mempool of your own, Bitcoin opens there: a click tells mempool.space nothing."""
     address, tx = EXPLORER.get("ethereum" if chain == "evm" else chain, ("", ""))
+    if chain == "bitcoin" and node.SITE:
+        address, tx = f"{node.SITE}/address/{{}}", f"{node.SITE}/tx/{{}}"
     return {"explorer_address": address, "explorer_tx": tx}
+
+
+OWN = "Read from your own node."
 
 
 def coverage():
     """What is read on each chain, for the UI and for honest verdicts."""
+    own = node.MEMPOOL and f"{node.MEMPOOL}/api"
     out = [
-        {"chain": chain, "asset": asset, "status": "ok", "note": note}
-        for chain, (asset, _, _, note) in UTXO.items()
+        {"chain": chain, "asset": asset, "status": "ok", "note": OWN if url == own else note}
+        for chain, (asset, _, url, note) in UTXO.items()
     ]
     for chain, cfg in evm_chains().items():
         needs = cfg.get("needs_key")
@@ -242,6 +254,8 @@ def describe(error):
         return f"HTTP {error.response.status_code}"
     if isinstance(error, httpx.HTTPError):
         return type(error).__name__
+    if isinstance(error, node.NotReady):
+        return str(error)  # ours, whole: it says why Bitcoin waits
     return str(error).splitlines()[0][:160] if str(error) else type(error).__name__
 
 
@@ -281,58 +295,125 @@ def wide(address, tx):
 btc_transfers = utxo_transfers
 
 
+ELECTRUM = set()  # Esplora URLs that turned out to be a mempool on an Electrum server
+
+
+def _esplora_page(client, url, address, after=None):
+    """One page of an address's confirmed transactions after txid `after` (None: the newest),
+    newest first: (transactions, next cursor, last page). Esplora pages /txs/chain/<last>, 25
+    at a time. A mempool on an Electrum server (Umbrel's, this app's own) has no such path: it
+    pages /txs?after_txid=<last>, 10 at a time, pending transactions first."""
+    if url not in ELECTRUM:
+        try:
+            tail = f"/{after}" if after else ""
+            txs = get(client, f"{url}/address/{address}/txs/chain{tail}").json()
+            return txs, (txs[-1]["txid"] if txs else after), len(txs) < 25
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code != 404:
+                raise
+            ELECTRUM.add(url)
+    params = {"after_txid": after} if after else None
+    txs = get(client, f"{url}/address/{address}/txs", params).json()
+    done = [t for t in txs if t["status"].get("confirmed")]
+    return done, (txs[-1]["txid"] if txs else after), len(txs) < 10
+
+
 def _esplora(client, url, address):
     stats = get(client, f"{url}/address/{address}").json()["chain_stats"]
-    txs, last = [], None
-    for _ in range(BTC_PAGES):
-        page = get(client, f"{url}/address/{address}/txs/chain" + (f"/{last}" if last else ""))
-        page = page.json()
+    txs, cursor, last = [], None, False
+    while not last and len(txs) < BTC_PAGES * 25:
+        page, cursor, last = _esplora_page(client, url, address, cursor)
         txs += page
-        if len(page) < 25:
-            break
-        last = page[-1]["txid"]
     return txs, stats["funded_txo_sum"] - stats["spent_txo_sum"], stats["tx_count"]
 
 
-def _coin(address, value, kind):
-    return {"scriptpubkey_address": address, "value": value or 0, "scriptpubkey_type": kind}
+def _coin(address, value, kind, script=""):
+    return {
+        "scriptpubkey_address": address,
+        "value": value or 0,
+        "scriptpubkey_type": kind,
+        "scriptpubkey": script,
+    }
 
 
+def script_type(script):
+    """Esplora's name for the type of an output script, from its bytes (hex)."""
+    s, n = script or "", len(script or "")
+    if n == 50 and s.startswith("76a914") and s.endswith("88ac"):
+        return "p2pkh"
+    if n == 46 and s.startswith("a914") and s.endswith("87"):
+        return "p2sh"
+    if n == 44 and s.startswith("0014"):
+        return "v0_p2wpkh"
+    if n == 68 and s[:4] in ("0020", "5120"):
+        return "v0_p2wsh" if s.startswith("0020") else "v1_p2tr"
+    if s.startswith("6a"):
+        return "op_return"
+    if n in (70, 134) and s.endswith("ac"):
+        return "p2pk"
+    return "multisig" if s.endswith("ae") else "unknown"
+
+
+# BlockCypher's script types in Esplora's names.
+CYPHER = {
+    "pay-to-pubkey-hash": "p2pkh",
+    "pay-to-script-hash": "p2sh",
+    "pay-to-pubkey": "p2pk",
+    "pay-to-multi-pubkey-hash": "multisig",
+    "null-data": "op_return",
+}
 COOLDOWN = {}  # indexer URL -> time until which its quota is spent
+WAITING = "the indexer's hourly limit is used up; the rest follows on a later sync"
+
+
+def cypher(client, url, path, params=None):
+    """A BlockCypher read. About 100 lookups an hour without a key: once the quota is spent,
+    nothing is asked for an hour. What was fetched stays, and the rest waits."""
+    if COOLDOWN.get(url, 0) > time.time():
+        raise RateLimited(WAITING)
+    try:
+        return get(client, f"{url}{path}", params, patient=False).json()
+    except RateLimited:
+        COOLDOWN[url] = time.time() + 3600
+        raise RateLimited(WAITING) from None
 
 
 def _blockcypher(client, url, address):
-    # About 100 lookups an hour without a key. Once the quota is spent, stop asking for an
-    # hour: what was fetched stays, and the remaining addresses follow on a later sync.
-    waiting = "the indexer's hourly limit is used up; the rest follows on a later sync"
-    if COOLDOWN.get(url, 0) > time.time():
-        raise RateLimited(waiting)
-    try:
-        data = get(client, f"{url}/addrs/{address}/full", {"limit": 50}, patient=False).json()
-    except RateLimited:
-        COOLDOWN[url] = time.time() + 3600
-        raise RateLimited(waiting) from None
+    data = cypher(client, url, f"/addrs/{address}/full", {"limit": 50})
     txs = [_cypher_tx(t) for t in data.get("txs", [])]
     return txs, data["final_balance"], data["n_tx"]
 
 
 def _cypher_tx(t):
-    """A BlockCypher transaction in Esplora's shape."""
+    """A BlockCypher transaction in Esplora's shape (no witness: Dogecoin has no segwit)."""
+
+    def coin(c, value, script=""):
+        kind = CYPHER.get(c.get("script_type"), "unknown")
+        return _coin((c.get("addresses") or [None])[0], value, kind, script)
+
+    def vin(i):
+        first = i.get("output_index") == -1  # a coinbase input spends nothing
+        return {
+            "txid": i.get("prev_hash", "0" * 64),
+            "vout": 0xFFFFFFFF if first else i.get("output_index", 0),
+            # The spent output's own script is not given, only its type and address.
+            "prevout": None if first else coin(i, i.get("output_value")),
+            "scriptsig": i.get("script", ""),
+            "is_coinbase": first,
+            "sequence": i.get("sequence", 0xFFFFFFFF),
+        }
+
     return {
         "txid": t["hash"],
-        "vin": [
-            {
-                "prevout": _coin(
-                    (i.get("addresses") or [None])[0], i.get("output_value"), i.get("script_type")
-                )
-            }
-            for i in t["inputs"]
-        ],
-        "vout": [
-            _coin((o.get("addresses") or [None])[0], o.get("value"), o.get("script_type"))
-            for o in t["outputs"]
-        ],
+        "version": t.get("ver", 1),
+        "locktime": t.get("lock_time", 0),
+        "size": t.get("size", 0),
+        "weight": 4 * t.get("size", 0),
+        "fee": t.get("fees", 0),
+        "vin": [vin(i) for i in t["inputs"]],
+        "vout": [coin(o, o.get("value"), o.get("script", "")) for o in t["outputs"]],
         "status": {
+            "confirmed": (t.get("block_height") or 0) > 0,
             "block_time": int(datetime.fromisoformat(t["confirmed"]).timestamp())
             if t.get("confirmed")
             else 0,
@@ -352,14 +433,31 @@ def _haskoin(client, url, address):
 def _haskoin_tx(t):
     """A Haskoin transaction in Esplora's shape."""
 
-    def kind(coin):  # the first script bytes are enough to tell address types apart
-        return (coin.get("pkscript") or "")[:4]
+    def coin(c):
+        script = c.get("pkscript") or ""
+        return _coin(c.get("address"), c.get("value"), script_type(script), script)
+
+    def vin(i):
+        return {
+            "txid": i.get("txid"),
+            "vout": i.get("output"),
+            "prevout": None if i.get("coinbase") else coin(i),
+            "scriptsig": i.get("sigscript") or "",
+            "is_coinbase": bool(i.get("coinbase")),
+            "sequence": i.get("sequence"),
+        }
 
     return {
         "txid": t["txid"],
-        "vin": [{"prevout": _coin(i.get("address"), i.get("value"), kind(i))} for i in t["inputs"]],
-        "vout": [_coin(o.get("address"), o.get("value"), kind(o)) for o in t["outputs"]],
+        "version": t.get("version", 1),
+        "locktime": t.get("locktime", 0),
+        "size": t.get("size", 0),
+        "weight": t.get("weight") or 4 * t.get("size", 0),
+        "fee": t.get("fee", 0),
+        "vin": [vin(i) for i in t["inputs"]],
+        "vout": [coin(o) for o in t["outputs"]],
         "status": {
+            "confirmed": "height" in (t.get("block") or {}),
             "block_time": t.get("time") or 0,
             "block_height": (t.get("block") or {}).get("height") or 0,
         },
@@ -368,6 +466,7 @@ def _haskoin_tx(t):
 
 def fetch_utxo(client, address, chain="bitcoin", keep=()):
     asset, api, url, _ = UTXO[chain]
+    node.guard(url)
     txs, balance, count = {"esplora": _esplora, "blockcypher": _blockcypher, "haskoin": _haskoin}[
         api
     ](client, url, address)
@@ -395,10 +494,9 @@ Page = namedtuple("Page", "items positions next last span", defaults=[None])
 def page_utxo(client, chain, address, cursor=None):
     """One page of a UTXO address's history from `cursor` back (None: the newest)."""
     _, api, url, _ = UTXO[chain]
+    node.guard(url)
     if api == "esplora":
-        tail = f"/{cursor}" if cursor else ""
-        txs = get(client, f"{url}/address/{address}/txs/chain{tail}").json()
-        size, nxt = 25, (txs[-1]["txid"] if txs else cursor)
+        txs, nxt, last = _esplora_page(client, url, address, cursor)
     elif api == "haskoin":
         offset = int(cursor or 0)
         bare = address.removeprefix("bitcoincash:")
@@ -407,37 +505,31 @@ def page_utxo(client, chain, address, cursor=None):
             _haskoin_tx(t)
             for t in get(client, f"{url}/address/{bare}/transactions/full", params).json()
         ]
-        size, nxt = 100, str(offset + len(txs))
+        nxt, last = str(offset + len(txs)), len(txs) < 100
     else:  # blockcypher: by block height, and within the hourly quota
-        if COOLDOWN.get(url, 0) > time.time():
-            raise RateLimited("the indexer's hourly limit is used up; the rest follows later")
         params = {"limit": 50, **({"before": cursor} if cursor else {})}
-        try:
-            data = get(client, f"{url}/addrs/{address}/full", params, patient=False).json()
-        except RateLimited:
-            COOLDOWN[url] = time.time() + 3600
-            raise
+        data = cypher(client, url, f"/addrs/{address}/full", params)
         txs = [_cypher_tx(t) for t in data.get("txs", [])]
         # A pending transaction (height -1) has no block to read on from.
         low = min((h for t in txs if (h := t["status"]["block_height"]) > 0), default=None)
         # `before` leaves out its own block: start again inside the last one, unless a single
         # block filled the page, where that would read the same page forever.
         nxt = cursor if low is None else str(low + 1 if str(low + 1) != cursor else low)
-        size = 50
+        last = len(txs) < 50
     positions = [t["status"].get("block_height") or 0 for t in txs]
-    return Page(txs, positions, nxt, len(txs) < size)
+    return Page(txs, positions, nxt, last)
 
 
 def fetch_btc(client, address):
     return fetch_utxo(client, address, "bitcoin")
 
 
+def b58(hex_address):  # Tron's native list speaks hex
+    return base58.encode_check(bytes.fromhex(hex_address))
+
+
 def tron_transfers(native, tokens):
     """Transfer rows of Tron's native and TRC-20 lists, and the tokens seen, by contract."""
-
-    def b58(hex_address):  # the native transfer list speaks hex
-        return base58.encode_check(bytes.fromhex(hex_address))
-
     transfers, info = [], {}
     for t in native:
         try:
@@ -460,6 +552,26 @@ def tron_transfers(native, tokens):
         except (KeyError, ValueError, TypeError):
             continue
     return transfers, info
+
+
+def tron_links(native):
+    """`delegation` links of a native list: one address lent its staked energy or bandwidth
+    to another. A stranger may be a rental service: busy.vet reads it before any link to it
+    is stored. Undelegating takes it back and adds nothing."""
+    links = []
+    for t in native:
+        try:
+            contract = t["raw_data"]["contract"][0]
+            v = contract["parameter"]["value"]
+            if (
+                contract["type"] == "DelegateResourceContract"
+                and t["ret"][0]["contractRet"] == "SUCCESS"
+            ):
+                ends = pair(b58(v["owner_address"]), b58(v["receiver_address"]))
+                links.append((*ends, "delegation", DELEGATION, t["txID"]))
+        except (KeyError, IndexError, ValueError, TypeError):
+            continue
+    return links
 
 
 def page_tron(client, address, kind, cursor=None):
@@ -495,7 +607,7 @@ def fetch_tron(client, address):
                 balances.append(("tron", token["symbol"][:20], contract, amount))
     return {
         "transfers": transfers,
-        "links": [],
+        "links": tron_links(native),
         "balances": balances,
         "hub": len(native) >= TRON_ROWS or len(tokens) >= TRON_ROWS,
     }
@@ -512,7 +624,7 @@ def _rpc(client, method, *params, url=None):
             break
         time.sleep(2 ** (attempt + 1))
     if r.status_code == 429:
-        raise RuntimeError("rate limited by the RPC (HTTP 429): raise CT_DELAY")
+        raise RateLimited("rate limited by the RPC (HTTP 429): raise CT_DELAY")
     data = r.raise_for_status().json()
     if "error" in data:
         raise RuntimeError(f"{method}: {str(data['error'].get('message'))[:120]}")
@@ -539,6 +651,13 @@ def solana_transfers(address, sig, tx):
         k: post - pre for k, pre, post in zip(keys, meta["preBalances"], meta["postBalances"])
     }
     native[keys[0]] += meta.get("fee", 0)  # the fee payer did not send the fee to anybody
+    # The rent of a closed token account goes from its owner, not from the account: a refund
+    # to another wallet ties the two, and one back to the owner moves nothing.
+    owners = {keys[b["accountIndex"]]: b.get("owner") for b in meta.get("preTokenBalances") or []}
+    for account, authority in _closed(tx).items():
+        owner = owners.get(account) or authority
+        if owner and account in native:
+            native[owner] = native.get(owner, 0) + native.pop(account)
     rows = flows(native, "SOL", 1e9)
     tokens = {}
     for sign, side in ((-1, "preTokenBalances"), (1, "postTokenBalances")):
@@ -551,6 +670,22 @@ def solana_transfers(address, sig, tx):
         # The symbol is not on chain; the portfolio fills it in from the price source.
         rows += flows(deltas, mint[:4] + "...", 10**decimals, mint)
     return rows
+
+
+def _closed(tx):
+    """Token accounts a transaction closed, in its own or a program's instructions -> the
+    owner the close names."""
+    calls = list(tx["transaction"]["message"].get("instructions") or [])
+    for inner in tx["meta"].get("innerInstructions") or []:
+        calls += inner.get("instructions") or []
+    closes = [
+        c["parsed"]["info"]
+        for c in calls
+        if c.get("program") in ("spl-token", "spl-token-2022")
+        and isinstance(c.get("parsed"), dict)
+        and c["parsed"].get("type") == "closeAccount"
+    ]
+    return {i["account"]: i.get("owner") or i.get("multisigOwner") for i in closes}
 
 
 def page_solana(client, address, cursor=None, stop=None):
@@ -590,7 +725,7 @@ def fetch_solana(client, address):
         token = account["account"]["data"]["parsed"]["info"]
         balances[token["mint"]] += token["tokenAmount"].get("uiAmount") or 0
     signatures = _rpc(client, "getSignaturesForAddress", address, {"limit": SOLANA_TXS})
-    transfers = []
+    transfers, links = [], []
     for s in signatures:
         if s.get("err"):
             continue
@@ -602,9 +737,10 @@ def fetch_solana(client, address):
         )
         if tx and tx.get("meta"):
             transfers += solana_transfers(address, s["signature"], tx)
+            links += solana_links(address, s["signature"], tx)
     return {
         "transfers": transfers,
-        "links": [],
+        "links": links,
         "balances": [
             ("solana", "SOL", "", lamports / 1e9),
             *[
@@ -649,6 +785,34 @@ def evm_transfers(chain, native, items, token=False):
     return rows
 
 
+NFT_LISTS = ("tokennfttx", "token1155tx")  # ERC-721 and ERC-1155 transfers
+NOBODY = {"0x" + "0" * 40, "0x000000000000000000000000000000000000dead"}  # mints and burns
+
+
+def nft_transfers(chain, items):
+    """Transfer rows of NFT list rows. An NFT is keyed by its contract and id ("0x…#42"), so
+    trusting what my wallets sent (heuristics.TRUSTED) covers that NFT only, never a whole
+    contract: a shared one, like OpenSea's storefront, lets anybody mint into it. A mint or a
+    burn is left out: everybody who minted or burned would be linked through the zero address."""
+    rows = []
+    for it in items:
+        try:
+            if {it["from"].lower(), (it.get("to") or "").lower()} & NOBODY:
+                continue
+            rows.append(
+                it
+                | {
+                    "value": it.get("tokenValue") or "1",  # an ERC-721 row is one NFT
+                    "tokenDecimal": "0",
+                    "contractAddress": f"{it['contractAddress']}#{it['tokenID']}",
+                    "tokenSymbol": it.get("tokenSymbol") or it.get("tokenName"),
+                }
+            )
+        except (KeyError, AttributeError, TypeError):
+            continue  # a row we do not understand is not a transfer
+    return evm_transfers(chain, "", rows, token=True)
+
+
 def _evm_call(client, cfg, address, action, partial=False, **extra):
     params = {"module": "account", "action": action, "address": address}
     if cfg.get("apikey"):
@@ -665,7 +829,7 @@ def _evm_call(client, cfg, address, action, partial=False, **extra):
 
 
 def page_evm(client, cfg, address, action, cursor=None):
-    """One page of an EVM list (txlist, txlistinternal, tokentx) from block `cursor` down.
+    """One page of an EVM list (history.LISTS) from block `cursor` down.
     Always the first page of a query that ends at a lower block, so a source that serves only
     the newest 10,000 rows of a query never stops it."""
     extra = {

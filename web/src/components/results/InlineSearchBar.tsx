@@ -6,6 +6,7 @@ import { useTranslation } from "react-i18next";
 import { useNetwork } from "@/context/NetworkContext";
 import { InputExtras, useFileDrop } from "@/components/InputExtras";
 import { detectInputType, cleanInput } from "@/lib/analysis/detect-input";
+import { accountChain } from "@/lib/tracker/exposure";
 
 export function InlineSearchBar({ onScan, initialValue }: { onScan: (input: string) => void; initialValue?: string }) {
   const { t } = useTranslation();
@@ -24,7 +25,7 @@ export function InlineSearchBar({ onScan, initialValue }: { onScan: (input: stri
     const cleaned = cleanInput(raw);
     if (!cleaned) return false;
     const type = detectInputType(cleaned, network);
-    if (type === "invalid") {
+    if (type === "invalid" && !accountChain(cleaned)) { // crypto-tracker: the tracker scans these
       setError(t("input.errorInvalid", { defaultValue: "That doesn't look like an address, txid, xpub, PSBT or raw transaction. Check and try again." }));
       return false;
     }

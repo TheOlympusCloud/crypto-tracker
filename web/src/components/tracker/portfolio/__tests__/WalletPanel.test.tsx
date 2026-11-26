@@ -46,13 +46,13 @@ describe("WalletPanel", () => {
     expect(screen.getByRole("link", { name: "Privacy score" }).getAttribute("href")).toBe(`/#addr=${encodeURIComponent(COLD)}`);
   });
 
-  it("offers to make a public wallet private, and no privacy score off Bitcoin", () => {
+  it("offers to make a public wallet private, and the tracker's privacy scan off Bitcoin", () => {
     renderTracker(<WalletPanel address={PUBLIC} />);
     fireEvent.click(button("Make private"));
     expect(api).toHaveBeenCalledWith("wallets", { address: PUBLIC, name: "Exchange withdrawals", public: false });
     cleanup();
     renderTracker(<WalletPanel address={PHONE} />);
-    expect(screen.queryByRole("link", { name: "Privacy score" })).toBeNull();
+    expect(screen.getByRole("link", { name: "Privacy score" }).getAttribute("href")).toBe(`/tracker/scan/#addr=${PHONE}`);
   });
 
   it("renames the wallet, then closes the form", async () => {
@@ -90,6 +90,87 @@ describe("WalletPanel", () => {
     const link = ANALYSIS.verdicts.find((v) => v.address === COLD)!.links[0]!;
     expect(tracker.showPath).toHaveBeenCalledWith(link.path, "Cold storage ↔ Exchange withdrawals", COLD);
     expect(screen.getByRole("heading", { name: "What this check may still have missed" })).toBeTruthy();
+  });
+
+  it("shows the wallet's privacy grade and its findings by chain", () => {
+    renderTracker(<WalletPanel address={COLD} />);
+    expect(screen.getByRole("heading", { name: "Privacy grade" })).toBeTruthy();
+    expect(screen.getByText("D")).toBeTruthy();
+    expect(screen.getByText("34 of 100")).toBeTruthy();
+    // A Bitcoin wallet's grade leaves out the deep scan of its addresses, and says so.
+    expect(screen.getByText("Wallet checks; addresses not deep-scanned")).toBeTruthy();
+    const own = screen.getByRole("heading", { level: 4, name: "This wallet, across its chains" });
+    const bitcoin = screen.getByRole("heading", { level: 4, name: "Bitcoin" });
+    expect(own.compareDocumentPosition(bitcoin) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy(); // the wallet's own first
+    const tied = screen.getByText("Tied to your public wallet Exchange withdrawals (70%)").closest("details")!;
+    expect(within(tied).getByText("-49")).toBeTruthy();
+    expect(tied.textContent).toContain("with 70% confidence");
+    const reuse = screen.getByText("Reused addresses: 1").closest("details")!;
+    expect(within(reuse).getAllByRole("link").map((a) => a.getAttribute("href"))).toEqual(["https://mempool.space/tx/b1", "https://mempool.space/tx/b3"]);
+    expect(screen.queryByText("Partly checked")).toBeNull();
+  });
+
+  it("shows an account wallet's findings under the chain they were found on, with no deep-scan note", () => {
+    renderTracker(<WalletPanel address={HOT} />);
+    expect(screen.getByText("C")).toBeTruthy();
+    expect(screen.getByRole("heading", { level: 4, name: "Ethereum" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { level: 4, name: "This wallet, across its chains" })).toBeNull();
+    expect(screen.getByText("Dealt directly with an exchange: Binance")).toBeTruthy();
+    expect(screen.getByText("Dealt with a mixer: Tornado Cash Router")).toBeTruthy();
+    expect(screen.queryByText("Wallet checks; addresses not deep-scanned")).toBeNull();
+  });
+
+  it("lists the address's first funder under its chain family", () => {
+    const hot = ANALYSIS.exposure![HOT]!;
+    const funded = { ...hot.findings[0]!, id: "x-funder-mine", severity: "medium" as const, scoreImpact: -10, params: { funder: "Savings", chains: "Ethereum" } };
+    const exposure = { ...ANALYSIS.exposure, [HOT]: { ...hot, by_chain: { ...hot.by_chain, evm: [funded] } } };
+    renderTracker(<WalletPanel address={HOT} />, { analysis: { ...ANALYSIS, exposure } });
+    expect(screen.getByRole("heading", { level: 4, name: "EVM" })).toBeTruthy();
+    expect(screen.getByText("First funded by your wallet Savings")).toBeTruthy();
+  });
+
+  it("says a finding shown on several chains counts once in the grade", () => {
+    const hot = ANALYSIS.exposure![HOT]!;
+    const once = "A finding on several chains counts once in the grade, at its worst.";
+    renderTracker(<WalletPanel address={HOT} />);
+    expect(screen.queryByText(once)).toBeNull(); // each finding on one chain only
+    cleanup();
+    const exposure = { ...ANALYSIS.exposure, [HOT]: { ...hot, by_chain: { ...hot.by_chain, base: [hot.findings[0]!] } } };
+    renderTracker(<WalletPanel address={HOT} />, { analysis: { ...ANALYSIS, exposure } });
+    expect(screen.getByRole("heading", { level: 4, name: "Base" })).toBeTruthy();
+    expect(screen.getByText(once)).toBeTruthy();
+  });
+
+  it("shows open approvals and activity hours apart, under security and habits", () => {
+    const hot = ANALYSIS.exposure![HOT]!;
+    const base = { ...hot.findings[0]!, severity: "low" as const, evidence: [] };
+    const approvals = { ...base, id: "x-open-approvals", scoreImpact: 0, params: { count: 1, approvals: "WETH → Uniswap V3: Router 2 (Ethereum)" } };
+    const hours = { ...base, id: "x-activity-hours", scoreImpact: -2, params: { count: 143, quiet: "22:00–06:00", zone: "UTC+2" } };
+    const exposure = { ...ANALYSIS.exposure, [HOT]: { ...hot, by_chain: { ...hot.by_chain, evm: [approvals, hours] } } };
+    renderTracker(<WalletPanel address={HOT} />, { analysis: { ...ANALYSIS, exposure } });
+    const section = screen.getByRole("heading", { level: 4, name: "Security and habits" }).closest("section")!;
+    const open = within(section).getByText("Unlimited token approvals still open: 1").closest("details")!;
+    expect(open.textContent).toContain("WETH → Uniswap V3: Router 2 (Ethereum)");
+    expect(within(open).getByText("0")).toBeTruthy();
+    const night = within(section).getByText("Sends at hours that point to UTC+2").closest("details")!;
+    expect(night.textContent).toContain("Of the 143 transactions this wallet sent");
+    // Nothing else was found on EVM, so it has no heading of its own.
+    expect(screen.queryByRole("heading", { level: 4, name: "EVM" })).toBeNull();
+    expect(screen.getByRole("heading", { level: 4, name: "Ethereum" })).toBeTruthy();
+  });
+
+  it("says a grade is partly checked, why, and that no finding is no proof", () => {
+    const partial = { ...ANALYSIS.exposure![PHONE]!, partial: true, gaps: [{ id: "unread" as const, params: { check: "funder" } }] };
+    renderTracker(<WalletPanel address={PHONE} />, { analysis: { ...ANALYSIS, exposure: { ...ANALYSIS.exposure, [PHONE]: partial } } });
+    expect(screen.getByText("Partly checked")).toBeTruthy();
+    expect(screen.getByText("Not read yet: funder. The page makes no call; Privacy score reads it.")).toBeTruthy();
+    expect(screen.getByText("No finding among the checks made here. That is no proof of privacy.")).toBeTruthy();
+  });
+
+  it("gives no grade to a wallet never read", () => {
+    renderTracker(<WalletPanel address={PHONE} />, { analysis: { ...ANALYSIS, exposure: { ...ANALYSIS.exposure, [PHONE]: null } } });
+    expect(screen.getByText("No grade yet: sync this wallet")).toBeTruthy();
+    expect(screen.queryByText("A+")).toBeNull();
   });
 
   it("names the wallets a link runs through", () => {
@@ -142,7 +223,25 @@ describe("WalletPanel", () => {
     expect(screen.getByText("20% from smaller sources not listed (the empty end of the bar)")).toBeTruthy();
   });
 
-  it("lists an HD wallet's addresses, with no privacy score", () => {
+  it("names the bridge money crossed, on its source and in the path it opens", () => {
+    const binance = "0x28c6c06298d514db089934071355e5743bf21d60";
+    const bridged = {
+      chain: "solana", asset: "ETH", token: "", bridged_from: "ethereum", received: 1.5,
+      sources: [{
+        address: binance, name: "Binance 14", kind: "cex", guess: false, type: "", public: false, reason: "",
+        share: 1, amount: 1.5, path: [PHONE, HOT, binance], via: ["Wormhole"],
+      }],
+    };
+    const origins = { ...ANALYSIS.origins, [PHONE]: [bridged] };
+    const { tracker } = renderTracker(<WalletPanel address={PHONE} />, { analysis: { ...ANALYSIS, origins } });
+    expect(screen.getByRole("heading", { name: "1.5 ETH bridged from ethereum to solana" })).toBeTruthy();
+    const source = screen.getByRole("button", { name: /Binance 14/ });
+    expect(source.textContent).toContain("1.5 ETH · 2 hops · via Wormhole");
+    fireEvent.click(source);
+    expect(tracker.showPath).toHaveBeenCalledWith([PHONE, HOT, binance], "Origin of ETH in Phone · via Wormhole", PHONE);
+  });
+
+  it("lists an HD wallet's addresses, each with its deep scan", () => {
     const cold = GRAPH.nodes.find((n) => n.address === COLD)!;
     const fakeBalance = { chain: "bitcoin", asset: "XYZ", amount: 9, token: "x", trust: { level: "scam" as const, reason: "airdrop" } };
     const hd: GraphNode = {
@@ -155,6 +254,8 @@ describe("WalletPanel", () => {
     expect(screen.getByText("bc1qsecond")).toBeTruthy();
     expect(screen.getAllByText("fake · worth 0")).toHaveLength(1);
     expect(screen.queryByRole("link", { name: "Privacy score" })).toBeNull();
+    // Each address keeps its deep scan one click away.
+    expect(screen.getAllByRole("link", { name: "Deep scan" }).map((a) => a.getAttribute("href"))).toEqual([`/#addr=${encodeURIComponent(COLD)}`, "/#addr=bc1qsecond"]);
     fireEvent.click(button("Re-sync"));
     expect(tracker.startSync).toHaveBeenCalledWith(["hd:abc"]);
     fireEvent.click(button("Make public"));

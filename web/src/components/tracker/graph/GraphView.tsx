@@ -27,7 +27,7 @@ const FOCUS = "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visi
 export function GraphView({ active }: { active: boolean }) {
   const { t } = useTranslation();
   const palette = usePalette();
-  const { graph, scope, collapsed, shownPath, minConf, setMinConf, spam, setSpam, focus, panel, selectNode, openPanel, closePanel, fail } = useTracker();
+  const { graph, scope, collapsed, shownPaths, minConf, setMinConf, spam, setSpam, focus, panel, selectNode, openPanel, closePanel, fail } = useTracker();
   const narrow = useSyncExternalStore(onNarrow, isNarrow, () => false);
   const [chosen, setChosen] = useState<Mode | null>(null);
   const [noWebGL, setNoWebGL] = useState(false);
@@ -42,10 +42,10 @@ export function GraphView({ active }: { active: boolean }) {
   const seen = useRef(new WeakMap<Renderer, { graph: Graph; minConf: number; palette: Palette; t: Look["t"] }>());
   const focused = useRef(0);
 
-  // What the graph shows: the data, less what is folded away, but never a hop of the shown path.
+  // What the graph shows: the data, less what is folded away, but never a hop of a shown path.
   // The looked-up address's graph object stays the same when only its state changes (Watch, Track).
   const shown = scope?.graph ?? graph;
-  const drawn = useMemo(() => fold(shown, collapsed, shownPath, minConf), [shown, collapsed, shownPath, minConf]);
+  const drawn = useMemo(() => fold(shown, collapsed, shownPaths.flat(), minConf), [shown, collapsed, shownPaths, minConf]);
 
   // A tap beside the graph does not end a lookup.
   const onSelect = useEffectEvent((n: GraphNode | null) => {
@@ -96,8 +96,8 @@ export function GraphView({ active }: { active: boolean }) {
     if (restyle) r.setLook({ palette, t });
     if (restyle || last?.graph !== drawn || last.minConf !== minConf) r.setData(drawn, { minConf });
     seen.current.set(r, { graph: drawn, minConf, palette, t });
-    r.highlight(shownPath);
-  }, [active, mode, made, drawn, minConf, palette, t, shownPath]);
+    r.highlight(shownPaths);
+  }, [active, mode, made, drawn, minConf, palette, t, shownPaths]);
 
   useEffect(() => {
     const r = renderers.current[mode];

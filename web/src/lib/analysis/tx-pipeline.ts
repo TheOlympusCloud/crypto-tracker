@@ -5,6 +5,7 @@ import { calculateScore } from "@/lib/scoring/score";
 import { applyCrossHeuristicRules, classifyTransactionType } from "./cross-heuristic";
 import { enrichFindingsWithMetadata } from "./finding-metadata";
 import { TX_HEURISTICS } from "./heuristic-registry";
+import { enabled } from "./heuristic-steps";
 
 /**
  * Run every tx heuristic once. This is the single heuristic loop shared by all
@@ -19,7 +20,7 @@ export function runTxHeuristics(
   onEach?: (heuristicId: string, findings: Finding[]) => void,
 ): Finding[] {
   const allFindings: Finding[] = [];
-  for (const heuristic of TX_HEURISTICS) {
+  for (const heuristic of TX_HEURISTICS.filter(enabled)) {
     let findings: Finding[] = [];
     try {
       findings = heuristic.fn(tx, rawHex, ctx).findings;

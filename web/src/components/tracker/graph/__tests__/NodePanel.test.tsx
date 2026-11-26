@@ -50,6 +50,23 @@ describe("NodePanel", () => {
     expect(explorer.getAttribute("target")).toBe("_blank");
   });
 
+  it("lists the privacy findings of a wallet of mine, and none for a stranger", () => {
+    renderTracker(<NodePanel address={COLD} />);
+    expect(screen.getByRole("heading", { name: "Privacy grade" })).toBeTruthy();
+    expect(screen.getByText("34 of 100")).toBeTruthy();
+    expect(screen.getByText("Tied to your public wallet Exchange withdrawals (70%)")).toBeTruthy();
+    expect(screen.getByText("Reused addresses: 1")).toBeTruthy();
+    cleanup();
+    renderTracker(<NodePanel address={STRANGER} />);
+    expect(screen.queryByRole("heading", { name: "Privacy grade" })).toBeNull();
+  });
+
+  it("finds the score of an HD wallet from any of its addresses", () => {
+    const second: GraphNode = { ...node(COLD), address: "bc1qsecond", wallet: COLD };
+    renderTracker(<NodePanel address="bc1qsecond" />, { byAddress: new Map([["bc1qsecond", second]]) });
+    expect(screen.getByText("Reused addresses: 1")).toBeTruthy();
+  });
+
   it("says how many counterparties a folded address hides", () => {
     renderTracker(<NodePanel address={COLD} />, { collapsed: new Set([COLD]) });
     expect(button("Unfold (1 hidden)").getAttribute("aria-pressed")).toBe("true");
@@ -65,7 +82,7 @@ describe("NodePanel", () => {
     expect(row("Named by")).toBe("an open label set");
     expect(row("Label")).toBe("Binance 14");
     expect(row("Note")).toMatch(/^very active address/);
-    expect(screen.queryByRole("link", { name: "Privacy score" })).toBeNull(); // not Bitcoin
+    expect(screen.getByRole("link", { name: "Privacy score" }).getAttribute("href")).toMatch(/^\/tracker\/scan\/#addr=0x/); // the tracker's scan
 
     fireEvent.click(button("This is mine"));
     expect(tracker.act).toHaveBeenCalled();

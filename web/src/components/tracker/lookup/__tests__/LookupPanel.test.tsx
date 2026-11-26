@@ -42,7 +42,8 @@ describe("the lookup panel", () => {
     expect(screen.getByText(/Only direct dealings with your wallets show here/)).toBeTruthy();
     expect(screen.getByText("4 quieter counterparties not listed.")).toBeTruthy();
     expect(screen.getByRole("link", { name: /Explorer/ }).getAttribute("href")).toBe("https://etherscan.io/address/0x28c6c06298d514db089934071355e5743bf21d60");
-    expect(screen.queryByRole("link", { name: "Privacy score" })).toBeNull();
+    // Off Bitcoin, the tracker's own privacy scan
+    expect(screen.getByRole("link", { name: "Privacy score" }).getAttribute("href")).toMatch(/^\/tracker\/scan\/#addr=0x28c6c06298d514db089934071355e5743bf21d60/);
   });
 
   it("says when nothing ties it to my wallets, unsure when not everything was read", () => {

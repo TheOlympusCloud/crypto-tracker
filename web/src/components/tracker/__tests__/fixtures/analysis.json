@@ -148,7 +148,9 @@
     "time": 1795435550,
     "text": "Cold storage is now linked to public wallet Exchange withdrawals (90%)",
     "address": "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq",
-    "seen": false
+    "seen": false,
+    "kind": "link",
+    "params": null
    }
   ]
  },
@@ -370,6 +372,7 @@
     "chain": "ethereum",
     "asset": "ETH",
     "token": "",
+    "bridged_from": "",
     "received": 1.5,
     "sources": [
      {
@@ -385,7 +388,8 @@
       "path": [
        "0xab5801a7d398351b8be11c439e05c5b3259aec9b",
        "0xd8da6bf26964af9d7eed9e03e53415d37aa96045"
-      ]
+      ],
+      "via": []
      }
     ]
    }
@@ -395,6 +399,7 @@
     "chain": "ethereum",
     "asset": "ETH",
     "token": "",
+    "bridged_from": "",
     "received": 2.0,
     "sources": [
      {
@@ -410,7 +415,8 @@
       "path": [
        "0xd8da6bf26964af9d7eed9e03e53415d37aa96045",
        "0x28c6c06298d514db089934071355e5743bf21d60"
-      ]
+      ],
+      "via": []
      }
     ]
    }
@@ -420,6 +426,7 @@
     "chain": "bitcoin",
     "asset": "BTC",
     "token": "",
+    "bridged_from": "",
     "received": 0.49,
     "sources": [
      {
@@ -436,7 +443,8 @@
        "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq",
        "3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy",
        "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh"
-      ]
+      ],
+      "via": []
      },
      {
       "address": "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
@@ -451,12 +459,303 @@
       "path": [
        "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq",
        "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
-      ]
+      ],
+      "via": []
      }
     ]
    }
   ],
   "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh": [],
   "vines1vzrYbzLMRdu58ou5XTby4qAqVRLmqo36NKPTg": []
- }
+ },
+ "exposure": {
+  "0xab5801a7d398351b8be11c439e05c5b3259aec9b": {
+   "score": 93,
+   "grade": "A+",
+   "partial": false,
+   "findings": [],
+   "by_chain": {},
+   "gaps": []
+  },
+  "0xd8da6bf26964af9d7eed9e03e53415d37aa96045": {
+   "score": 68,
+   "grade": "C",
+   "partial": false,
+   "findings": [
+    {
+     "id": "x-exchange-exposure",
+     "severity": "high",
+     "scoreImpact": -15,
+     "confidence": "deterministic",
+     "params": {
+      "exchange": "Binance",
+      "count": 1,
+      "chains": "Ethereum"
+     },
+     "evidence": [
+      {
+       "chain": "ethereum",
+       "txid": "e1",
+       "url": "https://etherscan.io/tx/e1"
+      }
+     ],
+     "adversaryTiers": [
+      "kyc_exchange"
+     ],
+     "temporality": "historical"
+    },
+    {
+     "id": "x-mixer-counterparty",
+     "severity": "medium",
+     "scoreImpact": -10,
+     "confidence": "deterministic",
+     "params": {
+      "name": "Tornado Cash Router",
+      "count": 1
+     },
+     "evidence": [
+      {
+       "chain": "ethereum",
+       "txid": "e4",
+       "url": "https://etherscan.io/tx/e4"
+      }
+     ],
+     "adversaryTiers": [
+      "kyc_exchange"
+     ],
+     "temporality": "historical"
+    }
+   ],
+   "by_chain": {
+    "ethereum": [
+     {
+      "id": "x-exchange-exposure",
+      "severity": "high",
+      "scoreImpact": -15,
+      "confidence": "deterministic",
+      "params": {
+       "exchange": "Binance",
+       "count": 1,
+       "chains": "Ethereum"
+      },
+      "evidence": [
+       {
+        "chain": "ethereum",
+        "txid": "e1",
+        "url": "https://etherscan.io/tx/e1"
+       }
+      ],
+      "adversaryTiers": [
+       "kyc_exchange"
+      ],
+      "temporality": "historical"
+     },
+     {
+      "id": "x-mixer-counterparty",
+      "severity": "medium",
+      "scoreImpact": -10,
+      "confidence": "deterministic",
+      "params": {
+       "name": "Tornado Cash Router",
+       "count": 1
+      },
+      "evidence": [
+       {
+        "chain": "ethereum",
+        "txid": "e4",
+        "url": "https://etherscan.io/tx/e4"
+       }
+      ],
+      "adversaryTiers": [
+       "kyc_exchange"
+      ],
+      "temporality": "historical"
+     }
+    ]
+   },
+   "gaps": []
+  },
+  "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq": {
+   "score": 34,
+   "grade": "D",
+   "partial": false,
+   "findings": [
+    {
+     "id": "x-linked-public",
+     "severity": "critical",
+     "scoreImpact": -49,
+     "confidence": "medium",
+     "params": {
+      "wallet": "Exchange withdrawals",
+      "confidence": 70
+     },
+     "evidence": [],
+     "adversaryTiers": [
+      "passive_observer"
+     ],
+     "temporality": "historical"
+    },
+    {
+     "id": "x-address-reuse",
+     "severity": "medium",
+     "scoreImpact": -10,
+     "confidence": "deterministic",
+     "params": {
+      "count": 1
+     },
+     "evidence": [
+      {
+       "chain": "bitcoin",
+       "txid": "b1",
+       "url": "https://mempool.space/tx/b1"
+      },
+      {
+       "chain": "bitcoin",
+       "txid": "b3",
+       "url": "https://mempool.space/tx/b3"
+      }
+     ],
+     "adversaryTiers": [
+      "passive_observer"
+     ],
+     "temporality": "historical"
+    }
+   ],
+   "by_chain": {
+    "": [
+     {
+      "id": "x-linked-public",
+      "severity": "critical",
+      "scoreImpact": -49,
+      "confidence": "medium",
+      "params": {
+       "wallet": "Exchange withdrawals",
+       "confidence": 70
+      },
+      "evidence": [],
+      "adversaryTiers": [
+       "passive_observer"
+      ],
+      "temporality": "historical"
+     }
+    ],
+    "bitcoin": [
+     {
+      "id": "x-address-reuse",
+      "severity": "medium",
+      "scoreImpact": -10,
+      "confidence": "deterministic",
+      "params": {
+       "count": 1
+      },
+      "evidence": [
+       {
+        "chain": "bitcoin",
+        "txid": "b1",
+        "url": "https://mempool.space/tx/b1"
+       },
+       {
+        "chain": "bitcoin",
+        "txid": "b3",
+        "url": "https://mempool.space/tx/b3"
+       }
+      ],
+      "adversaryTiers": [
+       "passive_observer"
+      ],
+      "temporality": "historical"
+     }
+    ]
+   },
+   "gaps": []
+  },
+  "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh": {
+   "score": 93,
+   "grade": "A+",
+   "partial": false,
+   "findings": [],
+   "by_chain": {},
+   "gaps": []
+  },
+  "vines1vzrYbzLMRdu58ou5XTby4qAqVRLmqo36NKPTg": {
+   "score": 93,
+   "grade": "A+",
+   "partial": false,
+   "findings": [],
+   "by_chain": {},
+   "gaps": []
+  }
+ },
+ "groups": [
+  {
+   "wallets": [
+    "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq",
+    "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh"
+   ],
+   "public": [
+    "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh"
+   ],
+   "chains": [
+    "bitcoin"
+   ],
+   "checked": "full",
+   "links": [
+    {
+     "a": "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq",
+     "b": "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
+     "confidence": 0.7,
+     "path": [
+      "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq",
+      "3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy",
+      "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh"
+     ],
+     "kinds": [
+      "transfer",
+      "transfer"
+     ],
+     "apart": [
+      [
+       "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq"
+      ],
+      [
+       "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "wallets": [
+    "0xab5801a7d398351b8be11c439e05c5b3259aec9b",
+    "0xd8da6bf26964af9d7eed9e03e53415d37aa96045"
+   ],
+   "public": [],
+   "chains": [
+    "ethereum"
+   ],
+   "checked": "full",
+   "links": [
+    {
+     "a": "0xab5801a7d398351b8be11c439e05c5b3259aec9b",
+     "b": "0xd8da6bf26964af9d7eed9e03e53415d37aa96045",
+     "confidence": 1.0,
+     "path": [
+      "0xab5801a7d398351b8be11c439e05c5b3259aec9b",
+      "0xd8da6bf26964af9d7eed9e03e53415d37aa96045"
+     ],
+     "kinds": [
+      "transfer"
+     ],
+     "apart": [
+      [
+       "0xab5801a7d398351b8be11c439e05c5b3259aec9b"
+      ],
+      [
+       "0xd8da6bf26964af9d7eed9e03e53415d37aa96045"
+      ]
+     ]
+    }
+   ]
+  }
+ ]
 }

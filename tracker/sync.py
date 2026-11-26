@@ -5,8 +5,25 @@ import time
 
 import httpx
 
-from . import alerts, chains, detect, graph, hd, heuristics, history, labels, prices, swaps, tokens
+from . import (
+    alerts,
+    bridges,
+    busy,
+    chains,
+    deposits,
+    detect,
+    graph,
+    hd,
+    heuristics,
+    history,
+    labels,
+    mixers,
+    prices,
+    swaps,
+    tokens,
+)
 from . import db as database
+from .exposure import approvals, names
 
 EXPAND_PER_LEVEL = 40  # neighbours synced per depth level, most active first
 
@@ -57,9 +74,10 @@ def sync_address(db, client, address):
             "INSERT OR IGNORE INTO transfer VALUES (?,?,?,?,?,?,?,?)",
             [t for t in data["transfers"] if ok(t[2]) and ok(t[3])],
         )
+        links = [k for k in data["links"] if ok(k[0]) and ok(k[1])]
         db.executemany(
             "INSERT OR REPLACE INTO link VALUES (?,?,?,?,?)",
-            [k for k in data["links"] if ok(k[0]) and ok(k[1])],
+            [k for k in links if k[2] not in busy.CHECKED],
         )
         # The transactions it sent, also those that move no value (a claim()): see tokens.judge.
         db.executemany(
@@ -94,11 +112,11 @@ def sync_address(db, client, address):
         )
         if not data["hub"]:
             # The whole history is loaded, so token balances follow from it; this covers
-            # indexers without a token-balance call. Rebasing tokens will be off.
+            # indexers without a token-balance call. Rebasing tokens will be off. An NFT is none.
             db.execute(
-                """INSERT OR IGNORE INTO balance(address, chain, asset, token, amount)
+                f"""INSERT OR IGNORE INTO balance(address, chain, asset, token, amount)
                    SELECT ?1, chain, asset, token, SUM(CASE WHEN dst = ?1 THEN amount ELSE -amount END)
-                   FROM transfer WHERE token != '' AND ?1 IN (src, dst)
+                   FROM transfer WHERE token != '' AND NOT {heuristics.NFT} AND ?1 IN (src, dst)
                    GROUP BY chain, token HAVING SUM(CASE WHEN dst = ?1 THEN amount ELSE -amount END) > 1e-9""",
                 (address,),
             )
@@ -113,11 +131,22 @@ def sync_address(db, client, address):
         )
     db.execute("UPDATE node SET error = ? WHERE address = ?", (error or None, address))
     db.commit()
+    # Links to a stranger wait for its read (busy.vet), after the commit: a read that fails
+    # or is cut short costs a link, never a transfer.
+    checked = [k for k in links if k[2] in busy.CHECKED] if data else []
+    if checked:
+        kept, unread = busy.vet(db, client, checked)
+        db.executemany("INSERT OR REPLACE INTO link VALUES (?,?,?,?,?)", kept)
+        if unread:
+            error = "; ".join([*filter(None, [error]), *unread])
+            db.execute("UPDATE node SET error = ? WHERE address = ?", (error, address))
+        db.commit()
 
 
 def neighbours(db, addresses):
-    """Unsynced, unlabelled counterparties of `addresses`, most transfers first.
-    Services and hubs are never expanded: everybody is two hops from Binance."""
+    """Unsynced, unlabelled counterparties of `addresses`, most transfers first; a label from
+    a name-only set does not count. Services and hubs are never expanded: everybody is two
+    hops from Binance."""
     if not addresses:
         return []
     marks = ",".join("?" * len(addresses))
@@ -126,7 +155,7 @@ def neighbours(db, addresses):
               SELECT dst other FROM transfer WHERE src IN ({marks}) AND NOT {graph.FAKE}
               UNION ALL SELECT src FROM transfer WHERE dst IN ({marks}) AND NOT {graph.FAKE})
             WHERE other NOT IN (SELECT address FROM node WHERE synced_at IS NOT NULL)
-              AND other NOT IN (SELECT address FROM label)
+              AND other NOT IN (SELECT address FROM label WHERE {labels.STOPS})
             GROUP BY other ORDER BY n DESC""",
         (*addresses, *addresses),
     )
@@ -229,11 +258,17 @@ def run(addresses=None, depth=0, import_labels=False, wallets=()):
                         break
             status["current"] = "labels"
             detect.contracts(db, client)
+            status["notes"] += names.sync(db, client)
+            status["notes"] += approvals.sync(db, client)
             status["current"] = "swaps"
             status["notes"] += swaps.sync(db, client)
+            status["notes"] += bridges.sync(db, client)
+            status["notes"] += mixers.sync(db, client)
+            deposits.read(db, client)  # after the labels: a named address is not read
             detect.behaviour(db)  # after the swaps, whose vault labels outrank a guess
             heuristics.match_bridges(db)
             heuristics.match_exchange_flows(db)
+            deposits.link(db)
             alerts.check(db)
             status["current"] = "prices"
             prices.snapshot(db, client)
@@ -294,10 +329,13 @@ def fill_in():
                 return
             if swapping:
                 swaps.sync(db, client)
+            bridges.sync(db, client)  # bridges paid in older transactions
+            mixers.sync(db, client)  # and mixers
             # What follows from the older transfers, as at the end of a sync.
             detect.behaviour(db)
             heuristics.match_bridges(db)
             heuristics.match_exchange_flows(db)
+            deposits.link(db)
             alerts.check(db)
             tokens.mark(db, client)  # "arrived unasked" needs the whole history
     except Exception as e:  # noqa: BLE001 - a background thread must report, not die silently

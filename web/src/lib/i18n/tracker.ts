@@ -1,4 +1,5 @@
 import tracker from "../../../public/locales/en/tracker.json";
+import exposure from "../../../public/locales/en/tracker-exposure.json";
 import portfolio from "../../../public/locales/en/tracker-portfolio.json";
 import graph from "../../../public/locales/en/tracker-graph.json";
 import lookup from "../../../public/locales/en/tracker-lookup.json";
@@ -11,5 +12,6 @@ export const TRACKER_EN = {
   "tracker-graph": graph,
   "tracker-lookup": lookup,
   "tracker-manage": manage,
+  "tracker-exposure": exposure,
 };
 export const TRACKER_NS = Object.keys(TRACKER_EN);

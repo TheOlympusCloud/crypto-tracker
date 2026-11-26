@@ -8,6 +8,7 @@ import { CexRiskPanel } from "@/components/CexRiskPanel";
 import { ExchangeWarningPanel } from "@/components/ExchangeWarningPanel";
 import { CommonMistakes } from "@/components/CommonMistakes";
 import { AnalystView } from "@/components/AnalystView";
+import { chain } from "@/lib/bitcoin/chain-profile"; // crypto-tracker: Chainalysis screens Bitcoin only
 const Remediation = lazy(() => import("@/components/Remediation").then((m) => ({ default: m.Remediation })));
 const RecoveryFlow = lazy(() => import("@/components/RecoveryFlow").then((m) => ({ default: m.RecoveryFlow })));
 
@@ -34,7 +35,7 @@ export function ContextSection({ query, inputType, vm, txData, devMode, local = 
       </div>
       <div className="grid gap-4 lg:grid-cols-2 items-start">
         <div className="space-y-4 min-w-0">
-          {!local && <CexRiskPanel query={query} inputType={inputType} txData={txData} isCoinJoin={vm.isCoinJoin} />}
+          {!local && chain().id === "bitcoin" && <CexRiskPanel query={query} inputType={inputType} txData={txData} isCoinJoin={vm.isCoinJoin} />}
           {vm.isCoinJoin && <ExchangeWarningPanel />}
         </div>
         <div className="space-y-4 min-w-0">

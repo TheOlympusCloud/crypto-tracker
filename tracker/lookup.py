@@ -6,8 +6,9 @@ price cache is written. Like a sync, the address is sent to the indexer of its c
 """
 
 import os
+import threading
 import time
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 
 from . import chains, prices, tokens
 from . import db as database
@@ -19,18 +20,46 @@ DRAWN = 60  # of those, how many are in the graph
 NEW = 30 * 86400  # an address first seen this recently is new
 WORDS = {"cex": "exchange", "dex": "DEX", "bridge": "bridge", "mixer": "mixer"}
 WORDS |= {"flagged": "flagged", "defi": "DeFi", "service": "service", "other": "label"}
+# Raw reads, in memory only, so that a privacy scan right after a lookup costs nothing.
+READS = OrderedDict()  # (address, chains) -> (time read, what the indexer answered)
+KEEP, KEPT = 600, 200  # seconds a read is kept, and how many reads
+_reads = threading.Lock()
 
 
-def view(db, client, address, evm=()):
-    """`address` is canonical (db.norm). `evm` names the EVM chains to read; empty: all."""
+def fetch(client, address, evm=(), cached=False):
+    """(what the indexer answered, the chains read). A lookup always reads live and keeps the
+    read; `cached` takes a kept read younger than KEEP. A read with errors is not kept, so
+    that trying again asks again."""
     chain = database.chain_of(address)
     if chain == "evm":
-        every = chains.evm_chains()
-        read = {c: cfg for c, cfg in every.items() if (not evm or c in evm)}
-        data = chains.fetch_evm(client, address, read)
-        read = [c for c, cfg in read.items() if not cfg.get("needs_key")]
+        picked = {c: cfg for c, cfg in chains.evm_chains().items() if (not evm or c in evm)}
+        read = [c for c, cfg in picked.items() if not cfg.get("needs_key")]
     else:
-        data, read = chains.fetch(client, address), [chain]
+        picked, read = None, [chain]
+    key = (address, tuple(read))
+    with _reads:
+        ts, data = READS.get(key, (0, None))
+    if cached and data is not None and time.time() - ts < KEEP:
+        return data, read
+    data = (
+        chains.fetch_evm(client, address, picked)
+        if picked is not None
+        else chains.fetch(client, address)
+    )
+    if not data.get("errors"):
+        with _reads:
+            READS.pop(key, None)
+            READS[key] = (time.time(), data)
+            while len(READS) > KEPT:
+                READS.popitem(last=False)
+    return data, read
+
+
+def view(db, client, address, evm=(), cached=False, listed=LISTED):
+    """`address` is canonical (db.norm). `evm` names the EVM chains to read; empty: all.
+    `listed`: how many counterparties to return, busiest first (None: every one)."""
+    chain = database.chain_of(address)
+    data, read = fetch(client, address, evm, cached)
     # Indexer output is untrusted, as in a sync.
     ok = database.valid
     transfers = [t for t in data["transfers"] if address in (t[2], t[3]) and ok(t[2]) and ok(t[3])]
@@ -91,13 +120,16 @@ def view(db, client, address, evm=()):
         other, way = (dst, "sent") if src == address else (src, "received")
         p = parties.setdefault(
             other,
-            {"address": other, "count": 0, "first": ts, "last": ts, "sent": {}, "received": {}},
-        )
+            {"address": other, "count": 0, "first": ts, "last": ts, "sent": {}, "received": {},
+             "evidence": []},
+        )  # fmt: skip
         for row in (e, p):
             row["count"] += 1
             row["first"], row["last"] = min(row["first"], ts), max(row["last"], ts)
         e["amount"] += amount
         p[way][(c, asset)] = p[way].get((c, asset), 0.0) + amount
+        if len(p["evidence"]) < 3 and {"chain": c, "txid": txid} not in p["evidence"]:
+            p["evidence"].append({"chain": c, "txid": txid})  # a few transactions to show
 
     guesses = defaultdict(list)  # a guess that the address shares an owner with another
     for a, b, kind, confidence, evidence in data["links"]:
@@ -111,8 +143,10 @@ def view(db, client, address, evm=()):
     for k in links:
         other = k["b"] if k["a"] == address else k["a"]
         p = parties.setdefault(
-            other, {"address": other, "count": 0, "first": 0, "last": 0, "sent": {}, "received": {}}
-        )
+            other,
+            {"address": other, "count": 0, "first": 0, "last": 0, "sent": {}, "received": {},
+             "evidence": []},
+        )  # fmt: skip
         if k["confidence"] > p.get("guess", {"confidence": 0})["confidence"]:
             p["guess"] = {"kind": k["kind"], "confidence": k["confidence"]}
 
@@ -169,8 +203,8 @@ def view(db, client, address, evm=()):
         "risk": risk(
             where, me, transfers, ranked, twins(db, address), data["hub"], errors, used, bool(sets)
         ),
-        "connections": ranked[:LISTED],
-        "more": max(0, len(ranked) - LISTED),
+        "connections": ranked[:listed],
+        "more": len(ranked) - len(ranked[:listed]),
         "truncated": bool(data["hub"]),
         "errors": errors,
         "notes": chains.notes(chain),
@@ -210,7 +244,10 @@ def risk(where, me, real, parties, twins, hub=False, errors=(), held=True, label
     say = lambda level, text: out.append({"level": level, "text": text})
     label, category = me.get("label"), me.get("category")
     if category == "flagged":
-        say("bad", f"Flagged: {label}. A scam, a hack or sanctions, by its label.")
+        say(
+            "bad",
+            f"Flagged: {label}. A scam, a hack, sanctions or a stablecoin freeze, by its label.",
+        )
     elif category == "mixer":
         say(
             "bad",
@@ -223,8 +260,8 @@ def risk(where, me, real, parties, twins, hub=False, errors=(), held=True, label
     for text in errors:
         say("unknown", f"Not everything could be read ({text}).")
     if not labels:
-        say("unknown", "No open label set is downloaded yet, so known scam, hack and sanctioned "
-            "addresses go unrecognised: they come with the next sync, unless CT_LABELS=off.")  # fmt: skip
+        say("unknown", "No open label set is downloaded yet, so known scam, hack, sanctioned and "
+            "frozen addresses go unrecognised: they come with the next sync, unless CT_LABELS=off.")  # fmt: skip
     times = [t[7] for t in real if t[7]]
     count = len({t[1] for t in real})
     if not real and not held:

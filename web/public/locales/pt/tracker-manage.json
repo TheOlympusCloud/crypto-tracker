@@ -33,6 +33,7 @@
   "chains.read": "lida",
   "chains.needs_key": "precisa de chave",
   "alerts.title": "Alertas",
+  "alerts.grade": "{{name}}: a nota de privacidade caiu de {{from}} para {{to}} ({{score}} de 100)",
   "alerts.label_one": "Alertas, {{count}} não lido",
   "alerts.label_other": "Alertas, {{count}} não lidos"
 }

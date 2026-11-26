@@ -58,7 +58,7 @@ export function BlockSkeleton({ h = 240 }: { h?: number }) {
 export function P2pTab() {
   const { t, i18n } = useTranslation();
   const locale = i18n.language || "en";
-  const { isUmbrel } = useNetwork();
+  const { torProxy: isUmbrel } = useNetwork();
   const [obs, setObs] = useObsState();
   const data = useP2p();
   const { markets, index, hosts, offers, sources } = data;

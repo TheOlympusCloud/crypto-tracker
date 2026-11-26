@@ -11,7 +11,8 @@ export interface Look {
 export interface Renderer {
   setLook(look: Look): void;
   setData(graph: Graph, opts: { minConf: number }): void;
-  highlight(path: string[]): void;
+  /** Draws each path hop by hop and fades the rest; none clears it. */
+  highlight(paths: string[][]): void;
   focus(address: string): void;
   setActive(on: boolean): void;
   destroy(): void;

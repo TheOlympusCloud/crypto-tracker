@@ -22,6 +22,7 @@ import {
   buildExchangeFlaggingFinding,
   buildSingleEntityFinding,
 } from "./coinjoin-findings";
+import { has } from "@/lib/bitcoin/chain-profile";
 import { detectTx0 } from "./coinjoin-premix";
 import { classifyWabiSabi } from "./wabisabi";
 import type { FindingId } from "@/lib/analysis/finding-metadata";
@@ -197,13 +198,17 @@ export const analyzeCoinJoin: TxHeuristic = (tx, _rawHex, ctx: Ctx) => {
   // Need at least 2 inputs and 2 outputs
   if (tx.vin.length < 2 || tx.vout.length < 2) return { findings };
 
+  // crypto-tracker: Whirlpool, Wasabi, WabiSabi, Stonewall and JoinMarket run on Bitcoin only;
+  // elsewhere equal outputs are a CoinJoin of unknown implementation.
+  const btc = has("bitcoin-wallets");
+
   // Whirlpool tx0 (premix) has equal outputs + fee + change, which mimics a
   // small JoinMarket round. It is reported by the premix heuristic instead.
-  if (detectTx0(tx)) return { findings };
+  if (btc && detectTx0(tx)) return { findings };
 
   // Whirlpool matches on the unfiltered outputs: a remixer paying back to its
   // own input address is still one of the pool's 5 equal outputs.
-  const whirlpool = detectWhirlpool(getSpendableOutputs(tx.vout).map((o) => o.value));
+  const whirlpool = btc && detectWhirlpool(getSpendableOutputs(tx.vout).map((o) => o.value));
   const { outputs: spendableOutputs, singleOwner } = coinJoinCandidates(tx);
   if (whirlpool) {
     findings.push(buildWhirlpoolFinding(whirlpool.pool, tx.status?.block_time));
@@ -211,7 +216,7 @@ export const analyzeCoinJoin: TxHeuristic = (tx, _rawHex, ctx: Ctx) => {
   }
 
   // Wasabi 1.x: base denomination + near-2x mixing levels
-  const wasabi1 = singleOwner ? null : detectWasabi1(spendableOutputs);
+  const wasabi1 = singleOwner || !btc ? null : detectWasabi1(spendableOutputs);
   if (wasabi1) {
     findings.push(buildWasabi1Finding(wasabi1, tx.vin.length, spendableOutputs.length));
     findings.push(buildExchangeFlaggingFinding());
@@ -219,7 +224,7 @@ export const analyzeCoinJoin: TxHeuristic = (tx, _rawHex, ctx: Ctx) => {
   }
 
   // WabiSabi (Wasabi 2.x): protocol structure + standard denominations, see wabisabi.ts
-  const wabiSabi = singleOwner ? null : classifyWabiSabi(tx);
+  const wabiSabi = singleOwner || !btc ? null : classifyWabiSabi(tx);
   const equalOutput = singleOwner ? null : detectEqualOutputs(spendableOutputs.map((o) => o.value));
 
   if (wabiSabi?.isWabiSabi) {
@@ -237,7 +242,8 @@ export const analyzeCoinJoin: TxHeuristic = (tx, _rawHex, ctx: Ctx) => {
 
   if (equalOutput) {
     const { count, denomination, total } = equalOutput;
-    const kind = classifyEqualOutputs(tx.vin, spendableOutputs, equalOutput);
+    const fits = classifyEqualOutputs(tx.vin, spendableOutputs, equalOutput);
+    const kind = btc ? fits : fits && "generic";
 
     if (kind === "joinmarket") {
       // Large JoinMarket CoinJoin: single denomination + change outputs
@@ -269,7 +275,7 @@ export const analyzeCoinJoin: TxHeuristic = (tx, _rawHex, ctx: Ctx) => {
   }
 
   // Stonewall detection
-  if (findings.length === 0) {
+  if (btc && findings.length === 0) {
     const stonewall = detectStonewall(tx.vin, spendableOutputs);
     if (stonewall) {
       findings.push(buildStonewallFinding(stonewall, tx.vin.length, tx.status?.block_time));
@@ -277,7 +283,7 @@ export const analyzeCoinJoin: TxHeuristic = (tx, _rawHex, ctx: Ctx) => {
   }
 
   // Simplified Stonewall
-  if (findings.length === 0) {
+  if (btc && findings.length === 0) {
     const simplified = detectSimplifiedStonewall(tx.vin, spendableOutputs);
     if (simplified) {
       findings.push(buildSimplifiedStonewallFinding(simplified.denomination));
@@ -285,7 +291,7 @@ export const analyzeCoinJoin: TxHeuristic = (tx, _rawHex, ctx: Ctx) => {
   }
 
   // Small-scale JoinMarket
-  if (findings.length === 0) {
+  if (btc && findings.length === 0) {
     const joinmarket = detectJoinMarket(tx.vin, spendableOutputs);
     if (joinmarket) {
       const takerChangeOutputs = spendableOutputs.filter((o) => o.value !== joinmarket.denomination);

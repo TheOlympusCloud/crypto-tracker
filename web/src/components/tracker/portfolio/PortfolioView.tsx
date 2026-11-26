@@ -10,6 +10,8 @@ import type { GraphNode, Verdict } from "@/lib/tracker/types";
 import { Amount, Badge, Bar, CARD, fake, held, readFiat, Segment, TrustBadge, VerdictBox, Worth } from "../bits";
 import { ChainMark, Coin } from "../Glyph";
 import { useTracker } from "../TrackerProvider";
+import { GradeChip } from "./Grade";
+import { GroupCards } from "./Groups";
 import { OriginBar } from "./Origins";
 import { assetTotals, type AssetTotal } from "./totals";
 import { judge } from "./verdict";
@@ -81,6 +83,14 @@ export function PortfolioView() {
               ))}
             </ul>
           </section>
+
+          {analysis.verdicts.length > 1 && (
+            <section>
+              <SectionHead kicker={t("tracker-portfolio:groups.kicker")} heading={t("tracker-portfolio:groups.heading")} />
+              <p className="mb-4 max-w-[70ch] text-sm text-muted">{t("tracker-portfolio:groups.hint")}</p>
+              <GroupCards />
+            </section>
+          )}
         </>
       )}
     </div>
@@ -283,6 +293,7 @@ function WalletCard({ v }: { v: Verdict }) {
       </div>
       <div className="flex flex-wrap items-center gap-2">
         <Badge public={n.public} />
+        <GradeChip address={address} />
         {fiat && v.checked === "none" ? (
           <span className="font-mono text-sm text-muted" title={t("tracker-portfolio:card.unchecked")}>
             –

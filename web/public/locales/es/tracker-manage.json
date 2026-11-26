@@ -33,6 +33,7 @@
   "chains.read": "se lee",
   "chains.needs_key": "necesita clave",
   "alerts.title": "Alertas",
+  "alerts.grade": "{{name}}: la calificación de privacidad baja de {{from}} a {{to}} ({{score}} de 100)",
   "alerts.label_one": "Alertas, {{count}} sin leer",
   "alerts.label_other": "Alertas, {{count}} sin leer"
 }

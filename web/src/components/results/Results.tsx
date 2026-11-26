@@ -33,6 +33,7 @@ import { ContextSection } from "./ContextSection";
 import { ServiceCheck } from "@/components/services/ServiceCheck";
 import { selectTxids, ADDRESS_CAP } from "@/lib/services/wabisabi-attribution";
 import { isCoinJoinTx } from "@/lib/analysis/heuristics/coinjoin";
+import { chain, explorerPage, scanConfig } from "@/lib/bitcoin/chain-profile";
 const BroadcastDialog = lazy(() => import("@/components/flows/BroadcastDialog").then((m) => ({ default: m.BroadcastDialog })));
 const BeforeYouSend = lazy(() => import("@/components/flows/BeforeYouSend").then((m) => ({ default: m.BeforeYouSend })));
 
@@ -132,8 +133,12 @@ export function Results(props: ResultsProps) {
     });
   }, []);
 
-  const explorerUrl = `${config.explorerUrl}/${inputType === "txid" ? "tx" : "address"}/${encodeURIComponent(query)}`;
-  const explorerLabel = customApiUrl
+  // crypto-tracker: Litecoin, Dogecoin and Bitcoin Cash open on their own explorer
+  const otherExplorer = chain().id === "bitcoin" ? null : explorerPage(inputType === "txid" ? "tx" : "address", query);
+  const explorerUrl = otherExplorer ?? `${config.explorerUrl}/${inputType === "txid" ? "tx" : "address"}/${encodeURIComponent(query)}`;
+  const explorerLabel = otherExplorer
+    ? t("results.viewOnCustom", { hostname: new URL(otherExplorer).hostname, defaultValue: "View on {{hostname}}" })
+    : customApiUrl
     ? t("results.viewOnCustom", { hostname: new URL(config.explorerUrl).hostname, defaultValue: "View on {{hostname}}" })
     : isUmbrel
       ? t("results.viewOnLocal", { defaultValue: "View on local mempool" })
@@ -231,7 +236,8 @@ export function Results(props: ResultsProps) {
           onScan={onScan}
         />
 
-        {!local && serviceTxids.length > 0 && (
+        {/* crypto-tracker: Bitcoin services only */}
+        {!local && serviceTxids.length > 0 && chain().id === "bitcoin" && (
           <ServiceCheck
             txids={serviceTxids}
             mode={inputType === "txid" ? "tx" : "wallet-like"}
@@ -249,7 +255,7 @@ export function Results(props: ResultsProps) {
           durationMs={durationMs}
           explorerUrl={local ? null : explorerUrl}
           explorerLabel={explorerLabel}
-          mempoolBaseUrl={config.mempoolBaseUrl}
+          mempoolBaseUrl={scanConfig(config).mempoolBaseUrl}
           findingCount={vm.visible.length}
           checkCount={checkCount}
         />

@@ -7,6 +7,9 @@
 # Each setting below can be given before the command, e.g. LXC_IP=192.168.1.50/24,gw=192.168.1.1
 set -euo pipefail
 
+MEMPOOL=${MEMPOOL:-0}                       # 1: a Bitcoin node of your own too (README)
+MEMPOOL_DISK=${MEMPOOL_DISK:-1200}          # GB added for it; node and index take ~950 today
+MEMPOOL_MIN_DISK=1100                       # GB: today's ~950 and a year of growth
 LXC_ID=${LXC_ID:-}                          # default: the next free id
 LXC_HOSTNAME=${LXC_HOSTNAME:-crypto-tracker}
 LXC_STORAGE=${LXC_STORAGE:-}                # default: the first storage that holds containers
@@ -14,8 +17,9 @@ LXC_TEMPLATE_STORAGE=${LXC_TEMPLATE_STORAGE:-local}
 LXC_BRIDGE=${LXC_BRIDGE:-vmbr0}
 LXC_IP=${LXC_IP:-dhcp}                      # or static: 192.168.1.50/24,gw=192.168.1.1
 LXC_DISK=${LXC_DISK:-16}                    # GB
-LXC_MEMORY=${LXC_MEMORY:-4096}              # MB, at least 3072: the build peaks at about 2.5 GB
-LXC_CORES=${LXC_CORES:-2}                   # at least 2
+if [ "$MEMPOOL" = 1 ]; then node_memory=8192 node_cores=4; else node_memory=4096 node_cores=2; fi
+LXC_MEMORY=${LXC_MEMORY:-$node_memory}      # MB, at least 3072: the build peaks at about 2.5 GB
+LXC_CORES=${LXC_CORES:-$node_cores}         # at least 2
 REPO_URL=${REPO_URL:-https://github.com/TheOlympusCloud/crypto-tracker}
 REPO_REF=${REPO_REF:-main}                  # a branch or a tag
 APP=/opt/crypto-tracker                     # inside the container
@@ -30,6 +34,13 @@ in_ct() { pct exec "$LXC_ID" -- "$@"; }
 command -v pct >/dev/null || die "pct not found: run it on a Proxmox VE host"
 [ "$LXC_MEMORY" -ge 3072 ] || die "LXC_MEMORY must be at least 3072 (MB): the build needs about 2.5 GB"
 [ "$LXC_CORES" -ge 2 ] || die "LXC_CORES must be at least 2"
+case $MEMPOOL in 0 | 1) ;; *) die "MEMPOOL must be 0 or 1" ;; esac
+disk=$LXC_DISK
+if [ "$MEMPOOL" = 1 ]; then
+    [ "$MEMPOOL_DISK" -ge "$MEMPOOL_MIN_DISK" ] ||
+        die "MEMPOOL_DISK must be at least $MEMPOOL_MIN_DISK (GB): bitcoind with its transaction index and Fulcrum's address index take about 950 GB, and grow about 90 GB a year"
+    disk=$((LXC_DISK + MEMPOOL_DISK))
+fi
 
 LXC_ID=${LXC_ID:-$(pvesh get /cluster/nextid)}
 if pct status "$LXC_ID" >/dev/null 2>&1; then
@@ -38,6 +49,12 @@ fi
 if [ -z "$LXC_STORAGE" ]; then
     LXC_STORAGE=$(pvesm status --content rootdir | awk 'NR == 2 { print $1 }')
     [ -n "$LXC_STORAGE" ] || die "no storage holds containers: set LXC_STORAGE"
+fi
+if [ "$MEMPOOL" = 1 ]; then
+    # The node fills its disk for real: thin provisioning does not make that room.
+    free=$(pvesm status --storage "$LXC_STORAGE" | awk 'NR == 2 { print int($6 / 1048576) }')
+    [ "${free:-0}" -ge "$disk" ] ||
+        die "storage $LXC_STORAGE has ${free:-0} GB free; a container with a Bitcoin node needs $disk GB (LXC_DISK $LXC_DISK + MEMPOOL_DISK $MEMPOOL_DISK): choose another LXC_STORAGE"
 fi
 
 echo "==> Debian 13 template"
@@ -57,7 +74,7 @@ pct create "$LXC_ID" "$LXC_TEMPLATE_STORAGE:vztmpl/$template" \
     --hostname "$LXC_HOSTNAME" --ostype debian --unprivileged 1 \
     --features nesting=1,keyctl=1 \
     --cores "$LXC_CORES" --memory "$LXC_MEMORY" --swap 512 \
-    --rootfs "$LXC_STORAGE:$LXC_DISK" \
+    --rootfs "$LXC_STORAGE:$disk" \
     --net0 "name=eth0,bridge=$LXC_BRIDGE,ip=$LXC_IP" \
     --onboot 1 --start 1
 # shellcheck disable=SC2016 # expanded inside the container
@@ -69,6 +86,10 @@ in_ct sh -c 'export DEBIAN_FRONTEND=noninteractive && apt-get update -q &&
     apt-get install -y -q --no-install-recommends ca-certificates curl git \
         docker.io docker-cli docker-compose docker-buildx'
 in_ct git clone -q --depth 1 --branch "$REPO_REF" "$REPO_URL" "$APP"
+if [ "$MEMPOOL" = 1 ]; then
+    # In .env, so that every later `docker compose up -d` (the Update line) keeps it on.
+    in_ct sh -c "echo COMPOSE_PROFILES=mempool >>$APP/.env"
+fi
 
 echo "==> Building and starting (several minutes the first time)"
 in_ct sh -c "cd $APP && docker compose up -d --build"
@@ -103,3 +124,12 @@ Running in container $LXC_ID ($LXC_HOSTNAME), started with the host.
   Update     pct exec $LXC_ID -- sh -c 'cd $APP && git pull -q --ff-only && docker compose up -d --build'
   Uninstall  pct stop $LXC_ID && pct destroy $LXC_ID      (deletes your wallets too)
 EOF
+if [ "$MEMPOOL" = 1 ]; then
+    cat <<EOF
+
+  Bitcoin node  syncing now: a day or more for the chain, then hours for its address index.
+                Until it is done, Bitcoin addresses wait for it (never a public server).
+  Its progress  pct exec $LXC_ID -- docker compose --project-directory $APP logs -f --tail 5 bitcoind fulcrum
+  Explorer      http://${ip:-<container ip>}:8080/      mempool, on your own node
+EOF
+fi

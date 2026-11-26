@@ -59,15 +59,29 @@ export const LINKS: Record<string, string> = {
   "common-input": HUES.amber500,
   change: HUES.cyan500,
   bridge: HUES.blue500,
+  "co-signer": HUES.green400,
+  delegation: HUES.emerald400,
+  "deposit-address": HUES.fuchsia600,
   "exchange-flow": HUES.pink500,
+  "fee-payer": HUES.blue300,
+  mixer: HUES.fuchsia400,
+  name: HUES.emerald600,
   swap: HUES.violet500,
+  "bridge-record": HUES.yellow600,
 };
 const DASHES: Record<string, number[]> = {
   "common-input": [6, 4],
   change: [2, 3],
   bridge: [10, 4],
+  "co-signer": [6, 2, 1, 2],
+  delegation: [2, 2, 8, 2],
+  "deposit-address": [8, 2, 2, 2],
   "exchange-flow": [10, 3, 2, 3],
+  "fee-payer": [1, 3],
+  mixer: [1, 2, 1, 6],
+  name: [6, 2, 6, 6],
   swap: [5, 2, 1, 2, 1, 2],
+  "bridge-record": [12, 2, 1, 2],
 };
 /** The selected path, in both graphs: one fat orange line. */
 export const PATH = COLORS.bitcoin;

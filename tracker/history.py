@@ -9,7 +9,8 @@ than one sync's budget), and `complete` whether the address's first transaction 
 from . import chains
 from . import db as database
 
-LISTS = ("txlist", "txlistinternal", "tokentx")  # an EVM address's three histories
+# An EVM address's histories. The NFT lists are read for my addresses only, never in a snapshot.
+LISTS = ("txlist", "txlistinternal", "tokentx", *chains.NFT_LISTS)
 
 
 def sources(address):
@@ -91,18 +92,27 @@ def _convert(source, address, items, keep):
     nothing = {"links": [], "coinjoins": [], "wide": [], "sent": []}
     if chain == "tron":
         native, tokens = (items, []) if action == "native" else ([], items)
-        return {"transfers": chains.tron_transfers(native, tokens)[0], **nothing}
+        return {
+            **nothing,
+            "transfers": chains.tron_transfers(native, tokens)[0],
+            "links": chains.tron_links(native),
+        }
     if chain == "solana":
         rows = [r for sig, tx in items if tx for r in chains.solana_transfers(address, sig, tx)]
-        return {"transfers": rows, **nothing}
+        links = [k for sig, tx in items if tx for k in chains.solana_links(address, sig, tx)]
+        return {**nothing, "transfers": rows, "links": links}
     if action == "transfers":
         lists = chains.nodereal_lists(chain, chains.evm_chains()[chain], address, items)
         return {**nothing, **lists}
     if action in LISTS:
         symbol = chains.evm_chains()[chain]["symbol"]
         mine = [it for it in items if action == "txlist" and str(it.get("from")).lower() == address]
+        if action in chains.NFT_LISTS:
+            rows = chains.nft_transfers(chain, items)
+        else:
+            rows = chains.evm_transfers(chain, symbol, items, action == "tokentx")
         return {
-            "transfers": chains.evm_transfers(chain, symbol, items, action == "tokentx"),
+            "transfers": rows,
             "links": [], "coinjoins": [], "wide": [],
             "sent": [it.get("hash") for it in mine],  # claims too: see tokens.judge
         }  # fmt: skip

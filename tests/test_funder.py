@@ -1,0 +1,359 @@
+import time
+
+import httpx
+import pytest
+from test_core import SOL, TRX, A, B, C, D, mine
+from test_exposure import label
+from test_lookup import PAYER, stored
+from test_lookup import client as fake_internet
+
+from tracker import chains, exposure, history, lookup
+from tracker.exposure import exchange, funder
+
+SOL2 = "4Nd1mBQtrMJVYVfKf2PJy9NZUZdTAsp7D4xWLs4gDB4T"  # another Solana wallet of mine
+FUNDER_TRX = "TXka46PPwttNPWfFDPtt3GUodbPThyufaV"  # hex 41ee...ee
+client = fake_internet  # a fixture: test_lookup's fake indexers, for a sync
+
+
+@pytest.fixture(autouse=True)
+def evm(monkeypatch):
+    monkeypatch.setattr(chains, "DELAY", 0)
+    monkeypatch.setattr(
+        chains,
+        "DEFAULT_EVM",
+        {
+            "ethereum": {"url": "http://eth/api", "symbol": "ETH"},
+            "polygon": {"url": "http://poly/api", "symbol": "POL"},
+            "bsc": {"url": "http://bsc/v1/key", "symbol": "BNB", "api": "nodereal"},
+        },
+    )
+
+
+def indexers(txlist=(), tron=(), signatures=0, down=()):
+    """The ascending reads a funder takes (an Etherscan-style txlist, a TronGrid page) and
+    the Solana busy check; the hosts `down` answer as a refusing Etherscan does. Every call
+    is kept, to be counted."""
+    calls = []
+
+    def answer(request):
+        calls.append(request)
+        p = request.url.params
+        if request.url.host in down:
+            return httpx.Response(
+                200, json={"status": "0", "message": "NOTOK", "result": "Max rate"}
+            )
+        if request.url.host in ("eth", "poly"):
+            assert (p["action"], p["sort"], p["address"]) == ("txlist", "asc", A)
+            return httpx.Response(200, json={"status": "1", "result": list(txlist)})
+        if request.url.host == "api.trongrid.io":
+            assert (p["only_to"], p["order_by"]) == ("true", "block_timestamp,asc")
+            return httpx.Response(200, json={"data": list(tron)})
+        if request.url.host == "api.mainnet-beta.solana.com":
+            return httpx.Response(200, json={"result": [{"signature": "s"}] * signatures})
+        return httpx.Response(404)
+
+    return httpx.Client(transport=httpx.MockTransport(answer)), calls
+
+
+def scan(db, http, address, chains_read=(), truncated=False, read=None, connections=()):
+    """The funder check alone, as exposure.run calls it, after a lookup read `read` that
+    lists `connections`."""
+    chains_read = list(chains_read) or [db_chain(address)]
+    if read is not None:
+        lookup.READS[(address, tuple(chains_read))] = (time.time(), read)
+    view = {"chains": chains_read, "truncated": truncated, "errors": []}
+    view["connections"] = list(connections)
+    return list(funder.check(exposure.Context(db, http, address, view)))
+
+
+def db_chain(address):
+    return "solana" if address in (SOL, SOL2) else "tron"
+
+
+def complete(db, address):
+    for source in history.sources(address):
+        history.put(db, address, source, complete=1)
+
+
+def transfer(db, chain, txid, src, dst, ts, asset="ETH", token=""):
+    db.execute(
+        "INSERT INTO transfer VALUES (?, ?, ?, ?, ?, ?, 1.0, ?)",
+        (chain, txid, src, dst, asset, token, ts),
+    )
+
+
+BINANCE = {"address": D, "label": "Binance 14", "category": "cex", "label_guess": False}
+COINBASE = {**BINANCE, "label": "Coinbase 3"}
+
+
+def row(src, dst, txid, ts, value=10**18):
+    return {"from": src, "to": dst, "hash": txid, "timeStamp": str(ts), "value": str(value)}
+
+
+def test_my_wallets_first_funder_comes_from_its_stored_history_without_a_call(db):
+    mine(db, A)
+    mine(db, D)
+    db.execute("UPDATE node SET name = 'Main' WHERE address = ?", (D,))
+    transfer(db, "ethereum", "h2", B, A, 9)  # later coins, from a stranger
+    transfer(db, "ethereum", "h1", D, A, 5)
+    transfer(db, "ethereum", "h3", D, A, 7, "USDC", "0x" + "c" * 40)  # a token: no gas
+    complete(db, A)
+    http, calls = indexers()
+
+    found = scan(db, http, A, ["ethereum", "bsc"], truncated=True)
+
+    assert found == [
+        (
+            "x-funder-mine",
+            {"funder": "Main", "chains": "Ethereum"},
+            [{"chain": "ethereum", "txid": "h1"}],
+        )
+    ]
+    assert calls == []
+
+
+def test_while_my_history_fills_in_the_funder_is_read_as_any_other_addresss(db):
+    mine(db, A)
+    transfer(db, "ethereum", "h2", B, A, 9)  # the oldest stored so far, but not the first
+    label(db, D, "Binance 14", "cex")
+    read = {"transfers": [("ethereum", "h1", D, A, "ETH", "", 2.0, 5)], "hub": False}
+    http, calls = indexers()
+
+    found = scan(db, http, A, ["ethereum"], read=read, connections=[BINANCE])
+
+    assert [(id, params) for id, params, _ in found] == [
+        ("x-funder-exchange", {"exchange": "Binance", "chains": "Ethereum"})
+    ]
+    assert calls == []
+
+
+def test_an_exchange_funder_found_in_the_read_takes_no_call(db):
+    label(db, D, "Binance 14", "cex")
+    read = {
+        "transfers": [
+            ("ethereum", "h4", B, A, "ETH", "", 1.0, 8),
+            ("ethereum", "h1", D, A, "ETH", "", 2.0, 5),
+            ("polygon", "p1", D, A, "POL", "", 3.0, 6),
+            ("ethereum", "h0", A, B, "ETH", "", 1.0, 4),  # sent, not received
+            ("ethereum", "h3", B, A, "USDC", "0x" + "c" * 40, 5.0, 3),  # a token pays no gas
+        ],
+        "hub": False,
+    }
+    http, calls = indexers()
+
+    found = scan(db, http, A, ["ethereum", "polygon"], read=read, connections=[BINANCE])
+
+    evidence = [{"chain": "ethereum", "txid": "h1"}, {"chain": "polygon", "txid": "p1"}]
+    params = {"exchange": "Binance", "chains": "Ethereum, Polygon"}
+    assert found == [("x-funder-exchange", params, evidence)]
+    assert calls == []
+
+
+def test_a_busy_address_takes_one_ascending_call_per_chain_and_none_on_nodereal(db):
+    label(db, D, "Coinbase 3", "cex")
+    http, calls = indexers(txlist=[row(B, A, "h5", 5, value=0), row(D, A, "h6", 6)])
+
+    found = scan(db, http, A, ["ethereum", "polygon", "bsc"], truncated=True)
+
+    assert [c.url.host for c in calls] == ["eth", "poly"]  # BNB Chain reads a day per call
+    assert found[0][:2] == (
+        "x-funder-exchange",
+        {"exchange": "Coinbase", "chains": "Ethereum, Polygon"},
+    )
+    assert found[1][:2] == (
+        "x-exchange-exposure",
+        {"exchange": "Coinbase", "count": 2, "chains": "Ethereum, Polygon"},
+    )
+
+
+def test_an_address_that_sent_before_any_coin_reached_it_by_txlist_names_no_funder(db):
+    """Its gas came by an internal transfer, which txlist does not show: unknown, not wrong."""
+    label(db, D, "Coinbase 3", "cex")
+    http, calls = indexers(txlist=[row(A, B, "h7", 5, value=0), row(D, A, "h8", 6)])  # a call
+    assert scan(db, http, A, ["ethereum"], truncated=True) == [] and len(calls) == 1
+
+
+def test_one_ascending_call_names_a_later_sender_when_the_first_coins_came_internally(db):
+    """shortcut in funder.oldest: txlist has no internal transfers. When the first coins came
+    by one (a bridge fill, a payout contract) and a normal transfer reached the address before
+    it sent anything, that later sender is named. Only a read that holds the whole history,
+    internal transfers included, avoids it."""
+    label(db, D, "Coinbase 3", "cex")
+    http, _ = indexers(txlist=[row(D, A, "h8", 6), row(A, B, "h9", 7, value=0)])
+    found = scan(db, http, A, ["ethereum"], truncated=True)
+    assert [(id, params["exchange"]) for id, params, _ in found] == [
+        ("x-funder-exchange", "Coinbase"),
+        ("x-exchange-exposure", "Coinbase"),  # the cut read did not hold the withdrawal
+    ]
+
+
+def test_a_chain_that_does_not_answer_spares_the_funders_of_the_others(db, monkeypatch):
+    label(db, D, "Coinbase 3", "cex")
+    http, _ = indexers(txlist=[row(D, A, "h6", 6)], down=("poly",))
+    view = {"chains": ["ethereum", "polygon"], "truncated": True, "errors": [], "connections": []}
+    view |= {"icon": "evm", "explorer_address": ""}
+    monkeypatch.setattr(lookup, "view", lambda *a, **k: view)
+    monkeypatch.setattr(exposure, "CHECKS", {"any": [funder.check], "evm": []})
+
+    r = exposure.run(db, http, A, ["ethereum", "polygon"])
+
+    assert [(f["id"], f["params"]["chains"]) for f in r["findings"]] == [
+        ("x-exchange-exposure", "Ethereum"),
+        ("x-funder-exchange", "Ethereum"),
+    ]
+    assert (
+        r["partial"]
+        and {"id": "error", "params": {"error": "funder: polygon: txlist: NOTOK Max rate"}}
+        in r["gaps"]
+    )
+
+
+@pytest.mark.parametrize("read", ["cut short", "whole"])
+def test_an_exchange_funder_counts_once_whether_or_not_the_read_held_its_withdrawal(
+    db, monkeypatch, read
+):
+    """A busy address's read holds only its newest transactions: the withdrawal that first
+    funded it, found by the ascending call, is then the only exchange exposure. B either way:
+    never A+ for a cut read, never counted twice for a whole one."""
+    label(db, D, "Coinbase 3", "cex")
+    http, _ = indexers(txlist=[row(D, A, "h6", 6)])
+    view = {"chains": ["ethereum"], "errors": [], "icon": "evm", "explorer_address": ""}
+    if read == "cut short":  # no labelled counterparty among its newest transactions
+        view |= {"truncated": True, "connections": []}
+    else:
+        withdrawal = ("ethereum", "h6", D, A, "ETH", "", 1.0, 6)
+        lookup.READS[(A, ("ethereum",))] = (time.time(), {"transfers": [withdrawal]})
+        received = [{"chain": "ethereum", "asset": "ETH", "amount": 1.0}]
+        evidence = [{"chain": "ethereum", "txid": "h6"}]
+        party = {**COINBASE, "count": 1, "sent": [], "received": received, "evidence": evidence}
+        view |= {"truncated": False, "connections": [party]}
+    monkeypatch.setattr(lookup, "view", lambda *a, **k: view)
+    monkeypatch.setattr(exposure, "CHECKS", {"any": [exchange.check], "evm": [funder.check]})
+
+    r = exposure.run(db, http, A, ["ethereum"])
+
+    by = {f["id"]: f for f in r["findings"]}
+    assert {id: f["scoreImpact"] for id, f in by.items()} == {
+        "x-exchange-exposure": -15,
+        "x-funder-exchange": 0,
+    }
+    cex = by["x-exchange-exposure"]
+    assert cex["params"] == {"exchange": "Coinbase", "count": 1, "chains": "Ethereum"}
+    assert [e["txid"] for e in cex["evidence"]] == ["h6"]
+    assert (r["score"], r["grade"], r["partial"]) == (78, "B", read == "cut short")
+
+
+@pytest.mark.parametrize(
+    ("rows", "id", "hub"), [(1000, "x-funder-shared", 0), (2, "x-funder-hub", 1)]
+)
+def test_an_evm_stranger_who_funded_two_wallets_of_mine_is_read_by_a_sync(
+    db, client, monkeypatch, rows, id, hub
+):
+    monkeypatch.setattr(chains, "EVM_ROWS", rows)  # 2: a full page, the stranger is busy
+    mine(db, A)
+    mine(db, C)
+    db.execute("UPDATE node SET name = 'Savings' WHERE address = ?", (C,))
+    transfer(db, "ethereum", "h1", D, A, 5)
+    transfer(db, "polygon", "p2", D, C, 6, "POL")  # the same stranger on another EVM chain
+    complete(db, A)
+    view = {"chains": ["ethereum", "polygon"], "truncated": False, "errors": [], "connections": []}
+    with httpx.Client() as http:  # the fake indexers of test_lookup
+        ctx = exposure.Context(db, http, A, view)
+        found = list(funder.check(ctx))
+
+    params = {"funder": D, "wallets": "Savings", "chains": "Ethereum"}
+    assert found == [(id, params, [{"chain": "ethereum", "txid": "h1"}])]
+    assert ctx.left == exposure.BUDGET - funder.SYNC * 2  # a sync of two readable chains
+    assert db.execute("SELECT hub FROM node WHERE address = ?", (D,)).fetchone()["hub"] == hub
+    # It is read once: the next scan knows the answer and spends nothing on it.
+    again = exposure.Context(db, None, A, view)
+    assert [f[0] for f in funder.check(again)] == [id] and again.left == exposure.BUDGET
+
+
+def test_the_tron_activator_is_one_ascending_call(db):
+    mine(db, FUNDER_TRX)
+    activation = {
+        "txID": "t1",
+        "block_timestamp": 5000,
+        "ret": [{"contractRet": "SUCCESS"}],
+        "raw_data": {
+            "contract": [
+                {
+                    "type": "TransferContract",
+                    "parameter": {
+                        "value": {
+                            "owner_address": "41" + "ee" * 20,
+                            "to_address": "4174472e7d35395a6b5add427eecb7f4b62ad2b071",
+                            "amount": 1_000_000,
+                        }
+                    },
+                }
+            ]
+        },
+    }
+    http, calls = indexers(tron=[activation])
+
+    found = scan(db, http, TRX, truncated=True)
+
+    assert found == [
+        (
+            "x-funder-mine",
+            {"funder": FUNDER_TRX, "chains": "Tron"},
+            [{"chain": "tron", "txid": "t1"}],
+        )
+    ]
+    assert len(calls) == 1 and calls[0].url.params["limit"] == "1"
+
+
+def test_a_solana_funder_comes_from_a_whole_read_and_is_left_out_of_a_cut_one(db):
+    mine(db, PAYER)
+    read = {"transfers": [("solana", "sig", PAYER, SOL, "SOL", "", 1.0, 1794188391)], "hub": False}
+    http, calls = indexers()
+    assert scan(db, http, SOL, read=read)[0][0] == "x-funder-mine"
+    # No call reads a Solana address from its first transaction: the scan is partly checked.
+    assert scan(db, http, SOL, truncated=True) == [] and calls == []
+
+
+@pytest.mark.parametrize(
+    ("signatures", "id", "hub"), [(1000, "x-funder-hub", 1), (10, "x-funder-shared", 0)]
+)
+def test_a_stranger_who_funded_two_wallets_of_mine_is_read_first(db, signatures, id, hub):
+    mine(db, SOL)
+    mine(db, SOL2)
+    db.execute("UPDATE node SET name = 'Trading' WHERE address = ?", (SOL2,))
+    transfer(db, "solana", "s1", PAYER, SOL, 1, "SOL")
+    transfer(db, "solana", "s2", PAYER, SOL2, 2, "SOL")
+    complete(db, SOL)
+    http, calls = indexers(signatures=signatures)
+
+    found = scan(db, http, SOL)
+
+    params = {"funder": PAYER, "wallets": "Trading", "chains": "Solana"}
+    assert found == [(id, params, [{"chain": "solana", "txid": "s1"}])]
+    assert len(calls) == 1  # the busy check
+    row = db.execute("SELECT hub FROM node WHERE address = ?", (PAYER,)).fetchone()
+    assert (row["hub"] if row else 0) == hub
+
+
+@pytest.mark.parametrize("case", ["another address", "a lone wallet of mine"])
+def test_a_stranger_is_read_only_when_it_funded_two_wallets_of_mine(db, case):
+    mine(db, SOL2)
+    if case == "another address":  # a scan of it makes no call beyond one per chain
+        transfer(db, "solana", "s2", PAYER, SOL2, 2, "SOL")
+    else:
+        mine(db, SOL)
+        complete(db, SOL)
+        transfer(db, "solana", "s1", PAYER, SOL, 1, "SOL")
+    read = {"transfers": [("solana", "s1", PAYER, SOL, "SOL", "", 1.0, 1)], "hub": False}
+    http, calls = indexers(signatures=1000)
+    before = stored(db)
+    assert scan(db, http, SOL, read=read) == [] and calls == [] and stored(db) == before
+
+
+def test_the_check_is_registered_for_every_account_chain():
+    # It reads the address itself: a wallet's grade runs it once per address, not per chain.
+    assert all(funder.check in exposure.CHECKS[f] for f in exposure.FAMILIES)
+    assert funder.check not in exposure.CHECKS["any"]
+    assert {"x-funder-mine", "x-funder-exchange", "x-funder-shared", "x-funder-hub"} <= set(
+        exposure.IMPACT
+    )

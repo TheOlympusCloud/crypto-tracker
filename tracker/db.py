@@ -22,8 +22,10 @@ CREATE TABLE IF NOT EXISTS price(
   key TEXT PRIMARY KEY, usd REAL, ts INT, symbol TEXT, confidence REAL);
 CREATE TABLE IF NOT EXISTS snapshot(ts INT PRIMARY KEY, private REAL, public REAL, currency TEXT);
 CREATE TABLE IF NOT EXISTS alert(
-  id INTEGER PRIMARY KEY, ts INT, wallet TEXT, other TEXT, text TEXT, seen INT NOT NULL DEFAULT 0);
+  id INTEGER PRIMARY KEY, ts INT, wallet TEXT, other TEXT, text TEXT, seen INT NOT NULL DEFAULT 0,
+  kind TEXT NOT NULL DEFAULT 'link', params TEXT);
 CREATE TABLE IF NOT EXISTS known_link(a TEXT, b TEXT, confidence REAL, PRIMARY KEY(a, b));
+CREATE TABLE IF NOT EXISTS known_grade(wallet TEXT PRIMARY KEY, grade TEXT);
 CREATE TABLE IF NOT EXISTS transfer(
   chain TEXT, txid TEXT, src TEXT, dst TEXT, asset TEXT, token TEXT, amount REAL, ts INT,
   PRIMARY KEY(chain, txid, src, dst, token));
@@ -44,6 +46,7 @@ CREATE TABLE IF NOT EXISTS sent(address TEXT, txid TEXT, PRIMARY KEY(address, tx
 CREATE TABLE IF NOT EXISTS wide(address TEXT, txid TEXT, PRIMARY KEY(address, txid));
 CREATE TABLE IF NOT EXISTS swap(
   protocol TEXT, sender TEXT, recipient TEXT, tx_in TEXT, tx_out TEXT,
+  chain TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '',
   PRIMARY KEY(protocol, tx_in, recipient));
 CREATE TABLE IF NOT EXISTS history(
   address TEXT, source TEXT, oldest TEXT, newest INT, oldest_ts INT, total INT,
@@ -52,6 +55,16 @@ CREATE TABLE IF NOT EXISTS history(
 CREATE TABLE IF NOT EXISTS watch(address TEXT PRIMARY KEY, ts INT);
 CREATE TABLE IF NOT EXISTS coinjoin(chain TEXT, txid TEXT, PRIMARY KEY(chain, txid));
 CREATE TABLE IF NOT EXISTS failure(source TEXT PRIMARY KEY, error TEXT, ts INT);
+CREATE TABLE IF NOT EXISTS name(address TEXT, chain TEXT, name TEXT, listed TEXT,
+  PRIMARY KEY(address, chain));
+CREATE TABLE IF NOT EXISTS receipt(chain TEXT, txid TEXT, PRIMARY KEY(chain, txid));
+CREATE TABLE IF NOT EXISTS quiet(address TEXT PRIMARY KEY, ts INT);
+CREATE TABLE IF NOT EXISTS mixer_leg(chain TEXT, txid TEXT, pool TEXT, address TEXT, side TEXT,
+  block INT, PRIMARY KEY(chain, txid, pool, address, side));
+CREATE TABLE IF NOT EXISTS mixer_scan(chain TEXT, pool TEXT, low INT, high INT, deposits INT,
+  page INT, PRIMARY KEY(chain, pool, low, high));
+CREATE TABLE IF NOT EXISTS approval(address TEXT, chain TEXT, token TEXT, spender TEXT, txid TEXT,
+  PRIMARY KEY(address, chain, token, spender));
 """
 
 EVM_RE = re.compile(r"0x[0-9a-fA-F]{40}")
@@ -74,15 +87,35 @@ def connect(path=None):
         db.execute("ALTER TABLE hdwallet ADD COLUMN error TEXT")
     if "type" not in [r["name"] for r in db.execute("PRAGMA table_info(label)")]:
         db.execute("ALTER TABLE label ADD COLUMN type TEXT NOT NULL DEFAULT ''")
+    if "kind" not in [r["name"] for r in db.execute("PRAGMA table_info(alert)")]:
+        db.execute("ALTER TABLE alert ADD COLUMN kind TEXT NOT NULL DEFAULT 'link'")
+        db.execute(
+            "ALTER TABLE alert ADD COLUMN params TEXT"
+        )  # a grade alert's, worded by the page
     if "cut" not in [r["name"] for r in db.execute("PRAGMA table_info(node)")]:
         db.execute("ALTER TABLE node ADD COLUMN cut INT NOT NULL DEFAULT 0")
     have = {r["name"] for r in db.execute("PRAGMA table_info(balance)")}
     for column in ("name", "trust", "reason"):  # databases from before the token check
         if column not in have:
             db.execute(f"ALTER TABLE balance ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
+    have = {r["name"] for r in db.execute("PRAGMA table_info(swap)")}
+    for column in ("chain", "note"):  # databases from before bridge records
+        if column not in have:
+            db.execute(f"ALTER TABLE swap ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
     if "symbol" not in [r["name"] for r in db.execute("PRAGMA table_info(price)")]:
         db.execute("DROP TABLE price")  # only a cache; rebuilt with the new columns
         db.executescript(SCHEMA)
+    if not db.execute("SELECT 1 FROM meta WHERE key = 'solana_reread'").fetchone():
+        # Solana histories read before signer links and rent refunds are read once more, from
+        # the newest; the transfers stored stay.
+        db.execute("DELETE FROM history WHERE source = 'solana'")
+        db.execute("INSERT OR IGNORE INTO meta VALUES ('solana_reread', '1')")
+        db.commit()
+    if not db.execute("SELECT 1 FROM meta WHERE key = 'tron_reread'").fetchone():
+        # Tron native lists read before delegation links are read once more, from the newest.
+        db.execute("DELETE FROM history WHERE source = 'tron:native'")
+        db.execute("INSERT OR IGNORE INTO meta VALUES ('tron_reread', '1')")
+        db.commit()
     return db
 
 

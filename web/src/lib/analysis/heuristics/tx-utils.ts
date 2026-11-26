@@ -1,4 +1,5 @@
 import type { MempoolTransaction, MempoolVin, MempoolVout } from "@/lib/api/types";
+import { has } from "@/lib/bitcoin/chain-profile";
 
 /** Check if a transaction is a coinbase (block reward) transaction. */
 export function isCoinbase(tx: MempoolTransaction): boolean {
@@ -18,9 +19,9 @@ export function isOpReturnOutput(o: { scriptpubkey_type?: string; scriptpubkey?:
   return o.scriptpubkey_type === "op_return" || (o.scriptpubkey !== undefined && isOpReturn(o.scriptpubkey));
 }
 
-/** BIP125 opt-in RBF: any non-coinbase input with nSequence below 0xfffffffe. */
+/** BIP125 opt-in RBF: any non-coinbase input with nSequence below 0xfffffffe. Never on a chain without RBF. */
 export function isRbfSignaling(vin: MempoolVin[]): boolean {
-  return vin.some((v) => !v.is_coinbase && v.sequence < 0xfffffffe);
+  return has("rbf") && vin.some((v) => !v.is_coinbase && v.sequence < 0xfffffffe);
 }
 
 /** Distinct addresses the inputs spend from (inputs without a known prevout address are skipped). */

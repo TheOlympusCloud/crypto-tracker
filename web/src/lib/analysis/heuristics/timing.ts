@@ -1,4 +1,5 @@
 import type { TxHeuristic } from "./types";
+import { chain } from "@/lib/bitcoin/chain-profile";
 import type { Finding } from "@/lib/types";
 import { isCoinbase } from "./tx-utils";
 
@@ -67,7 +68,8 @@ export const analyzeTiming: TxHeuristic = (tx) => {
       const diff = status.block_height - tx.locktime;
       // Bitcoin Core randomly subtracts 0-10 from current height for anti-fee-sniping.
       // Anything beyond ~20 blocks (~3 hours) suggests delayed broadcast.
-      if (diff > 20) {
+      // crypto-tracker: the same time on chains with other block times (chain-profile.ts)
+      if (diff > (20 * 600) / chain().blockSeconds) {
         findings.push({
           id: "timing-stale-locktime",
           severity: "low",

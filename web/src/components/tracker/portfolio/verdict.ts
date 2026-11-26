@@ -1,5 +1,5 @@
 import { day } from "@/lib/tracker/format";
-import { pct, type VerdictLevel } from "@/lib/tracker/kinds";
+import { chainLabel, pct, short, type VerdictLevel } from "@/lib/tracker/kinds";
 import type { Verdict } from "@/lib/tracker/types";
 
 /** `t` from useTranslation, or any function of the same shape. */
@@ -42,6 +42,10 @@ export function caveats(v: Verdict, nameOf: (address: string) => string, maxHops
   if (c.counterparties > c.expanded)
     out.push(t("tracker-portfolio:caveat.unexpanded", { count: c.counterparties, left: c.counterparties - c.expanded }));
   for (const s of v.shared_services) out.push(t("tracker-portfolio:caveat.shared", { name: nameOf(s.wallet), services: s.services.join(", ") }));
+  for (const b of v.bridged ?? []) {
+    const key = b.closed ? "bridged_closed" : b.linked ? "bridged" : "bridged_busy";
+    out.push(t(`tracker-portfolio:caveat.${key}`, { address: short(b.address), chain: chainLabel(b.chain), protocol: b.protocol }));
+  }
   const exchanges = v.services.filter((s) => s.category === "cex").map((s) => s.name);
   if (exchanges.length && !v.public) out.push(t("tracker-portfolio:caveat.exchange", { names: exchanges.join(", ") }));
   if (v.services.some((s) => s.category === "mixer")) out.push(t("tracker-portfolio:caveat.mixer"));

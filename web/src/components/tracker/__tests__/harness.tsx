@@ -14,7 +14,8 @@ import analysisFixture from "./fixtures/analysis.json";
  *   renderTracker(<PortfolioView />, { openWallet: vi.fn() });
  */
 export const GRAPH = graphFixture as Graph;
-export const ANALYSIS = analysisFixture as Analysis;
+// Through unknown: JSON gives the findings' params of different checks no common type.
+export const ANALYSIS = analysisFixture as unknown as Analysis;
 
 /** A tracker over the fixtures with every action a mock; `over` replaces any part. */
 export function fakeTracker(over: Partial<Tracker> = {}): Tracker {
@@ -39,8 +40,9 @@ export function fakeTracker(over: Partial<Tracker> = {}): Tracker {
     selectNode: vi.fn(),
     scope: null,
     setScope: vi.fn(),
-    shownPath: [],
+    shownPaths: [],
     showPath: vi.fn(),
+    showGroup: vi.fn(),
     collapsed: new Set(),
     toggleFold: vi.fn(),
     minConf: 0,

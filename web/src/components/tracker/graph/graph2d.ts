@@ -223,19 +223,20 @@ export function create2d(el: HTMLElement, { onSelect }: RendererOptions): Render
   }
 
   let timers: ReturnType<typeof setTimeout>[] = [];
-  function highlight(path: string[]) {
+  function highlight(paths: string[][]) {
     timers.forEach(clearTimeout);
     timers = [];
     cy.elements().removeClass("faded path").removeData("hop thick hopFont");
-    if (path.length < 2) return;
+    if (paths.flat().length < 2) return;
     const still = reducedMotion();
     let keep = cy.collection();
-    path.forEach((a, i) => {
+    for (const path of paths) path.forEach((a, i) => {
       keep = keep.union(cy.getElementById(a));
       if (!i) return;
       // The path draws itself hop by hop.
       const hop = cy.getElementById(a).edgesWith(cy.getElementById(path[i - 1] ?? ""));
-      hop.data({ hop: String(i), thick: PATH_WIDTH, hopFont: HOP_FONT });
+      // Several paths (a group's links) have no one order to number.
+      hop.data({ hop: paths.length > 1 ? "" : String(i), thick: PATH_WIDTH, hopFont: HOP_FONT });
       if (still) hop.addClass("path");
       else timers.push(setTimeout(() => hop.addClass("path"), (i - 1) * HOP));
       keep = keep.union(hop);

@@ -9,7 +9,8 @@ import { resolvePlaceholder } from "@/hooks/walletVault";
 const subscribeNoop = () => () => {};
 
 interface HashRoutingCallbacks {
-  analyze: (input: string) => Promise<void>;
+  /** `chain`: the hash's &chain= (crypto-tracker: a Litecoin, Dogecoin or Bitcoin Cash scan). */
+  analyze: (input: string, opts?: { chain?: string }) => Promise<void>;
   walletAnalyze: (input: string) => Promise<void>;
   reset: () => void;
   walletReset: () => void;
@@ -131,7 +132,8 @@ export function useHashRouting(callbacks: HashRoutingCallbacks): HashRoutingResu
         initialHashProcessedRef.current = true;
         walletResetRef.current();
         // Fire-and-forget: the callee catches its own errors.
-        void analyzeRef.current(input);
+        const chain = params.get("chain");
+        void (chain ? analyzeRef.current(input, { chain }) : analyzeRef.current(input));
       }
     }
 

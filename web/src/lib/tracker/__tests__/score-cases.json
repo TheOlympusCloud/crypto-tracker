@@ -1,0 +1,252 @@
+[
+ {
+  "name": "nothing found",
+  "findings": [],
+  "score": 93,
+  "grade": "A+",
+  "order": []
+ },
+ {
+  "name": "one exchange",
+  "findings": [
+   {
+    "id": "x-exchange-exposure",
+    "severity": "high",
+    "scoreImpact": -15
+   }
+  ],
+  "score": 78,
+  "grade": "B",
+  "order": [
+   "x-exchange-exposure"
+  ]
+ },
+ {
+  "name": "grade bound at 90",
+  "findings": [
+   {
+    "id": "x-flagged-counterparty",
+    "severity": "high",
+    "scoreImpact": -3
+   }
+  ],
+  "score": 90,
+  "grade": "A+",
+  "order": [
+   "x-flagged-counterparty"
+  ]
+ },
+ {
+  "name": "grade bound at 89",
+  "findings": [
+   {
+    "id": "x-flagged-counterparty",
+    "severity": "high",
+    "scoreImpact": -4
+   }
+  ],
+  "score": 89,
+  "grade": "B",
+  "order": [
+   "x-flagged-counterparty"
+  ]
+ },
+ {
+  "name": "grade bound at 75",
+  "findings": [
+   {
+    "id": "x-flagged-counterparty",
+    "severity": "high",
+    "scoreImpact": -18
+   }
+  ],
+  "score": 75,
+  "grade": "B",
+  "order": [
+   "x-flagged-counterparty"
+  ]
+ },
+ {
+  "name": "grade bound at 74",
+  "findings": [
+   {
+    "id": "x-flagged-counterparty",
+    "severity": "high",
+    "scoreImpact": -19
+   }
+  ],
+  "score": 74,
+  "grade": "C",
+  "order": [
+   "x-flagged-counterparty"
+  ]
+ },
+ {
+  "name": "grade bound at 50",
+  "findings": [
+   {
+    "id": "x-flagged-counterparty",
+    "severity": "high",
+    "scoreImpact": -43
+   }
+  ],
+  "score": 50,
+  "grade": "C",
+  "order": [
+   "x-flagged-counterparty"
+  ]
+ },
+ {
+  "name": "grade bound at 49",
+  "findings": [
+   {
+    "id": "x-flagged-counterparty",
+    "severity": "high",
+    "scoreImpact": -44
+   }
+  ],
+  "score": 49,
+  "grade": "D",
+  "order": [
+   "x-flagged-counterparty"
+  ]
+ },
+ {
+  "name": "grade bound at 25",
+  "findings": [
+   {
+    "id": "x-flagged-counterparty",
+    "severity": "high",
+    "scoreImpact": -68
+   }
+  ],
+  "score": 25,
+  "grade": "D",
+  "order": [
+   "x-flagged-counterparty"
+  ]
+ },
+ {
+  "name": "grade bound at 24",
+  "findings": [
+   {
+    "id": "x-flagged-counterparty",
+    "severity": "high",
+    "scoreImpact": -69
+   }
+  ],
+  "score": 24,
+  "grade": "F",
+  "order": [
+   "x-flagged-counterparty"
+  ]
+ },
+ {
+  "name": "clamped at 0",
+  "findings": [
+   {
+    "id": "a",
+    "severity": "critical",
+    "scoreImpact": -60
+   },
+   {
+    "id": "b",
+    "severity": "critical",
+    "scoreImpact": -50
+   }
+  ],
+  "score": 0,
+  "grade": "F",
+  "order": [
+   "a",
+   "b"
+  ]
+ },
+ {
+  "name": "clamped at 100",
+  "findings": [
+   {
+    "id": "a",
+    "severity": "good",
+    "scoreImpact": 10
+   }
+  ],
+  "score": 100,
+  "grade": "A+",
+  "order": [
+   "a"
+  ]
+ },
+ {
+  "name": "worst severity first, then the largest impact",
+  "findings": [
+   {
+    "id": "a",
+    "severity": "low",
+    "scoreImpact": -2
+   },
+   {
+    "id": "b",
+    "severity": "high",
+    "scoreImpact": -5
+   },
+   {
+    "id": "c",
+    "severity": "high",
+    "scoreImpact": -15
+   },
+   {
+    "id": "d",
+    "severity": "good",
+    "scoreImpact": 3
+   },
+   {
+    "id": "e",
+    "severity": "medium",
+    "scoreImpact": -10
+   },
+   {
+    "id": "f",
+    "severity": "critical",
+    "scoreImpact": -1
+   }
+  ],
+  "score": 63,
+  "grade": "C",
+  "order": [
+   "f",
+   "c",
+   "b",
+   "e",
+   "a",
+   "d"
+  ]
+ },
+ {
+  "name": "ties keep their order",
+  "findings": [
+   {
+    "id": "p",
+    "severity": "high",
+    "scoreImpact": -5
+   },
+   {
+    "id": "q",
+    "severity": "high",
+    "scoreImpact": 5
+   },
+   {
+    "id": "r",
+    "severity": "high",
+    "scoreImpact": -5
+   }
+  ],
+  "score": 88,
+  "grade": "B",
+  "order": [
+   "p",
+   "q",
+   "r"
+  ]
+ }
+]

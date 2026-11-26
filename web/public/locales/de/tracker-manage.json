@@ -33,6 +33,7 @@
   "chains.read": "wird gelesen",
   "chains.needs_key": "braucht Schlüssel",
   "alerts.title": "Warnungen",
+  "alerts.grade": "{{name}}: Privatsphäre-Note gesunken von {{from}} auf {{to}} ({{score}} von 100)",
   "alerts.label_one": "Warnungen, {{count}} ungelesen",
   "alerts.label_other": "Warnungen, {{count}} ungelesen"
 }
