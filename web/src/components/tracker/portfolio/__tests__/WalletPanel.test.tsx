@@ -129,6 +129,18 @@ describe("WalletPanel", () => {
     expect(screen.getByText("First funded by your wallet Savings")).toBeTruthy();
   });
 
+  it("says a finding shown on several chains counts once in the grade", () => {
+    const hot = ANALYSIS.exposure![HOT]!;
+    const once = "A finding on several chains counts once in the grade, at its worst.";
+    renderTracker(<WalletPanel address={HOT} />);
+    expect(screen.queryByText(once)).toBeNull(); // each finding on one chain only
+    cleanup();
+    const exposure = { ...ANALYSIS.exposure, [HOT]: { ...hot, by_chain: { ...hot.by_chain, base: [hot.findings[0]!] } } };
+    renderTracker(<WalletPanel address={HOT} />, { analysis: { ...ANALYSIS, exposure } });
+    expect(screen.getByRole("heading", { level: 4, name: "Base" })).toBeTruthy();
+    expect(screen.getByText(once)).toBeTruthy();
+  });
+
   it("shows open approvals and activity hours apart, under security and habits", () => {
     const hot = ANALYSIS.exposure![HOT]!;
     const base = { ...hot.findings[0]!, severity: "low" as const, evidence: [] };

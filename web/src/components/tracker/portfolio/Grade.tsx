@@ -59,6 +59,9 @@ export function WalletGrade({ address, chain }: { address: string; chain: string
   const habits = Object.values(e.by_chain)
     .flat()
     .filter((f) => HABITS.has(f.id));
+  // Each row shows its own impact, but the score counts each finding once, at its worst.
+  const ids = Object.values(e.by_chain).flatMap((found) => found.map((f) => f.id));
+  const repeated = new Set(ids).size < ids.length;
   return (
     <div>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -105,6 +108,7 @@ export function WalletGrade({ address, chain }: { address: string; chain: string
           </ul>
         </section>
       )}
+      {repeated && <p className="mt-2 text-xs text-muted">{t("tracker-exposure:wallet.once")}</p>}
     </div>
   );
 }

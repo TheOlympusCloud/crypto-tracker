@@ -83,6 +83,7 @@
   "wallet.habits": "Sicherheit und Gewohnheiten",
   "wallet.none": "Kein Befund bei den Prüfungen hier. Das ist kein Beweis für Privatsphäre.",
   "wallet.not_deep": "Wallet-Prüfungen; Adressen nicht tiefengeprüft",
+  "wallet.once": "Ein Befund auf mehreren Chains zählt nur einmal in der Note, mit seinem stärksten Abzug.",
   "wallet.score": "{{score}} von 100",
   "wallet.title": "Privatsphäre-Note",
   "wallet.unchecked": "Noch keine Note: synchronisiere diese Wallet"

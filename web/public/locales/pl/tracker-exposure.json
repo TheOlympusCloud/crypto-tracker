@@ -101,6 +101,7 @@
   "wallet.habits": "Bezpieczeństwo i nawyki",
   "wallet.none": "Brak ustaleń w sprawdzeniach wykonanych tutaj. To nie jest dowód prywatności.",
   "wallet.not_deep": "Sprawdzenia portfela; adresy bez dokładnego skanu",
+  "wallet.once": "Ustalenie w kilku sieciach liczy się do oceny tylko raz, z najgorszym wpływem.",
   "wallet.score": "{{score}} na 100",
   "wallet.title": "Ocena prywatności",
   "wallet.unchecked": "Jeszcze bez oceny: zsynchronizuj ten portfel"

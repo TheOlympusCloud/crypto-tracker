@@ -83,6 +83,7 @@
   "wallet.habits": "Security and habits",
   "wallet.none": "No finding among the checks made here. That is no proof of privacy.",
   "wallet.not_deep": "Wallet checks; addresses not deep-scanned",
+  "wallet.once": "A finding on several chains counts once in the grade, at its worst.",
   "wallet.score": "{{score}} of 100",
   "wallet.title": "Privacy grade",
   "wallet.unchecked": "No grade yet: sync this wallet"

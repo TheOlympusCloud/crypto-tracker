@@ -83,6 +83,7 @@
   "wallet.habits": "Segurança e hábitos",
   "wallet.none": "Nenhuma constatação nas verificações feitas aqui. Isso não prova que ela é privada.",
   "wallet.not_deep": "Verificações da carteira; endereços sem análise a fundo",
+  "wallet.once": "Uma constatação em várias cadeias conta uma só vez na nota, com o seu pior impacto.",
   "wallet.score": "{{score}} de 100",
   "wallet.title": "Nota de privacidade",
   "wallet.unchecked": "Ainda sem nota: sincronize esta carteira"

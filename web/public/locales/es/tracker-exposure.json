@@ -83,6 +83,7 @@
   "wallet.habits": "Seguridad y hábitos",
   "wallet.none": "Ningún hallazgo en las comprobaciones hechas aquí. Eso no demuestra que sea privada.",
   "wallet.not_deep": "Comprobaciones de la cartera; direcciones sin análisis a fondo",
+  "wallet.once": "Un hallazgo en varias cadenas cuenta una sola vez en la calificación, con su peor impacto.",
   "wallet.score": "{{score}} de 100",
   "wallet.title": "Calificación de privacidad",
   "wallet.unchecked": "Aún sin calificación: sincroniza esta cartera"
