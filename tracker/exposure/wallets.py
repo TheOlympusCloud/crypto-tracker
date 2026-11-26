@@ -85,6 +85,10 @@ def scores(db, verdicts):
     graph.verdicts at the default hops, so the grade is always the one alerts compare."""
     parties, paid = _parties(db, {a: v["wallet"] for v in verdicts for a in v["addresses"]})
     names = {v["wallet"]: v["name"] or v["address"][:12] for v in verdicts}
+    own = {
+        r["address"]: describe(r)
+        for r in db.execute(f"SELECT * FROM label WHERE address IN {MINE}")
+    }
     out = {}
     for v in verdicts:
         if v["checked"] == "none":
@@ -108,7 +112,11 @@ def scores(db, verdicts):
         for chain in sorted(by):  # one finding per chain, counted over all the wallet's addresses
             ctx = _context(db, v["address"], {"connections": list(by[chain].values())})
             found += [(chain, f) for f in checked(ctx, CHECKS["any"], gaps)]
-        for address in v["addresses"]:  # its family's checks read the address on all its chains
+        for address in v["addresses"]:
+            # What the address is itself (on a sanctions list, frozen), as a scan's view says.
+            ctx = _context(db, address, {"connections": [], **own.get(address, {})})
+            found += [(ctx.chain, f) for f in checked(ctx, CHECKS["any"], gaps)]
+            # Its family's checks read the address on all its chains.
             ctx = _context(db, address, {"chains": sorted(by), "connections": everything})
             found += [(ctx.chain, f) for f in checked(ctx, CHECKS.get(ctx.chain, []), gaps)]
         reused = [

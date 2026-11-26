@@ -269,6 +269,21 @@ def test_a_wallets_names_come_from_its_last_lookup_and_one_never_looked_up_says_
     assert got[B]["gaps"] == [{"id": "unread", "params": {"check": "names"}}]
 
 
+def test_a_wallet_on_a_sanctions_list_or_frozen_says_so_once(db):
+    account(db, A)
+    label(db, A, "Tether: frozen", "flagged")
+    label(db, BINANCE, "Binance 14", "cex")
+    transfer(db, "ethereum", "1", BINANCE, A, 1, ts=5)
+    transfer(db, "polygon", "2", BINANCE, A, 1, ts=6, asset="POL")
+
+    got = scores(db)[A]
+
+    rows = [(c, f["id"]) for c, found in got["by_chain"].items() for f in found]
+    assert rows.count(("evm", "x-flagged-address")) == 1
+    assert [c for c, id in rows if id == "x-flagged-address"] == ["evm"]
+    assert got["score"] == 93 - 20 - 15 - 2  # and on two EVM chains
+
+
 @pytest.mark.parametrize(
     "module", ["tracker.app", "tracker.graph", "tracker.exposure", "tracker.exposure.wallets"]
 )

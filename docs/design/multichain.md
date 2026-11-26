@@ -306,7 +306,8 @@ It scores:
 - the server-side findings of its addresses, on every chain, read from stored data: the
   checks of the counterparties once per chain over all the wallet's addresses (an HD wallet
   paid by one exchange from three addresses has one exchange finding, for three transfers),
-  a family's checks (first funder, the same address on several chains) once per address,
+  what an address is itself (on a sanctions list, frozen) and a family's checks (first
+  funder, names, the same address on several chains) once per address,
   and for UTXO addresses their reuse. An exchange that first funded an address costs
   nothing more: its withdrawal is one of the transfers exchange exposure counts;
 - each finding id once, with its worst impact across the wallet's addresses: one exchange
