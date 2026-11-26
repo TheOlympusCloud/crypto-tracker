@@ -8,6 +8,7 @@
  */
 
 import type { AddressFilter } from "./types";
+import { has } from "@/lib/bitcoin/chain-profile";
 
 /** Category byte -> EntityCategory string. Must match build script CATEGORY_BYTE. */
 const CATEGORY_FROM_BYTE = [
@@ -154,7 +155,7 @@ export function setEntityIndex(index: EntityIndex | null): void {
  * Returns the entity ID index, or -1 if not found.
  */
 function searchEntityIndex(address: string): number {
-  if (!entityIndexInstance) return -1;
+  if (!entityIndexInstance || !has("entity-index")) return -1; // crypto-tracker: Bitcoin data only
 
   const { hashes, entityIds, hashSeed } = entityIndexInstance;
   const hash = fnv1a(normalizeAddress(address), hashSeed);

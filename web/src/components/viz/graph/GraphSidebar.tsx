@@ -16,6 +16,7 @@ import { IOTab } from "./IOTab";
 import type { MempoolTransaction, MempoolOutspend } from "@/lib/api/types";
 import type { BoltzmannWorkerResult } from "@/lib/analysis/boltzmann-pool";
 import type { ScoringResult } from "@/lib/types";
+import { scanHash } from "@/lib/bitcoin/chain-profile";
 
 export const SIDEBAR_WIDTH = 320;
 
@@ -127,7 +128,7 @@ export function GraphSidebar({
           <span className="font-mono text-xs text-foreground/70 truncate">{truncateId(tx.txid, 10)}</span>
           <CopyButton text={tx.txid} variant="inline" />
           <button
-            onClick={(e) => { e.stopPropagation(); window.open(`${window.location.origin}${window.location.pathname}#tx=${tx.txid}`, "_blank"); }}
+            onClick={(e) => { e.stopPropagation(); window.open(`${window.location.origin}${window.location.pathname}#${scanHash("tx", tx.txid)}`, "_blank"); }}
             className="text-muted/60 hover:text-foreground transition-colors cursor-pointer"
             title={t("graph.openInNewTab", { defaultValue: "Open in new tab" })}
           >

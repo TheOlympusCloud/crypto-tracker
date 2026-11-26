@@ -2,15 +2,13 @@ import type { TxHeuristic } from "./types";
 import type { Finding } from "@/lib/types";
 import { isCoinbase, getValuedOutputs } from "./tx-utils";
 import { SATS_PER_BTC } from "@/lib/constants";
+import { chain } from "@/lib/bitcoin/chain-profile";
 
 // Round fiat values people commonly send (same denominations for USD and EUR)
 const ROUND_FIAT_VALUES = [
   5, 10, 20, 50, 100, 200, 500, 1_000, 2_000, 5_000, 10_000, 25_000, 50_000, 100_000,
 ];
 
-// Round sat multiples (10k+ only; 1000 sats is too common to be a meaningful signal).
-// Round BTC denominations (0.001 BTC and up) are all multiples of 10k sats.
-const ROUND_SAT_MULTIPLES = [10_000, 100_000, 1_000_000, 10_000_000];
 
 /**
  * H1: Round Amount Detection
@@ -169,7 +167,9 @@ export const analyzeRoundAmounts: TxHeuristic = (tx, _rawHex?, ctx?) => {
 };
 
 export function isRoundAmount(sats: number): boolean {
-  for (const multiple of ROUND_SAT_MULTIPLES) {
+  // Round sat multiples (10k+ only; 1000 sats is too common to be a meaningful signal),
+  // per chain (crypto-tracker: chain-profile.ts)
+  for (const multiple of chain().roundMultiples) {
     if (sats >= multiple && sats % multiple === 0) return true;
   }
 

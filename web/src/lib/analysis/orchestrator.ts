@@ -15,6 +15,7 @@ import { enrichFindingsWithMetadata } from "./finding-metadata";
 import { tick } from "./heuristic-registry";
 import { runTxHeuristics, finalizeTxResult } from "./tx-pipeline";
 import { runAddressHeuristics } from "./address-orchestrator";
+import { has } from "@/lib/bitcoin/chain-profile";
 
 export { runTxHeuristics, finalizeTxResult } from "./tx-pipeline";
 
@@ -112,8 +113,8 @@ export async function analyzeAddress(
     allFindings.push(...temporalFindings);
   }
 
-  // Prospective analysis - fingerprint evolution (uses tx history)
-  if (txs.length >= 2) {
+  // Prospective analysis - fingerprint evolution (uses tx history); Bitcoin wallets only (crypto-tracker)
+  if (txs.length >= 2 && has("bitcoin-wallets")) {
     const { findings: prospectiveFindings } = analyzeFingerprintEvolution(
       address.address,
       txs,

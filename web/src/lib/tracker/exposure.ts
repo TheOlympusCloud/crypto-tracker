@@ -2,12 +2,12 @@ import { base58 } from "@scure/base";
 import type { FindingId } from "@/lib/analysis/finding-metadata";
 import type { ScoringResult } from "@/lib/types";
 import type { Exposure, Gap, TrackerFinding } from "./types";
+import { bareAddress, isChainId, scanHash } from "@/lib/bitcoin/chain-profile";
 
 type T = (key: string, o?: Record<string, unknown>) => string;
 
 /** Chains whose privacy scan is the tracker's; Bitcoin's is am-i-exposed's own. */
 export const ACCOUNT_CHAINS = ["evm", "solana", "tron"];
-const NOT_YET = ["litecoin", "dogecoin", "bitcoincash"];
 
 /**
  * The account chain an address of am-i-exposed's input box belongs to, from its format alone, or null.
@@ -27,11 +27,12 @@ export function accountChain(input: string): "evm" | "solana" | "tron" | null {
 
 /**
  * Where "Privacy score" goes for an address and its chain mark: am-i-exposed's scan for Bitcoin,
- * the tracker's for EVM, Solana and Tron (an EVM chain's mark names that chain), none yet elsewhere.
+ * Litecoin, Dogecoin and Bitcoin Cash (with the chain's profile), the tracker's for EVM, Solana and
+ * Tron (an EVM chain's mark names that chain).
  */
 export function scanHref(address: string, chain: string): string | null {
-  if (chain === "bitcoin") return `/#addr=${encodeURIComponent(address)}`;
-  if (!chain || NOT_YET.includes(chain)) return null;
+  if (isChainId(chain)) return `/#${scanHash("addr", bareAddress(address), chain)}`;
+  if (!chain) return null;
   const evm = ACCOUNT_CHAINS.includes(chain) ? "" : `&chains=${encodeURIComponent(chain)}`;
   return `/tracker/scan/#addr=${encodeURIComponent(address)}${evm}`;
 }

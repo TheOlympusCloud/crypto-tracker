@@ -12,6 +12,7 @@ import { useBookmarks } from "@/hooks/useBookmarks";
 import { useKeyboardNav } from "@/hooks/useKeyboardNav";
 import { useHashRouting } from "@/hooks/useHashRouting";
 import { isXpubPrivacyAcked } from "@/components/wallet/XpubPrivacyWarning";
+import { otherChain, scanHash } from "@/lib/bitcoin/chain-profile";
 import { setHash } from "@/lib/hash-nav";
 import { isPlaceholder } from "@/lib/backup/wallet-vault";
 import { lockedPlaceholder, resolvePlaceholder } from "@/hooks/walletVault";
@@ -168,8 +169,9 @@ export function useScanner() {
     // PSBT / raw tx: analyzed in memory, never put in the URL hash
     const kind = detectInputType(input, network);
     if (kind === "psbt" || kind === "rawtx") { wallet.reset(); void analyze(input); return; }
-    const prefix = input.length === 64 ? "tx" : "addr";
-    const newHash = `${prefix}=${encodeURIComponent(input)}`;
+    // crypto-tracker: a txid stays on the chain shown (a transaction of a Litecoin scan is Litecoin's),
+    // an address goes to its own
+    const newHash = input.length === 64 ? scanHash("tx", input) : scanHash("addr", input, otherChain(input) ?? "bitcoin");
     const oldHash = window.location.hash.slice(1);
     setHash(newHash);
     // Fire-and-forget: the callee catches its own errors.

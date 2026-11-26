@@ -1,5 +1,6 @@
 import type { MempoolTransaction } from "@/lib/api/types";
 import type { Finding } from "@/lib/types";
+import { has } from "@/lib/bitcoin/chain-profile";
 import { getFilter, lookupEntityName, lookupEntityCategory } from "../entity-filter/filter-loader";
 import { getEntity } from "../entities";
 import { isCoinJoinTx } from "../heuristics/coinjoin";
@@ -47,7 +48,7 @@ export function analyzeEntityProximity(
   forwardLayers: TraceLayer[],
 ): EntityProximityResult {
   const findings: Finding[] = [];
-  const filter = getFilter();
+  const filter = has("entity-index") ? getFilter() : null; // crypto-tracker: Bitcoin data only
   // The analyzed tx's own addresses reappear in its parents' outputs and its
   // children's inputs. entity-detection already scores them.
   const ownAddresses = inputAddressSet(tx.vin);

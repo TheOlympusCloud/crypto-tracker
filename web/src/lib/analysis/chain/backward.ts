@@ -2,7 +2,7 @@ import type { MempoolTransaction } from "@/lib/api/types";
 import type { Finding } from "@/lib/types";
 import { isCoinJoinTx } from "../heuristics/coinjoin";
 import { getSpendableOutputs } from "../heuristics/tx-utils";
-import { DUST_THRESHOLD } from "@/lib/constants";
+import { chain } from "@/lib/bitcoin/chain-profile";
 
 /**
  * Backward chain analysis: examine parent transactions to determine
@@ -49,7 +49,7 @@ export function analyzeBackward(
     // Check if the input is likely dust from an attack
     // (tiny value from a parent with many small outputs to diverse addresses)
     const inputValue = vin.prevout?.value ?? 0;
-    if (inputValue > 0 && inputValue <= DUST_THRESHOLD && isDustAttackParent(parentTx)) {
+    if (inputValue > 0 && inputValue <= chain().dust && isDustAttackParent(parentTx)) {
       dustInputs.push(inputIdx);
     }
   }
@@ -142,8 +142,8 @@ function isDustAttackParent(tx: MempoolTransaction): boolean {
   const spendable = getSpendableOutputs(tx.vout);
   if (spendable.length < 10) return false;
 
-  // Count small outputs (<= DUST_THRESHOLD sats)
-  const smallOutputs = spendable.filter((o) => o.value <= DUST_THRESHOLD);
+  // Count small outputs (<= the chain's dust threshold)
+  const smallOutputs = spendable.filter((o) => o.value <= chain().dust);
   if (smallOutputs.length < 5) return false;
 
   // Check for diverse addresses

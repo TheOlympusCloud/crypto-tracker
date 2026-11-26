@@ -79,6 +79,7 @@ vi.mock("@/context/NetworkContext", () => ({
 }));
 
 import { useAnalysis } from "../useAnalysis";
+import { chain, setChain } from "@/lib/bitcoin/chain-profile";
 
 const TXID = "a".repeat(64);
 const result = (extra: Partial<ScoringResult> = {}) =>
@@ -329,5 +330,45 @@ describe("useAnalysis", () => {
       await act(async () => { await hook.current.analyze(`https://mempool.space/testnet4/address/${TB1}`); });
       expect(hook.current.error).toContain("network could not be verified and is assumed to be Mainnet");
     });
+  });
+});
+
+describe("useAnalysis on Litecoin, Dogecoin and Bitcoin Cash (crypto-tracker)", () => {
+  afterEach(() => setChain("bitcoin"));
+
+  it("reads a transaction of the chain the hash names through the tracker, never probing Bitcoin's networks", async () => {
+    m.runTxidAnalysis.mockRejectedValue(new ApiError("NOT_FOUND", "nf"));
+    const { result: hook } = renderHook(() => useAnalysis());
+    await act(async () => { await hook.current.analyze(TXID, { chain: "litecoin" }); });
+
+    expect(m.createApiClient).toHaveBeenCalledWith(
+      expect.objectContaining({ mempoolBaseUrl: "/api/tracker/utxo/litecoin" }), expect.anything(),
+    );
+    expect(m.detectTxidNetwork).not.toHaveBeenCalled();
+    expect(hook.current.phase).toBe("error");
+    expect(chain().id).toBe("litecoin");
+  });
+
+  it("caches a result under the chain's own backend", async () => {
+    m.runTxidAnalysis.mockResolvedValue(txOutcome(result()));
+    const { result: hook } = renderHook(() => useAnalysis());
+    await act(async () => { await hook.current.analyze(TXID, { chain: "dogecoin" }); });
+
+    expect(m.getCachedResult.mock.calls[0]![0]).toBe("mainnet@/api/tracker/utxo/dogecoin");
+    expect(m.putCachedResult.mock.calls[0]![0]).toBe("mainnet@/api/tracker/utxo/dogecoin");
+  });
+
+  it("scans an address on its own chain, and Bitcoin again after a reset", async () => {
+    const { result: hook } = renderHook(() => useAnalysis());
+    await act(async () => { await hook.current.analyze("bitcoincash:qpc2hdexmqwy06jzvdxddkazyp500kqf9vvmvgxnqm"); });
+    expect(m.createApiClient).toHaveBeenLastCalledWith(
+      expect.objectContaining({ mempoolBaseUrl: "/api/tracker/utxo/bitcoincash" }), expect.anything(),
+    );
+    act(() => { hook.current.reset(); });
+    expect(chain().id).toBe("bitcoin");
+
+    m.runTxidAnalysis.mockResolvedValue(txOutcome(result()));
+    await act(async () => { await hook.current.analyze(TXID, { chain: "nonsense" }); });
+    expect(m.createApiClient).toHaveBeenLastCalledWith(onionConfigFor("mainnet"), expect.anything());
   });
 });

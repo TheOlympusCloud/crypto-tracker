@@ -7,6 +7,7 @@ import { ExternalLink, Copy, Check } from "lucide-react";
 import { truncateId } from "@/lib/constants";
 import { formatSats, fmtN } from "@/lib/format";
 import { copyToClipboard } from "@/lib/clipboard";
+import { scanHash } from "@/lib/bitcoin/chain-profile";
 
 // ─── Ricochet hop table ─────────────────────────────────────────────────
 
@@ -81,7 +82,7 @@ export function RicochetHopTable({
                 </button>
               ) : (
                 <a
-                  href={`/#tx=${hop.txid}`}
+                  href={`/#${scanHash("tx", hop.txid)}`}
                   className="font-mono text-bitcoin hover:text-bitcoin-hover transition-colors"
                 >
                   {truncateId(hop.txid, 4)}
@@ -167,7 +168,7 @@ export function ConsolidationTable({
                 <span className="font-mono text-xs text-foreground/70">{truncateId(g.childTxid, 8)}</span>
               )}
               <a
-                href={`/#tx=${g.childTxid}`}
+                href={`/#${scanHash("tx", g.childTxid)}`}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="text-muted hover:text-foreground transition-colors"
