@@ -23,6 +23,7 @@ import tarfile
 import tempfile
 import time
 import zipfile
+import zlib
 
 import httpx
 import yaml
@@ -39,8 +40,8 @@ SOLANA_PROGRAMS = (
     "https://raw.githubusercontent.com/solana-labs/explorer/master/app/utils/programs.ts"
 )
 OKX_POR = "https://www.okx.com/proof-of-reserves/download"
-# A new list each month; the download page links every one of them.
-OKX_LISTS = re.compile(r"https://static\.okx\.com/cdn/okx/por/chain/por_csv_\d+_V\d+\.zip")
+# A new list each month, named by its date and version; the download page links every one.
+OKX_LISTS = re.compile(r"https://static\.okx\.com/cdn/okx/por/chain/por_csv_(\d+)_V(\d+)\.zip")
 # The networks of OKX's list that are read here. Bitcoin Cash is left out: its addresses are
 # listed in the legacy form, which reads as Bitcoin.
 OKX_NETWORKS = {"BTC", "LTC", "DOGE", "TRON", "SOL", "ETH", "ARBITRUM", "AVAXC", "BASE",
@@ -274,8 +275,9 @@ def import_open(db, client, everything=False):
     if "okx-por" in wanted:
         try:
             page = client.get(OKX_POR, follow_redirects=True).raise_for_status().text
+            newest = max(OKX_LISTS.finditer(page), key=lambda m: (int(m[1]), int(m[2])))[0]
             with tempfile.TemporaryFile() as file:  # about 110 MB, so not kept in memory
-                with client.stream("GET", max(OKX_LISTS.findall(page))) as reply:
+                with client.stream("GET", newest) as reply:
                     for chunk in reply.raise_for_status().iter_bytes():
                         file.write(chunk)
                 with zipfile.ZipFile(file) as archive:
@@ -283,7 +285,10 @@ def import_open(db, client, everything=False):
                         with archive.open(name) as text:
                             rows += parse_okx(io.TextIOWrapper(text, "utf-8", errors="replace"))
             done.append("okx-por")
-        except (httpx.HTTPError, ValueError, zipfile.BadZipFile, csv.Error, OSError):
+        except (
+            httpx.HTTPError, ValueError, zipfile.BadZipFile, zlib.error, csv.Error, OSError,
+            RuntimeError,  # NotImplementedError too: a zip compressed in a way Python lacks
+        ):  # fmt: skip
             failed.append("okx-por")  # ValueError: no list linked on the page
     store(db, rows)
     now = str(time.time())

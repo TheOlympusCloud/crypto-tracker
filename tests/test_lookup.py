@@ -1,4 +1,5 @@
 import io
+import sys
 import zipfile
 
 import httpx
@@ -19,10 +20,12 @@ WSOL = "So11111111111111111111111111111111111111112"
 FAKE_USDC = "0x" + "7" * 40
 SPL, TOKEN_2022 = chains.TOKEN_PROGRAMS
 OKX_SOL = "5VCwKtCXgCJ6kit5FybXjvriW3xELsFDhYrPSqtJNmcD"  # OKX's Solana hot wallet
-OKX_LIST = "https://static.okx.com/cdn/okx/por/chain/por_csv_2026110100_V1.zip"
+OKX_LIST = "https://static.okx.com/cdn/okx/por/chain/por_csv_2026110100_V10.zip"
 # Recorded from OKX's proof-of-reserves download page (cut): it links every month's list.
+# Versions 9 and 10 of one month are made up: OKX has gone up to 6 in a month so far.
 OKX_PAGE = (
     '<a href="https://static.okx.com/cdn/okx/por/chain/por_csv_2026100300_V4.zip" download="">'
+    '<a href="https://static.okx.com/cdn/okx/por/chain/por_csv_2026110100_V9.zip" download="">'
     f'<a href="{OKX_LIST}" download="">'
     '"auditList":[{"auditId":"508756245","createTime":1793462400000,"typeNum":4,'
     f'"download":"{OKX_LIST}",'
@@ -157,7 +160,7 @@ def indexers(request):
         if path == "/en-eu/proof-of-reserves/download":
             return httpx.Response(200, text=OKX_PAGE)
     if str(request.url) == OKX_LIST:
-        return httpx.Response(200, content=zipped("okx_por_2026110100_V1.csv", OKX_CSV))
+        return httpx.Response(200, content=zipped("okx_por_2026110100_V10.csv", OKX_CSV))
     if host == "blockstream.info":
         if path.endswith("/txs/chain"):
             return httpx.Response(
@@ -467,6 +470,17 @@ def test_an_exchange_hot_wallet_on_solana_is_named_from_its_proof_of_reserves(db
     v = client.get(f"/api/tracker/lookup/{OKX_SOL}").json()
     assert (v["label"], v["category"], v["label_type"]) == ("OKX", "cex", "exchange")
     assert (v["label_source"], v["label_guess"]) == ("dataset", False)
+
+
+def test_a_damaged_okx_list_is_one_failed_set_not_a_failed_sync(db, client, monkeypatch):
+    good = zipped("l.csv", OKX_CSV)
+    start = 30 + len("l.csv")  # past the zip's local header, the deflated data begins
+    bad = good[:start] + b"\xff" + good[start + 1 :]  # an invalid deflate block: zlib.error
+    monkeypatch.setattr(sys.modules[__name__], "zipped", lambda name, text: bad)
+    with httpx.Client() as web:
+        _, failed = labels.import_open(db, web)
+    assert "okx-por" in failed
+    assert not db.execute("SELECT 1 FROM label WHERE source = 'okx-por'").fetchone()
 
 
 def test_lookup_spots_an_address_made_to_look_like_one_i_use(db, client):
