@@ -133,7 +133,9 @@ Approvals: on every EVM chain above except BNB Chain through NodeReal, which has
 search, each sync reads the token approvals your EVM wallets gave. The first time it starts
 at the wallet's first transaction on that chain, in block windows the indexer can answer
 (Routescan: about a million blocks on Ethereum, so an old wallet takes a few minutes); after
-that only the blocks since. A sync makes at most 40 such calls; the rest waits for the next.
+that only the blocks since, page after page when a window holds more than 1,000. A sync
+makes at most 40 such calls, 20 for one address; the rest waits for the next. Each chain is
+read on its own: one whose indexer does not answer holds up no other.
 
 ### Shared counterparties
 
@@ -497,7 +499,7 @@ am-i-exposed's scan with their own profile (below).
 | Dealt with a flagged address | -15, high | Transfers with an address labelled as a scam, a hack, under sanctions or frozen by Tether or Circle. |
 | Dealt with a mixer | -10, medium | Transfers with a labelled mixer. |
 | The same address on several chains | -2, low | Transfers of the same EVM address on two or more of the chains read. |
-| Sends at hours that point to a time zone | -2, low | An estimate: 20 or more transactions the address sent (on EVM, only those it signed), of which eight hours of the day hold at most a tenth. That quiet stretch is taken as the night, midnight to 8:00 local time, which gives a time zone give or take two hours. Never a link. |
+| Sends at hours that point to a time zone | -2, low | An estimate: 20 or more transactions the address sent (on EVM, only those it signed), of which eight hours of the day hold at most a tenth. That quiet stretch is taken as the night, midnight to 8:00 local time, which gives a time zone give or take two hours. Two quiet stretches apart (busy at noon and at midnight) give none. Never a link. |
 | First funded by your wallet | -10, medium | One of your wallets sent the address its first coins on a chain (on Tron: the TRX that activated it). |
 | First funded by the same address as your other wallets | -10, medium | A stranger sent the address, one of your wallets, its first coins and also sent coins to another of your wallets; it was read and is not busy. |
 | First funded by an exchange | 0, low | An address an open label set or you label as an exchange sent it its first coins. It costs nothing more: the withdrawal is one of the transfers "Dealt directly with an exchange" counts. |
@@ -552,15 +554,17 @@ score (93 plus the impacts, the same grades) over:
 |---|---|---|
 | Tied to your public wallet | -70 x the link's confidence (-49 at 70%); critical from 50% | The strongest link of the wallet's verdict to a wallet you marked public (`tracker/exposure/wallets.py`). A public wallet does not get it: it is tied to you anyway. |
 | Reused addresses | -10 per address, at most -40; medium | A Bitcoin, Litecoin, Dogecoin or Bitcoin Cash address of the wallet paid in two or more transactions. |
-| Unlimited token approvals still open | 0, low | An EVM address of the wallet let a contract spend a token without limit (2^96 - 1 units or more, as 96-bit tokens store it) and never took it back, as the last sync read: each token, spender (its label or verified name) and chain. Security, not privacy: never scored. Only approvals the address signed, or of a token it moved itself, count, since a token can announce an approval naming anyone. |
+| Unlimited token approvals still open | 0, low | An EVM address of the wallet let a contract spend a token without limit (2^96 - 1 units or more, as 96-bit tokens store it) and never took it back, as the last sync read: each token, spender and chain. A spender is named by its label, else by its verified contract name followed by its address, since the deployer chooses that name. Security, not privacy: never scored. Only approvals the address signed, or of a token it moved itself, count, since a token can announce an approval naming anyone. |
 | The scan's findings | as above | An address of the wallet that is itself on a sanctions list or frozen; exchanges, flagged addresses and mixers, once per chain, from the stored transfers of all the wallet's addresses (the trusted ones, as the verdict reads them); the same address on several EVM chains; the first funder of an EVM, Solana or Tron address, from its stored history; its names, as the last sync looked them up; an exchange deposit address it shares with another of your wallets; a Tornado Cash pool another of your wallets deposited into or withdrew from, with few deposits in between; activity hours, over the transactions all the wallet's addresses sent. An HD wallet's addresses that find the same thing on a chain show it once, with each one's transactions. |
 
 Each finding counts once, at its worst over the wallet's addresses and chains: one
 exchange is enough to be exposed. Reuse is the exception, counted per address, so one slip
 in an HD wallet costs 10 points instead of the F am-i-exposed gives that one address. The
 panel lists the findings by chain, the wallet's own first, then open approvals and activity
-hours apart, under **Security and habits**. Approvals a sync has not read yet leave the grade
-complete, since they cannot change it. A wallet never read has no
+hours apart, under **Security and habits**. Approvals cannot change the grade, but a chain
+whose approvals were not read yet (history still filling in, an indexer that did not
+answer) is named in the panel, and the grade says "Partly checked" until it is read: an empty
+list must not read as "none". A wallet never read has no
 grade, and one whose verdict says "Partly checked" (history still filling in, a source
 that failed) is graded "Partly checked" too. So is a wallet whose names were never looked
 up (each sync looks up those of 20 addresses, each once a day), and one first funded by a
@@ -970,8 +974,10 @@ out on the server from the verdicts (`tracker/clusters.py`); nothing is fetched.
   approval (`setApprovalForAll`) and the allowances Permit2 grants by signature are not
   listed; an unlimited approval to Permit2 itself is. A permit that a dApp's relayer
   submitted is listed only if the wallet moved that token in a transaction of its own. BNB
-  Chain through NodeReal is not read, and a wallet's approvals wait until its history is
-  complete. A permit signed since the last read shows on the next day's read.
+  Chain through NodeReal is not read, and a wallet's approvals on a chain wait until its
+  history there is complete. A permit signed since the last read shows on the next day's
+  read. More than 10,000 approvals naming one address in a single block (spam) stop its read
+  on that chain, which the panel then names as not read.
 - Activity hours take the night as midnight to 8:00 local time: a night worker, a bot or a
   wallet shared across time zones shows another zone, or none. Daylight saving time moves
   it by an hour.
