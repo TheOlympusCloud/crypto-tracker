@@ -19,24 +19,28 @@ IO = 500  # inputs and outputs BlockCypher lists per transaction (its default is
 READS = OrderedDict()  # (indexer, path, params) -> (time read, its answer)
 KEEP, KEPT = 600, 200  # seconds an answer is kept, and how many
 _reads = threading.Lock()
+# The browser asks for an address and its transactions at once, and both need the same read:
+# one lock per key (striped, so their number stays fixed) makes the second wait for the first.
+_keys = [threading.Lock() for _ in range(64)]
 
 
 def _read(client, chain, path, params=None):
     _, api, url, _ = chains.UTXO[chain]
     key = (url, path, tuple(sorted((params or {}).items())))
-    with _reads:
-        ts, data = READS.get(key, (0, None))
-    if data is not None and time.time() - ts < KEEP:
-        return data
-    if api == "blockcypher":  # within its hourly quota
-        data = chains.cypher(client, url, path, params)
-    else:
-        data = chains.get(client, f"{url}{path}", params).json()
-    with _reads:
-        READS.pop(key, None)
-        READS[key] = (time.time(), data)
-        while len(READS) > KEPT:
-            READS.popitem(last=False)
+    with _keys[hash(key) % len(_keys)]:
+        with _reads:
+            ts, data = READS.get(key, (0, None))
+        if data is not None and time.time() - ts < KEEP:
+            return data
+        if api == "blockcypher":  # within its hourly quota
+            data = chains.cypher(client, url, path, params)
+        else:
+            data = chains.get(client, f"{url}{path}", params).json()
+        with _reads:
+            READS.pop(key, None)
+            READS[key] = (time.time(), data)
+            while len(READS) > KEPT:
+                READS.popitem(last=False)
     return data
 
 

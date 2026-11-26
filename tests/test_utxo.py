@@ -4,6 +4,7 @@ from BlockCypher and Haskoin responses recorded on 2026-11-25 (tests/recorded/, 
 import json
 import time
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import httpx
@@ -51,6 +52,7 @@ def scan(db, monkeypatch):
 
     def answer(request):
         calls.append(request)
+        time.sleep(0.05)  # long enough for the browser's calls made together to overlap
         if request.url.host == "litecoinspace.org":
             return httpx.Response(200, json={"passed": request.url.path})
         if request.url.path in answers:
@@ -68,9 +70,12 @@ def scan(db, monkeypatch):
 
 def test_a_dogecoin_address_reads_as_esplora_in_two_calls(scan):
     client, calls = scan
-    stats = client.get(f"{U}dogecoin/address/{DOGE}").json()
-    txs = client.get(f"{U}dogecoin/address/{DOGE}/txs").json()
-    utxos = client.get(f"{U}dogecoin/address/{DOGE}/utxo").json()
+    # The browser asks for all three at once (run-address-analysis.ts, Promise.all)
+    with ThreadPoolExecutor(3) as pool:
+        paths = ("", "/txs", "/utxo")
+        stats, txs, utxos = pool.map(
+            lambda p: client.get(f"{U}dogecoin/address/{DOGE}{p}").json(), paths
+        )
     # One read of the address serves its stats and its transactions: the quota is small.
     assert len(calls) == 2
     assert json.dumps(stats["chain_stats"]) == json.dumps(
