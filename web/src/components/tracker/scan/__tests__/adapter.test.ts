@@ -47,6 +47,15 @@ describe("the adapter", () => {
     }
   });
 
+  it("says when the address itself is sanctioned or frozen", () => {
+    const flagged = { ...scan.findings[0]!, id: "x-flagged-address", severity: "critical" as const, scoreImpact: -20, params: { name: "Sanctioned by OFAC" }, evidence: [] };
+    const [f] = toResult({ ...scan, findings: [flagged] }, t).findings;
+    expect(f!.title).toBe("This address is flagged: Sanctioned by OFAC");
+    expect(f!.description).toMatch(/under sanctions \(OFAC's lists\) or frozen by Tether or Circle/);
+    expect(f!.recommendation).toMatch(/^Do not send money to it\./);
+    expect(f!.severity).toBe("critical");
+  });
+
   it("says why a scan is partly checked", () => {
     expect(scan.gaps.map((g) => gapText(g, t))).toEqual([
       "The address is very active: only its newest transactions were read.",
