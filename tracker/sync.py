@@ -23,7 +23,7 @@ from . import (
     tokens,
 )
 from . import db as database
-from .exposure import names
+from .exposure import approvals, names
 
 EXPAND_PER_LEVEL = 40  # neighbours synced per depth level, most active first
 
@@ -259,6 +259,7 @@ def run(addresses=None, depth=0, import_labels=False, wallets=()):
             status["current"] = "labels"
             detect.contracts(db, client)
             status["notes"] += names.sync(db, client)
+            status["notes"] += approvals.sync(db, client)
             status["current"] = "swaps"
             status["notes"] += swaps.sync(db, client)
             status["notes"] += bridges.sync(db, client)
