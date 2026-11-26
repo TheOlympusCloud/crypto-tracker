@@ -2,6 +2,7 @@
 Routescan (Ethereum), Base's public RPC and Solana's public RPC on 2026-11-25."""
 
 import json
+import time
 from pathlib import Path
 
 import httpx
@@ -170,6 +171,20 @@ def test_basenames_and_sol_names_are_found(db, scans):
     ]
 
 
+def test_a_malformed_solana_account_is_a_gap_not_a_crash(db, client, monkeypatch):  # noqa: F811
+    indexers = test_lookup.indexers
+
+    def empty(request):
+        if (key(request) or "").startswith("getMultipleAccounts"):
+            return httpx.Response(200, json={"result": {"value": [{"data": []}]}})
+        return indexers(request)
+
+    monkeypatch.setattr(test_lookup, "indexers", empty)
+    r = client.get(f"{SCAN}{SOL}")
+    assert r.status_code == 200, r.text
+    assert [g["params"]["error"] for g in r.json()["gaps"]] == ["names: list index out of range"]
+
+
 def test_a_reverse_record_whose_name_points_elsewhere_is_ignored():
     asked = []
     # A's reverse record says vitalik.eth, but vitalik.eth points at Vitalik's address.
@@ -253,6 +268,20 @@ def test_addresses_a_name_lists_become_links(db, monkeypatch):
     gone = {reverse_key(BRANTLY): [200, {"result": "0x"}]}
     assert names.sync(db, replay([], gone)) == []
     assert name_links(db) == {} and db.execute("SELECT * FROM name").fetchall() == []
+
+
+def test_a_refresh_keeps_the_links_of_another_wallet_with_the_same_name(db):
+    # A Basename passes the forward check for both the address of its Ethereum record and
+    # that of its Base record, so two wallets of mine can hold one name.
+    for address in (BRANTLY, BRANTLY_BTC, A):
+        mine(db, address)
+    for address in (BRANTLY, A):  # both looked up before
+        db.execute("INSERT INTO name VALUES (?, 'base', 'brantly.eth', '{}')", (address,))
+    db.execute("INSERT INTO link VALUES (?, ?, 'name', 0.8, 'brantly.eth')", pair(A, BRANTLY_DOGE))
+    db.execute("INSERT INTO meta VALUES (?, ?)", (f"names_at:{A}", str(time.time())))
+    assert names.sync(db, replay([], otherwise=dogecoin(0))) == []  # refreshes BRANTLY only
+    assert name_links(db)[pair(A, BRANTLY_DOGE)] == (0.8, "brantly.eth")
+    assert name_links(db)[pair(BRANTLY, BRANTLY_DOGE)] == (0.8, "brantly.eth")
 
 
 def test_a_busy_stranger_a_name_lists_links_nobody(db):

@@ -369,10 +369,10 @@ def sync(db, client):
         except ERRORS as e:
             failed.add(chains.describe(e))
             continue  # what was found before stays until a lookup answers
-        db.execute(
-            "DELETE FROM link WHERE kind = 'name' AND evidence IN "
+        db.execute(  # only this address's links: another wallet of mine can hold the same name
+            "DELETE FROM link WHERE kind = 'name' AND ? IN (a, b) AND evidence IN "
             "(SELECT name FROM name WHERE address = ?)",
-            (address,),
+            (address, address),
         )
         db.execute("DELETE FROM name WHERE address = ?", (address,))
         db.executemany(

@@ -134,7 +134,7 @@ def run(db, client, address, evm=()):
                 found.append(finding(*f))
         except Spent:
             gaps.append({"id": "skipped", "params": {"check": name}})
-        except (httpx.HTTPError, RuntimeError, ValueError, KeyError, TypeError) as e:
+        except (httpx.HTTPError, RuntimeError, ValueError, KeyError, TypeError, IndexError) as e:
             gaps.append({"id": "error", "params": {"error": f"{name}: {chains.describe(e)}"}})
     return {
         "address": address,
