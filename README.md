@@ -627,8 +627,11 @@ or at the hop limit, and says which.
 - An unlabelled exchange wallet looks like a stranger until it is read; each sync reads
   10 of those that two of your wallets dealt with (none on Dogecoin), and a busy one ends
   the link. One that looks quiet in what is read can still produce a false link; label it
-  in the UI and the link disappears.
+  in the UI and the link disappears. A read that failed on one chain is tried again on
+  later syncs, after the addresses never read.
 - A Solana address found quiet is not asked again, even if it gets busy later.
+- Every sender counts towards a deposit address's 3, also dust: two address-poisoning
+  payments of a token you hold (common with USDT on Tron) are enough to lose its link.
 
 ## Built on am-i-exposed
 
