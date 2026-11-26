@@ -13,6 +13,7 @@ import pytest
 from test_core import mine
 
 from tracker import chains, graph, heuristics, history, sync
+from tracker import db as database
 
 TXS = json.loads((Path(__file__).parent / "fixtures" / "solana-signers.json").read_text())
 
@@ -123,8 +124,8 @@ class RPC:
     """The Solana RPC over the recorded transactions: each address's signatures are those of
     the recorded transactions it signed; a stranger's busy read answers `busy` signatures."""
 
-    def __init__(self, busy=None, broken=()):
-        self.busy, self.broken, self.reads = busy or {}, broken, []
+    def __init__(self, busy=None, broken=(), limited=False):
+        self.busy, self.broken, self.limited, self.reads = busy or {}, broken, limited, []
 
     def __call__(self, request):
         method, params = (json.loads(request.content)[k] for k in ("method", "params"))
@@ -134,6 +135,8 @@ class RPC:
             result = {"value": []}
         elif method == "getSignaturesForAddress" and params[1].get("limit") == 1000:
             self.reads.append(params[0])
+            if self.limited:
+                return httpx.Response(429)
             if params[0] in self.broken:
                 return httpx.Response(200, json={"error": {"message": "node is behind"}})
             n = self.busy.get(params[0], 10)
@@ -147,7 +150,7 @@ class RPC:
                     for k in tx["transaction"]["message"]["accountKeys"]
                 )
             ]
-            result = [] if params[1].get("before") else signed
+            result = [] if params[1].get("before") else signed[: params[1]["limit"]]
         else:  # getTransaction
             result = TXS[params[0]]
         return httpx.Response(200, json={"result": result})
@@ -216,3 +219,37 @@ def test_a_stranger_that_cannot_be_read_gets_no_link_and_the_sync_says_so(db, qu
     error = db.execute("SELECT error FROM node WHERE address = ?", (SECOND,)).fetchone()["error"]
     assert THIRD in error and "node is behind" in error
     assert db.execute("SELECT COUNT(*) n FROM transfer").fetchone()["n"] == 1  # still stored
+
+
+def test_a_rate_limited_rpc_stops_the_reads_of_strangers(db, quick, monkeypatch):
+    monkeypatch.setattr(chains.time, "sleep", lambda s: None)  # _rpc's back-off
+    mine(db, SECOND)
+    db.commit()
+    fake = RPC(limited=True)
+    with httpx.Client(transport=httpx.MockTransport(fake)) as client:
+        sync.sync_address(db, client, SECOND)
+    assert set(fake.reads) == {FIRST}  # THIRD is not asked: it waits for a later sync
+    assert links(db) == set()
+    error = db.execute("SELECT error FROM node WHERE address = ?", (SECOND,)).fetchone()["error"]
+    assert "429" in error and "1 more" in error
+
+
+def test_a_wallet_read_in_full_before_the_upgrade_is_read_again_once(db, quick, monkeypatch):
+    mine(db, FIRST)
+    mine(db, SECOND)
+    s = sig("381r")
+    history.put(db, SECOND, "solana", oldest="end", newest=TXS[s]["slot"], complete=1)
+    db.commit()
+    monkeypatch.setattr(chains, "SOLANA_TXS", 0)  # the transaction is older than the snapshot
+    with httpx.Client(transport=httpx.MockTransport(RPC())) as client:
+        sync.sync_address(db, client, SECOND)
+        assert links(db) == set()  # below the bookmark: never read again
+        db.execute("DELETE FROM meta WHERE key = 'solana_reread'")  # a database from before
+        db.commit()
+        upgraded = database.connect()
+        sync.sync_address(upgraded, client, SECOND)
+    assert (*heuristics.pair(FIRST, SECOND), "fee-payer") in links(upgraded)
+    assert history.state(upgraded, SECOND)["complete"]
+    database.connect().close()  # once: the bookmark read since stays
+    assert history.get(upgraded, SECOND, "solana")["complete"]
+    upgraded.close()
