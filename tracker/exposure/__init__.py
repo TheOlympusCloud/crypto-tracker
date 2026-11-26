@@ -33,7 +33,8 @@ IMPACT = {
     "x-flagged-address": ("critical", -20, "deterministic", ["kyc_exchange"], "active_risk"),
     "x-linked-public": ("critical", -70, "deterministic", ["passive_observer"], "historical"),
     "x-flagged-counterparty": ("high", -15, "deterministic", ["kyc_exchange"], "historical"),
-    # The withdrawal is one of the exchange's transfers, which x-exchange-exposure counts.
+    # The withdrawal is one of the exchange's transfers, which x-exchange-exposure counts
+    # (yielded by the funder check itself when the read did not hold it).
     "x-funder-exchange": ("low", 0, "deterministic", ["kyc_exchange"], "historical"),
     "x-funder-hub": ("low", 0, "deterministic", ["passive_observer"], "historical"),
     "x-funder-mine": ("medium", -10, "deterministic", ["passive_observer"], "historical"),
