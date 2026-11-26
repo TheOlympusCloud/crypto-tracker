@@ -13,12 +13,15 @@ deposit addresses) call this first, within the sync's budget.
 
 import time
 
+import httpx
+
 from . import chains
 from . import db as database
 from .heuristics import SERVICE
 from .labels import ends_paths
 
 SOLANA_BUSY = 1000  # signatures in one read: more than one person's wallet makes
+CHECKED = {"fee-payer", "co-signer"}  # kinds of link that join a stranger only once it is read
 
 
 def known(db, address):
@@ -82,3 +85,36 @@ def _read(db, client, address):
     if row["error"]:
         raise RuntimeError(row["error"])
     return bool(row["hub"])
+
+
+def vet(db, client, links):
+    """(the links that may be stored, the strangers that could not be read). A link of a kind
+    in CHECKED is kept when it joins two of my addresses, is stored already (it was checked
+    when it came), or joins one of mine to a stranger `check` finds quiet; each stranger is
+    read at most once here. Links of other kinds pass as they are."""
+    mine = {r["address"] for r in db.execute("SELECT address FROM node WHERE mine")}
+    quiet, kept, errors = {}, [], []
+    for k in links:
+        a, b, kind, _, evidence = k
+        if (
+            kind not in CHECKED
+            or (a in mine and b in mine)
+            or db.execute(
+                "SELECT 1 FROM link WHERE a = ? AND b = ? AND kind = ? AND evidence = ?",
+                (a, b, kind, evidence),
+            ).fetchone()
+        ):
+            kept.append(k)
+            continue
+        if a not in mine and b not in mine:
+            continue  # two strangers: no wallet of mine to link
+        other = b if a in mine else a
+        if other not in quiet:
+            try:
+                quiet[other] = not check(db, client, other)
+            except (httpx.HTTPError, RuntimeError, ValueError, KeyError, TypeError) as e:
+                quiet[other] = False  # an unread address is not a quiet one
+                errors.append(f"{other} not read ({chains.describe(e)}): no {kind} link to it")
+        if quiet[other]:
+            kept.append(k)
+    return kept, errors

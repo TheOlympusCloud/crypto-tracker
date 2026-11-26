@@ -16,7 +16,7 @@ from embit import base58
 
 from . import db as database
 from . import node
-from .heuristics import btc_inputs, btc_links, looks_like_coinjoin
+from .heuristics import btc_inputs, btc_links, looks_like_coinjoin, solana_links
 
 # Your own mempool when there is one (node.MEMPOOL), else a public Esplora.
 ESPLORA = (
@@ -572,6 +572,13 @@ def solana_transfers(address, sig, tx):
         k: post - pre for k, pre, post in zip(keys, meta["preBalances"], meta["postBalances"])
     }
     native[keys[0]] += meta.get("fee", 0)  # the fee payer did not send the fee to anybody
+    # The rent of a closed token account goes from its owner, not from the account: a refund
+    # to another wallet ties the two, and one back to the owner moves nothing.
+    owners = {keys[b["accountIndex"]]: b.get("owner") for b in meta.get("preTokenBalances") or []}
+    for account, authority in _closed(tx).items():
+        owner = owners.get(account) or authority
+        if owner and account in native:
+            native[owner] = native.get(owner, 0) + native.pop(account)
     rows = flows(native, "SOL", 1e9)
     tokens = {}
     for sign, side in ((-1, "preTokenBalances"), (1, "postTokenBalances")):
@@ -584,6 +591,22 @@ def solana_transfers(address, sig, tx):
         # The symbol is not on chain; the portfolio fills it in from the price source.
         rows += flows(deltas, mint[:4] + "...", 10**decimals, mint)
     return rows
+
+
+def _closed(tx):
+    """Token accounts a transaction closed, in its own or a program's instructions -> the
+    owner the close names."""
+    calls = list(tx["transaction"]["message"].get("instructions") or [])
+    for inner in tx["meta"].get("innerInstructions") or []:
+        calls += inner.get("instructions") or []
+    closes = [
+        c["parsed"]["info"]
+        for c in calls
+        if c.get("program") in ("spl-token", "spl-token-2022")
+        and isinstance(c.get("parsed"), dict)
+        and c["parsed"].get("type") == "closeAccount"
+    ]
+    return {i["account"]: i.get("owner") or i.get("multisigOwner") for i in closes}
 
 
 def page_solana(client, address, cursor=None, stop=None):
@@ -623,7 +646,7 @@ def fetch_solana(client, address):
         token = account["account"]["data"]["parsed"]["info"]
         balances[token["mint"]] += token["tokenAmount"].get("uiAmount") or 0
     signatures = _rpc(client, "getSignaturesForAddress", address, {"limit": SOLANA_TXS})
-    transfers = []
+    transfers, links = [], []
     for s in signatures:
         if s.get("err"):
             continue
@@ -635,9 +658,10 @@ def fetch_solana(client, address):
         )
         if tx and tx.get("meta"):
             transfers += solana_transfers(address, s["signature"], tx)
+            links += solana_links(address, s["signature"], tx)
     return {
         "transfers": transfers,
-        "links": [],
+        "links": links,
         "balances": [
             ("solana", "SOL", "", lamports / 1e9),
             *[

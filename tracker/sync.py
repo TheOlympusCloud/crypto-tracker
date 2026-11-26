@@ -8,6 +8,7 @@ import httpx
 from . import (
     alerts,
     bridges,
+    busy,
     chains,
     deposits,
     detect,
@@ -72,9 +73,10 @@ def sync_address(db, client, address):
             "INSERT OR IGNORE INTO transfer VALUES (?,?,?,?,?,?,?,?)",
             [t for t in data["transfers"] if ok(t[2]) and ok(t[3])],
         )
+        links = [k for k in data["links"] if ok(k[0]) and ok(k[1])]
         db.executemany(
             "INSERT OR REPLACE INTO link VALUES (?,?,?,?,?)",
-            [k for k in data["links"] if ok(k[0]) and ok(k[1])],
+            [k for k in links if k[2] not in busy.CHECKED],
         )
         # The transactions it sent, also those that move no value (a claim()): see tokens.judge.
         db.executemany(
@@ -128,6 +130,16 @@ def sync_address(db, client, address):
         )
     db.execute("UPDATE node SET error = ? WHERE address = ?", (error or None, address))
     db.commit()
+    # Links to a stranger wait for its read (busy.vet), after the commit: a read that fails
+    # or is cut short costs a link, never a transfer.
+    checked = [k for k in links if k[2] in busy.CHECKED] if data else []
+    if checked:
+        kept, unread = busy.vet(db, client, checked)
+        db.executemany("INSERT OR REPLACE INTO link VALUES (?,?,?,?,?)", kept)
+        if unread:
+            error = "; ".join([*filter(None, [error]), *unread])
+            db.execute("UPDATE node SET error = ? WHERE address = ?", (error, address))
+        db.commit()
 
 
 def neighbours(db, addresses):

@@ -94,7 +94,8 @@ def _convert(source, address, items, keep):
         return {"transfers": chains.tron_transfers(native, tokens)[0], **nothing}
     if chain == "solana":
         rows = [r for sig, tx in items if tx for r in chains.solana_transfers(address, sig, tx)]
-        return {"transfers": rows, **nothing}
+        links = [k for sig, tx in items if tx for k in chains.solana_links(address, sig, tx)]
+        return {**nothing, "transfers": rows, "links": links}
     if action == "transfers":
         lists = chains.nodereal_lists(chain, chains.evm_chains()[chain], address, items)
         return {**nothing, **lists}
