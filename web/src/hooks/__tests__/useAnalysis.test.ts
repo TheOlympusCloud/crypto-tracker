@@ -358,6 +358,19 @@ describe("useAnalysis on Litecoin, Dogecoin and Bitcoin Cash (crypto-tracker)", 
     expect(m.putCachedResult.mock.calls[0]![0]).toBe("mainnet@/api/tracker/utxo/dogecoin");
   });
 
+  it("says the tracker's indexer refused, or that the address has a typo, in its own words", async () => {
+    m.runTxidAnalysis.mockRejectedValueOnce(new ApiError("RATE_LIMITED", "429"));
+    const { result: hook } = renderHook(() => useAnalysis());
+    await act(async () => { await hook.current.analyze(TXID, { chain: "dogecoin" }); });
+    expect(hook.current.error).toBe("tracker-exposure:utxo.rate_limited");
+    expect(hook.current.errorCode).toBe("retryable");
+
+    m.runTxidAnalysis.mockRejectedValueOnce(new ApiError("API_UNAVAILABLE", "HTTP 422", 422));
+    await act(async () => { await hook.current.analyze(TXID, { chain: "litecoin" }); });
+    expect(hook.current.error).toBe("tracker-exposure:utxo.invalid");
+    expect(hook.current.errorCode).toBe("not-retryable");
+  });
+
   it("scans an address on its own chain, and Bitcoin again after a reset", async () => {
     const { result: hook } = renderHook(() => useAnalysis());
     await act(async () => { await hook.current.analyze("bitcoincash:qpc2hdexmqwy06jzvdxddkazyp500kqf9vvmvgxnqm"); });
