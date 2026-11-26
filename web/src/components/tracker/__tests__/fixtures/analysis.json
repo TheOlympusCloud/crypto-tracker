@@ -685,5 +685,77 @@
    "by_chain": {},
    "gaps": []
   }
- }
+ },
+ "groups": [
+  {
+   "wallets": [
+    "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq",
+    "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh"
+   ],
+   "public": [
+    "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh"
+   ],
+   "chains": [
+    "bitcoin"
+   ],
+   "checked": "full",
+   "links": [
+    {
+     "a": "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq",
+     "b": "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
+     "confidence": 0.7,
+     "path": [
+      "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq",
+      "3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy",
+      "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh"
+     ],
+     "kinds": [
+      "transfer",
+      "transfer"
+     ],
+     "apart": [
+      [
+       "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq"
+      ],
+      [
+       "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "wallets": [
+    "0xab5801a7d398351b8be11c439e05c5b3259aec9b",
+    "0xd8da6bf26964af9d7eed9e03e53415d37aa96045"
+   ],
+   "public": [],
+   "chains": [
+    "ethereum"
+   ],
+   "checked": "full",
+   "links": [
+    {
+     "a": "0xab5801a7d398351b8be11c439e05c5b3259aec9b",
+     "b": "0xd8da6bf26964af9d7eed9e03e53415d37aa96045",
+     "confidence": 1.0,
+     "path": [
+      "0xab5801a7d398351b8be11c439e05c5b3259aec9b",
+      "0xd8da6bf26964af9d7eed9e03e53415d37aa96045"
+     ],
+     "kinds": [
+      "transfer"
+     ],
+     "apart": [
+      [
+       "0xab5801a7d398351b8be11c439e05c5b3259aec9b"
+      ],
+      [
+       "0xd8da6bf26964af9d7eed9e03e53415d37aa96045"
+      ]
+     ]
+    }
+   ]
+  }
+ ]
 }

@@ -5,6 +5,7 @@ import { X } from "lucide-react";
 import { TrackerProvider, useTracker, type PanelState, type View } from "./TrackerProvider";
 import { PortfolioView } from "./portfolio/PortfolioView";
 import { WalletPanel } from "./portfolio/WalletPanel";
+import { GroupPanel } from "./portfolio/Groups";
 import { GraphView } from "./graph/GraphView";
 import { NodePanel } from "./graph/NodePanel";
 import { PathPanel } from "./graph/PathPanel";
@@ -106,6 +107,8 @@ function PanelContent({ panel }: { panel: PanelState }) {
       return <NodePanel address={panel.address} />;
     case "path":
       return <PathPanel path={panel.path} heading={panel.heading} back={panel.back} />;
+    case "group":
+      return <GroupPanel address={panel.address} />;
     default:
       return <LookupPanel panel={panel} />;
   }

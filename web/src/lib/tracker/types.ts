@@ -215,6 +215,32 @@ export interface Analysis {
   origins: Record<string, OriginAsset[]>;
   /** Each wallet's privacy score, by its first address; null for a wallet never read. */
   exposure?: Record<string, WalletExposure | null>;
+  /** My wallets an observer can join into one person (tracker/clusters.py). */
+  groups?: WalletGroup[];
+}
+
+/** A direct link between two wallets of a group, each named by its first address. */
+export interface GroupLink {
+  a: string;
+  b: string;
+  confidence: number;
+  path: string[];
+  kinds: string[];
+  /** The two parts this link alone holds together; null when the group holds without it. */
+  apart: [string[], string[]] | null;
+}
+
+/** Wallets joined by links of 50% or more, across chains. */
+export interface WalletGroup {
+  /** First addresses of its wallets. */
+  wallets: string[];
+  /** The public ones among them. */
+  public: string[];
+  chains: string[];
+  /** As far as its least checked wallet. */
+  checked: "none" | "partial" | "full";
+  /** Weakest first. */
+  links: GroupLink[];
 }
 
 export interface SyncStatus {

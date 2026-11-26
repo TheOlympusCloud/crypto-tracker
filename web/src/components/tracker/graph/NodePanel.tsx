@@ -24,7 +24,7 @@ type Node = Omit<GraphNode, "balances"> & { balances?: Balance[] };
 /** Any address of the graph on show: what is known about it, and what can be done with it. */
 export function NodePanel({ address }: { address: string }) {
   const { t, i18n } = useTranslation();
-  const { graph, analysis, byAddress, scope, setScope, latest, collapsed, shownPath, minConf, act, fail, refresh, openWallet, openPanel, startSync, toggleFold } = useTracker();
+  const { graph, analysis, byAddress, scope, setScope, latest, collapsed, shownPaths, minConf, act, fail, refresh, openWallet, openPanel, startSync, toggleFold } = useTracker();
   const { lookUp } = useLookup();
   const n: Node | undefined = scope ? [...scope.graph.nodes, scope, ...scope.connections].find((x) => x.address === address) : byAddress.get(address);
   if (!n) return null;
@@ -33,7 +33,7 @@ export function NodePanel({ address }: { address: string }) {
   const wallet = n.mine ? analysis.verdicts.find((v) => v.wallet === (n.wallet || n.address))?.address : undefined;
   const folded = collapsed.has(n.address);
   // How many counterparties folding this address hides now.
-  const hides = folded ? (fold(scope ? scope.graph : graph, collapsed, shownPath, minConf).nodes.find((x) => x.address === n.address)?.folded ?? 0) : 0;
+  const hides = folded ? (fold(scope ? scope.graph : graph, collapsed, shownPaths.flat(), minConf).nodes.find((x) => x.address === n.address)?.folded ?? 0) : 0;
 
   const rows: [string, ReactNode][] = [
     [t("tracker-graph:node.type"), typeOf(n, t)],

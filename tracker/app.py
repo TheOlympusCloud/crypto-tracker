@@ -12,7 +12,7 @@ from pydantic import BaseModel, field_validator
 from starlette.concurrency import run_in_threadpool
 from starlette.routing import Mount
 
-from . import alerts, chains, exposure, graph, hd, lookup, node, prices, sync, uri, utxo
+from . import alerts, chains, clusters, exposure, graph, hd, lookup, node, prices, sync, uri, utxo
 from . import db as database
 from .exposure import wallets
 
@@ -155,6 +155,7 @@ def get_analysis(max_hops: int = graph.HOPS):
             "verdicts": verdicts,
             "origins": graph.origins(db, max_hops),
             "exposure": wallets.scores(db, graded),  # by the wallet's first address
+            "groups": clusters.groups(db, verdicts),
         }
     finally:
         db.close()

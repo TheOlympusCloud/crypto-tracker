@@ -286,7 +286,8 @@ def verdicts(db, max_hops=HOPS):
     out = [
         {  # an HD wallet no address of which was found: say so, never show it as clean
             "address": w, "wallet": w, "addresses": [], "name": r["name"], "checked": "none",
-            "public": bool(r["public"]), "links": [], "services": [], "shared_services": [],
+            "public": bool(r["public"]), "links": [], "direct": [], "services": [],
+            "shared_services": [],
             "bridged": [], "coverage": {
                 "synced": False, "truncated": False, "error": r["error"], "counterparties": 0,
                 "expanded": 0, "notes": chains.notes("bitcoin"),
@@ -357,6 +358,12 @@ def verdicts(db, max_hops=HOPS):
                 "name": rows[0]["name"],
                 "public": bool(rows[0]["public"]),
                 "links": sorted(links, key=lambda k: -k["confidence"]),
+                # Each wallet it is tied to without passing through a third wallet of mine,
+                # even where a chain through one is stronger: what holds a group (clusters.py).
+                "direct": [
+                    {"wallet": first[v], "confidence": round(conf, 3), "path": path, "kinds": kinds}
+                    for v, (conf, path, kinds) in direct[w].items()
+                ],
                 "services": [
                     {"name": n, "category": c, "guess": g} for n, c, g in sorted(services)
                 ],

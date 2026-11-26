@@ -599,11 +599,12 @@ export function create3d(el: HTMLElement, { onSelect, tip }: RendererOptions): R
     if (grew && nodes.length) fit(nodes.map((node) => node.p), true);
   }
 
-  function highlight(path: string[]) {
+  function highlight(paths: string[][]) {
     clear(pathGroup);
     if (!w || !look) return;
     const p = look.palette;
-    const ids = path.map((a) => index.get(a)).filter((i): i is number => i !== undefined);
+    const runs = paths.map((path) => path.map((a) => index.get(a)).filter((i): i is number => i !== undefined));
+    const ids = runs.flat();
     faded = ids.length > 1 ? new Set(ids) : null;
     w.edgeLines.obj.material.opacity = faded ? 0.08 : LINE;
     (w.arrows.material as THREE.MeshBasicMaterial).opacity = faded ? 0.08 : LINE;
@@ -614,10 +615,10 @@ export function create3d(el: HTMLElement, { onSelect, tip }: RendererOptions): R
       const material = new THREE.MeshBasicMaterial({ color: PATH });
       const up = new THREE.Vector3(0, 1, 0);
       const dir = new THREE.Vector3();
-      ids.slice(1).forEach((id, k) => {
+      for (const run of runs) run.slice(1).forEach((id, k) => {
         // A fat orange bar from one node's rim to the next, an arrowhead at its end, its number halfway.
         // Every part carries userData.hop (1, 2, ...): trace() reveals them in that order.
-        const from = at(ids[k]!);
+        const from = at(run[k]!);
         const to = at(id);
         dir.subVectors(to.p, from.p).normalize();
         const a = from.p.clone().addScaledVector(dir, from.size + 0.4);
@@ -629,12 +630,17 @@ export function create3d(el: HTMLElement, { onSelect, tip }: RendererOptions): R
         head.position.lerpVectors(b, tipAt, 0.5);
         bar.quaternion.setFromUnitVectors(up, dir);
         head.quaternion.copy(bar.quaternion);
-        const number = hopSprite(k + 1, p);
-        number.position.lerpVectors(a, b, 0.5);
-        for (const part of [bar, head, number]) part.userData.hop = k + 1;
-        pathGroup.add(bar, head, number);
+        const parts: THREE.Object3D[] = [bar, head];
+        if (runs.length === 1) {
+          // Several paths (a group's links) have no one order to number.
+          const number = hopSprite(k + 1, p);
+          number.position.lerpVectors(a, b, 0.5);
+          parts.push(number);
+        }
+        for (const part of parts) part.userData.hop = k + 1;
+        pathGroup.add(...parts);
       });
-      for (const i of ids) {
+      for (const i of faded) {
         if (at(i).label) continue; // strangers on the path get a name while it is shown
         const label = textSprite([[title(at(i).n), fonts.text, p.foreground]], p);
         label.position.copy(at(i).p).add({ x: 0, y: at(i).size + 0.8, z: 0 });
