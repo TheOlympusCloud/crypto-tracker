@@ -202,8 +202,10 @@ LXC_IP=192.168.1.50/24,gw=192.168.1.1 bash -c "$(curl -fsSL https://raw.githubus
 | `LXC_STORAGE` | the first storage that holds containers (`local-lvm`, `local-zfs`...) |
 | `LXC_TEMPLATE_STORAGE` | `local` |
 | `LXC_BRIDGE`, `LXC_IP` | `vmbr0`, `dhcp` |
-| `LXC_DISK`, `LXC_MEMORY`, `LXC_CORES` | `16` GB, `4096` MB (at least `3072`), `2` (at least `2`); with `MEMPOOL=1`: `8192` MB, `4` |
-| `MEMPOOL`, `MEMPOOL_DISK` | `0` (`1`: a Bitcoin node of your own), `1200` GB on top of `LXC_DISK` (at least `1100`) |
+| `LXC_DISK`, `LXC_MEMORY`, `LXC_CORES` | `16` GB, `4096` MB (at least `3072`), `2` (at least `2`); with a full node: `8192` MB, `4`; with a lite node: `6144` MB, `4` |
+| `NODE` | `none`; `full`: [a Bitcoin node of your own](#a-bitcoin-node-of-your-own) (`MEMPOOL=1` says the same); `lite`: [a lite node](#a-lite-node) |
+| `MEMPOOL_DISK` | `1200` GB on top of `LXC_DISK` for a full node (at least `1100`) |
+| `NODE_MAX_DISK_GB` | `50` GB on top of `LXC_DISK` for a lite node, the most it takes (at least `20`) |
 | `REPO_URL`, `REPO_REF` | this repository, `main` (a branch or a tag) |
 
 With a [Bitcoin node of its own](#a-bitcoin-node-of-your-own) too:
@@ -217,6 +219,16 @@ puts `COMPOSE_PROFILES=mempool` in its `.env`. It refuses, before making anythin
 storage has less free space than the whole disk, or when `MEMPOOL_DISK` is under 1100 GB: the
 node and its index take about 950 GB today and grow about 90 GB a year (see [Sizing](#sizing)). Thin storage (`local-lvm`,
 ZFS) is counted by what it really has free, since the node really fills its disk.
+
+Or a [lite node](#a-lite-node) that takes at most 50 GB:
+
+```sh
+NODE=lite NODE_MAX_DISK_GB=50 bash -c "$(curl -fsSL https://raw.githubusercontent.com/TheOlympusCloud/crypto-tracker/main/proxmox/install.sh)"
+```
+
+That adds `NODE_MAX_DISK_GB` to the container's disk, gives it 6 GB and 4 cores, and puts
+`COMPOSE_PROFILES=node-lite` and the cap in its `.env`. It refuses a cap under 20 GB, or
+storage with less free space than the whole disk, before making anything.
 
 Back the container up with Proxmox's own backups (`vzdump`): the volume is inside it. With a
 Bitcoin node, leave its volumes out or back up only the app's: the node can sync again.
@@ -330,6 +342,112 @@ Bitcoin Core alone will not: it has no address index.
 The tracker's requests leave from the server, not from the browser: its Chains list says "Read
 from your own node".
 
+### A lite node
+
+The node above needs about 1.1 TB: reading any address's history takes the whole chain and an
+index of it. A lite node takes at most the disk you give it, from 20 GB. It is Bitcoin Core
+alone, pruned: it keeps only the newest blocks, and has no address index. In `.env` next to
+`compose.yaml`:
+
+```sh
+COMPOSE_PROFILES=node-lite
+NODE_MAX_DISK_GB=50   # the most its volume takes, in GB as Proxmox and df count them
+```
+
+then `docker compose up -d`. Without `NODE_MAX_DISK_GB` the cap is 50. This starts one service
+next to the app, `bitcoind-lite` (`bitcoin/bitcoin` 31.3, pinned like the others), with a
+watch-only wallet: it holds addresses and xpubs, never a private key. Its RPC is not
+published.
+
+**What it does for you, privately:**
+
+- **your own Bitcoin wallets**, addresses and xpubs, are read from it only, in full: the app
+  registers them with the node as soon as it answers, so a node syncing from scratch sees
+  their whole history go by, and the app keeps each transaction with its senders while the
+  node still has its block. Their balances come from the node's set of unspent coins, so
+  they are right even when the history is not (below). They are never sent to a public
+  server, nor to the THORChain and Maya swap APIs;
+- **any address's balance and unspent coins** can be read from it with `scantxoutset`, which
+  goes through the whole set of unspent coins: minutes on mainnet. The tracker does it for
+  your wallets, at most every 10 minutes while it syncs; for another address, `bitcoin-cli
+  scantxoutset start '["addr(<address>)"]'` (with the cookie option below);
+- **its own mempool, fee estimates and broadcasting**, as any Bitcoin Core, e.g.
+  `docker compose exec bitcoind-lite bitcoin-cli -rpccookiefile=/home/bitcoin/rpc/.cookie
+  estimatesmartfee 6`, or `sendrawtransaction <hex>`.
+
+**What still goes to a public server:** the history of any address that is not yours, which a
+pruned node cannot read: counterparties a sync expands, addresses you look up. The tracker
+reads them from `CT_ESPLORA` (blockstream.info), as without a node, and says so: its Chains
+list and each Bitcoin wallet's verdict read "Your Bitcoin wallets are read from your own node;
+other Bitcoin addresses from blockstream.info, which sees them." To hide your IP address from
+it, run Tor with `HTTPTunnelPort 0.0.0.0:9080` on your network and set
+`HTTPS_PROXY=http://<tor host>:9080` in `.env`: every request the server sends out goes through
+it, other chains' included. The node itself is asked over plain HTTP and stays direct.
+
+The privacy scanner (am-i-exposed) keeps using mempool.space, or the instance set in its
+settings, as with no node: its scans read address histories, which the lite node does not
+have, and its "Local" badge promises that every query stays on your network. Its badge shows
+where it reads from. Nor is there a mempool site: mempool needs the transaction index, which
+a pruned node cannot keep.
+
+#### The cap
+
+`NODE_MAX_DISK_GB` sets everything that takes disk: 18 GB go to what is not blocks, the rest
+to blocks (Bitcoin Core's `-prune` target, set from it). Those 18 GB, against Bitcoin Core
+31.3:
+
+| Part | Disk |
+|---|---|
+| Chain state, the set of unspent coins | 14 GB (Bitcoin Core 31.3's own estimate for mainnet) |
+| Its database compacting on top of that | 1 GB |
+| Block index, `mempool.dat` (`-maxmempool=300`), wallet, peers, fee estimates | 1 GB |
+| Blocks fetched ahead while it syncs (1,024), which cannot be pruned yet | 2 GB |
+
+Logs go to Docker's log only, capped at 30 MB, never to a file in the volume. Bitcoin Core
+keeps the 288 newest blocks whatever the target (about 0.5 GB) and deletes whole block files of
+128 MB; the floor of 20 GB leaves blocks 2 GB, about a week of them. `bitcoind-lite` refuses
+less, and says so in `docker compose logs bitcoind-lite`. The chain
+state grows slowly; when an update of Bitcoin Core raises its estimate, the 18 GB are raised
+with it.
+
+What more buys: blocks further back, at about 250 MB a day, which is how far back a wallet you
+add later is read.
+
+| `NODE_MAX_DISK_GB` | Blocks kept | About |
+|---|---|---|
+| 20 | 2 GB | a week |
+| 30 | 12 GB | 7 weeks |
+| 50 | 32 GB | 4 months |
+| 100 | 82 GB | 11 months |
+| 200 | 182 GB | 2 years |
+
+The first sync still downloads and checks the whole chain, about 700 GB, deleting as it goes:
+from a day to several. Memory: 6 GB for the app's build and the node together. To see what it
+takes: `docker compose exec bitcoind-lite du -sh /home/bitcoin/.bitcoin`.
+
+#### A wallet added later
+
+A wallet you add once the node has pruned is read back as far as its blocks go; the older part
+of its history is not on the node. Its balance is still right. The wallet says so: "read from
+your own node from block 925,000 on". To read all of it, resync the node, which takes as long
+as the first sync; your wallets are registered with it before it starts:
+
+```sh
+docker compose rm -sf bitcoind-lite
+docker volume rm "$(basename "$PWD")_bitcoind-lite"   # see docker volume ls
+docker compose up -d
+```
+
+What the tracker read before, from a public server or the node, stays in its database.
+
+While it syncs, your Bitcoin wallets wait, as with the full node, and the status line says
+"your own node is still syncing"; other Bitcoin addresses are read from the public server
+meanwhile. An HD wallet is watched up to its 1,000th address on each branch.
+
+Use one node or the other, never both. To switch, `docker compose down` (the volumes stay),
+change `COMPOSE_PROFILES`, then `docker compose up -d`. The full node's volumes (`bitcoind`,
+`fulcrum`, `mempool-db`) keep their terabyte until you remove them with `docker volume rm`.
+
 ### HTTPS
 
 The phone camera (see [Scanning a QR code](#scanning-a-qr-code)) needs HTTPS, and the
@@ -355,8 +473,10 @@ only the proxy reaches the app.
 | `CT_DB` | `tracker.db` | SQLite file. |
 | `CT_WEB` | unset (the image: its build) | Directory of the web app's static build, served on every path but `/api/tracker/`. Unset: only the API answers. |
 | `CT_PASSWORD_FILE` | unset (the image: `/data/password`) | Without `CT_PASSWORD`, the password kept in this file, made and printed on the first start. |
-| `CT_ESPLORA` | your own node when there is one, else `https://blockstream.info/api` | Bitcoin indexer of the tracker (Esplora API: Blockstream, mempool.space, your own). |
-| `COMPOSE_PROFILES` | unset | `mempool`: run [a Bitcoin node of your own](#a-bitcoin-node-of-your-own) next to the app. |
+| `CT_ESPLORA` | your own node when there is one, else `https://blockstream.info/api` | Bitcoin indexer of the tracker (Esplora API: Blockstream, mempool.space, your own). With a [lite node](#a-lite-node): the one for addresses that are not yours. |
+| `COMPOSE_PROFILES` | unset | `mempool`: run [a Bitcoin node of your own](#a-bitcoin-node-of-your-own) next to the app; `node-lite`: [a lite one](#a-lite-node). |
+| `NODE_MAX_DISK_GB` | `50` | The most disk the lite node takes, in GB, at least `20` ([The cap](#the-cap)). |
+| `HTTPS_PROXY` | unset | A proxy for every request the server sends out, e.g. Tor's `HTTPTunnelPort`: `http://<tor host>:9080`. |
 | `CT_MEMPOOL` | unset; with the `mempool` profile, its own | Address of a mempool of your own, as your browser opens it, e.g. `http://umbrel.local:3006`: the tracker and the scanner read Bitcoin from it. |
 | `MEMPOOL_PORT` | `8080` | Port of the `mempool` profile's own site, a block explorer. |
 | `CT_BLOCKSCOUT_KEY` | unset | Free Blockscout API key (`proapi_…`, from [dev.blockscout.com](https://dev.blockscout.com)); turns on Base, Arbitrum, Optimism and Polygon, token balances included. Set it in the environment, never in a file you commit. |
@@ -639,9 +759,10 @@ anywhere.
 
 Every address you sync is sent to the indexer that answers for it, so that indexer sees
 your wallets together, from one IP address. That is exactly the link this app helps you
-avoid. For real privacy run [a Bitcoin node of your own](#a-bitcoin-node-of-your-own) and
-point `CT_CHAINS` at indexers you run (Blockscout for EVM), or at least reach the public ones
-through Tor or a VPN.
+avoid. For real privacy run [a Bitcoin node of your own](#a-bitcoin-node-of-your-own) (a
+[lite one](#a-lite-node) keeps your own Bitcoin wallets to itself, not the addresses you look
+up) and point `CT_CHAINS` at indexers you run (Blockscout for EVM), or at least reach the
+public ones through Tor or a VPN.
 
 HD wallets: the xpub or descriptor is stored in the database and never sent anywhere,
 and private keys are refused. But each derived address is looked up at the indexer, which
@@ -927,6 +1048,9 @@ out on the server from the verdicts (`tracker/clusters.py`); nothing is fetched.
   the 10 newest transactions of an address: am-i-exposed pages by 25, which such a mempool does
   not. The tracker reads them all.
 - The notices about your own node are in English, like the tracker's other server messages.
+- With the [lite node](#a-lite-node), the scanner does not use it, a wallet added once it has
+  pruned is read back only as far as its blocks go, and the first balance scan of a sync takes
+  minutes.
 - Token balances come from the transfer history unless the indexer has a token-balance
   call (`"tokenlist": true`), so rebasing tokens are off.
 - An indexer of your own in `CT_CHAINS` must also answer the NFT lists (`tokennfttx`,
