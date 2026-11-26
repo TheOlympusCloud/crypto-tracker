@@ -9,7 +9,7 @@ from typing import NamedTuple
 
 from . import bridges, chains, swaps
 from . import db as database
-from .heuristics import COMMON_INPUT_COINJOIN, EXCHANGE_CAP, SERVICE, TRUSTED
+from .heuristics import COMMON_INPUT_COINJOIN, EXCHANGE_CAP, NFT, SERVICE, TRUSTED
 from .labels import CONFIDENCE, describe, ends_paths
 
 HOP_DECAY = 0.7  # each stranger a trace passes through weakens it by this factor
@@ -63,10 +63,8 @@ def _links(db):
 # Transfers of a token judged fake in one of my wallets: never drawn, not even with "Unknown
 # tokens", so an address that only sent me such tokens is not in the graph at all.
 FAKE = "token IN (SELECT token FROM balance WHERE trust = 'scam')"
-# An NFT's contract (chains.nft_transfers): its NFTs are drawn as one edge, not one each.
-COLLECTION = (
-    "CASE WHEN instr(token, '#') THEN substr(token, 1, instr(token, '#') - 1) ELSE token END"
-)
+# An NFT's contract: its NFTs are drawn as one edge, not one each.
+COLLECTION = f"CASE WHEN {NFT} THEN substr(token, 1, {NFT} - 1) ELSE token END"
 
 
 def build(db, spam=False):
@@ -424,8 +422,8 @@ def origins(db, max_hops=HOPS):
     symbols = {}
     for r in db.execute(
         f"""SELECT chain, src, dst, asset, token, SUM(amount) amount FROM transfer
-            WHERE {TRUSTED} AND NOT instr(token, '#') GROUP BY chain, src, dst, token"""
-    ):  # an NFT (chains.nft_transfers) is no money
+            WHERE {TRUSTED} AND NOT {NFT} GROUP BY chain, src, dst, token"""
+    ):
         inbound[(r["dst"], r["chain"], r["token"])][r["src"]] = r["amount"]
         symbols[(r["chain"], r["token"])] = r["asset"]
     _records(db, inbound, symbols)

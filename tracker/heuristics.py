@@ -26,6 +26,9 @@ TRUSTED = (
     "(token = '' OR token IN "
     "(SELECT token FROM transfer WHERE src IN (SELECT address FROM node WHERE mine)))"
 )
+# An NFT, whose key holds its id after a "#" (chains.nft_transfers). An NFT is no money: never
+# an amount to match, a balance or a funds origin.
+NFT = "instr(token, '#')"
 
 _SYMBOL = {"WETH": "ETH", "USDC.E": "USDC", "USDBC": "USDC", "USDT0": "USDT", "XDAI": "DAI"}
 
@@ -124,12 +127,11 @@ def match_bridges(db):
     # A bridged token often lands in a wallet that never sent it, so the receiving leg is
     # also trusted when it comes from a labelled bridge.
     from_bridge = "src IN (SELECT address FROM label WHERE category = 'bridge')"
-    money = "NOT instr(token, '#')"  # an NFT (chains.nft_transfers) is no amount bridged
     outs = db.execute(
-        f"SELECT * FROM transfer WHERE {TRUSTED} AND {money} AND src IN {mine} ORDER BY ts"
+        f"SELECT * FROM transfer WHERE {TRUSTED} AND NOT {NFT} AND src IN {mine} ORDER BY ts"
     ).fetchall()
     ins = db.execute(
-        f"SELECT * FROM transfer WHERE ({TRUSTED} OR {from_bridge}) AND {money} AND dst IN {mine} "
+        f"SELECT * FROM transfer WHERE ({TRUSTED} OR {from_bridge}) AND NOT {NFT} AND dst IN {mine} "
         "ORDER BY ts"
     ).fetchall()
     times = [i["ts"] for i in ins]
@@ -216,7 +218,9 @@ def match_exchange_flows(db):
         if r["dst"] in exchange and r["src"] not in exchange and r["src"] not in wallet:
             exchange.setdefault(r["src"], exchange[r["dst"]])
     expanded = {r["address"] for r in db.execute("SELECT address FROM node WHERE synced_at")}
-    rows = db.execute(f"SELECT * FROM transfer WHERE {TRUSTED} ORDER BY ts").fetchall()
+    rows = db.execute(
+        f"SELECT * FROM transfer WHERE {TRUSTED} AND NOT {NFT} ORDER BY ts"
+    ).fetchall()
     outs = [
         t
         for t in rows

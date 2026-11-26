@@ -136,3 +136,23 @@ def test_an_nft_is_never_taken_for_a_bridged_amount(db):
     transfer(db, "base", "in", C, B, 1, ts=4600, asset="TUBBY", token=f"{D}#2")
     heuristics.match_bridges(db)
     assert db.execute("SELECT COUNT(*) FROM link WHERE kind = 'bridge'").fetchone()[0] == 0
+
+
+def test_an_nft_is_never_taken_for_an_exchange_flow(db):
+    from test_core import BINANCE, A, B, C, D, transfer
+
+    from tracker import heuristics
+
+    for address in (A, B):
+        mine(db, address)
+    db.execute(
+        "INSERT INTO label(address, name, category, source) VALUES (?, 'Coinbase', 'cex', 'user')",
+        (BINANCE,),
+    )
+    # One NFT of a collection leaves A, another reaches B from an exchange two hours later and
+    # moves on (so it is trusted): "1 TUBBY" out and "1 TUBBY" in are no flow through it.
+    transfer(db, "ethereum", "t1", A, D, 1, ts=1000, asset="TUBBY", token=f"{C}#1")
+    transfer(db, "ethereum", "t2", BINANCE, B, 1, ts=8200, asset="TUBBY", token=f"{C}#2")
+    transfer(db, "ethereum", "t3", B, D, 1, ts=9000, asset="TUBBY", token=f"{C}#2")
+    heuristics.match_exchange_flows(db)
+    assert db.execute("SELECT COUNT(*) FROM link WHERE kind = 'exchange-flow'").fetchone()[0] == 0

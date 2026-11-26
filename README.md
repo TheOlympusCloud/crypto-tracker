@@ -770,7 +770,7 @@ stranger counts only once a wallet of yours has sent that same NFT on, as with t
 is trusted one NFT at a time, never a whole contract, since a shared contract (OpenSea's)
 lets anybody mint into it. A mint or a burn (from or to the zero address, or to 0x…dEaD) is
 no transfer. In the graph a collection's NFTs between two addresses are one arrow. An NFT is
-no money: never a balance, a funds origin or a bridged amount.
+no money: never a balance, a funds origin, a bridged amount or an exchange flow.
 
 The findings of the [privacy scan](#privacy-scan-of-evm-solana-and-tron-addresses) are
 facts: a transfer read from the chain, with a counterparty that an open label set or you
