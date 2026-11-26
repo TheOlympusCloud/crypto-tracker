@@ -132,13 +132,13 @@ def get_graph(spam: bool = False):
 
 
 @app.get("/analysis")
-def get_analysis(max_hops: int = 4):
+def get_analysis(max_hops: int = graph.HOPS):
     max_hops = max(1, min(max_hops, 6))
     db = database.connect()
     try:
         verdicts = graph.verdicts(db, max_hops)
         # The grades are always at the default hops: the ones alerts compare.
-        graded = verdicts if max_hops == 4 else graph.verdicts(db)
+        graded = verdicts if max_hops == graph.HOPS else graph.verdicts(db)
         return {
             "max_hops": max_hops,
             "hop_decay": graph.HOP_DECAY,

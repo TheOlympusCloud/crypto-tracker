@@ -12,6 +12,7 @@ from .heuristics import COMMON_INPUT_COINJOIN, EXCHANGE_CAP, SERVICE, TRUSTED
 from .labels import CONFIDENCE, describe
 
 HOP_DECAY = 0.7  # each stranger a trace passes through weakens it by this factor
+HOPS = 4  # the default depth: the verdicts alerts compare, and every wallet grade
 
 
 def combine(confidences):
@@ -153,7 +154,7 @@ def _entity(name):
     return re.sub(r"[\s:#]+\d+$", "", name)  # "Binance 14" -> "Binance"
 
 
-def trace(db, max_hops=4):
+def trace(db, max_hops=HOPS):
     """For every pair of my wallets: the most convincing path linking them on-chain.
 
     Confidence of a path = product of its edge confidences (a transfer is 1.0, a heuristic
@@ -238,7 +239,7 @@ def trace(db, max_hops=4):
     return out
 
 
-def verdicts(db, max_hops=4):
+def verdicts(db, max_hops=HOPS):
     """Per wallet: every other wallet of mine it can be tied to, directly or through a chain
     of my own wallets (public A - private B - private C exposes C), plus what the answer
     rests on, so that "nothing found" is never read as "safe".
@@ -391,7 +392,7 @@ def verdicts(db, max_hops=4):
     return out
 
 
-def origins(db, max_hops=4):
+def origins(db, max_hops=HOPS):
     """Per wallet and asset: where the money received came from, followed upstream to a
     labelled source, another of my wallets, or the edge of what is known. Keyed by the
     wallet's first address; moves between addresses of one HD wallet are not a source.
