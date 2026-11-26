@@ -4,6 +4,7 @@ import { useState, useRef, useEffect } from "react";
 import { Shield, ShieldAlert, ShieldCheck, ShieldQuestion } from "lucide-react";
 import { useNetwork } from "@/context/NetworkContext";
 import { useTranslation } from "react-i18next";
+import { endpointHost } from "@/lib/api/backend-class";
 
 /**
  * Shows connection privacy status by checking the Tor Project API.
@@ -11,7 +12,7 @@ import { useTranslation } from "react-i18next";
  */
 export function ConnectionBadge() {
   const { t } = useTranslation();
-  const { torStatus, localApiStatus, isUmbrel, customApiUrl } = useNetwork();
+  const { torStatus, localApiStatus, isUmbrel, customApiUrl, liteNode, config: api } = useNetwork();
   const [showTip, setShowTip] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -40,6 +41,16 @@ export function ConnectionBadge() {
           label: <span className="text-success text-xs hidden sm:inline">{t("common.local", { defaultValue: "Local" })}</span>,
           tip: t("common.connectionLocal", { defaultValue: "Connected to local mempool instance - all queries stay on your network" }),
         }
+    : liteNode
+    // crypto-tracker: its lite node takes fees and broadcasts; scans still go out, and it says where
+    ? {
+        icon: <ShieldAlert size={16} className="text-warning" />,
+        label: <span className="text-warning text-xs hidden sm:inline">{t("tracker-exposure:node.badge")}</span>,
+        tip: [
+          t("tracker-exposure:node.tip", { host: endpointHost(api.mempoolBaseUrl) }),
+          liteNode.state !== "ready" && t(`tracker-exposure:node.${liteNode.state}`),
+        ].filter(Boolean).join(" "),
+      }
     : customApiUrl
     // Tor detection is skipped with a custom API, so torStatus says nothing here.
     ? {

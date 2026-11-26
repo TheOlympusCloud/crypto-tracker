@@ -12,14 +12,15 @@ import { useNetwork } from "@/context/NetworkContext";
  * optional method across the project's many client-mocking tests.
  */
 export function useChainTip(): number | null {
-  const { config, apiReady: ready } = useNetwork();
+  const { config, apiReady: ready, liteNode } = useNetwork();
   const [height, setHeight] = useState<number | null>(null);
 
   useEffect(() => {
     if (!ready) return;
     let cancelled = false;
     const controller = new AbortController();
-    const base = config.mempoolBaseUrl.replace(/\/+$/, "");
+    // crypto-tracker: the tip from its lite node when there is one
+    const base = (liteNode?.api ?? config.mempoolBaseUrl).replace(/\/+$/, "");
 
     async function fetchTip() {
       try {
@@ -46,7 +47,7 @@ export function useChainTip(): number | null {
       controller.abort();
       window.removeEventListener("focus", onFocus);
     };
-  }, [config.mempoolBaseUrl, ready]);
+  }, [config.mempoolBaseUrl, liteNode?.api, ready]);
 
   return height;
 }

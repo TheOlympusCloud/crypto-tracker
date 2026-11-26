@@ -291,6 +291,69 @@ describe("NetworkProvider on a host with its own mempool and no Tor sidecar (cry
   });
 });
 
+describe("NetworkProvider with crypto-tracker's lite node (pruned, no address index)", () => {
+  // Most specific first: routes match by substring.
+  const LITE_ROUTES: Record<string, Route> = {
+    "/api/local-info": { delay: 20, status: 404, body: "not found" },
+    "/api/tracker/node/blocks/tip/height": { delay: 20, body: "870000" },
+    "/api/tracker/node": { delay: 20, body: { state: "ready" } },
+    "tor-check": { delay: 10, body: { isTor: false } },
+    "mempool.space": { delay: 20, body: "869999" },
+  };
+  const wrapper = async () => {
+    const { NetworkProvider } = await import("@/context/NetworkContext");
+    return function Wrapper({ children }: { children: React.ReactNode }) {
+      return <StrictMode><NetworkProvider>{children}</NetworkProvider></StrictMode>;
+    };
+  };
+
+  it("takes fees, the tip and broadcasts from the node, keeps scans on the public server, and is not Umbrel", async () => {
+    const fetchFn = mockFetch(LITE_ROUTES);
+    const { useNetwork } = await import("@/context/NetworkContext");
+    const { useChainTip } = await import("../useChainTip");
+    const { result } = renderHook(() => ({ net: useNetwork(), tip: useChainTip() }), { wrapper: await wrapper() });
+    await flush();
+    await flush(15_000); // Tor detection settles: the address scans' server is final
+    await flush();
+    expect(result.current.net.liteNode).toEqual({ api: "/api/tracker/node", state: "ready" });
+    // Not "Local": scans still go to mempool.space, and every third-party warning stays.
+    expect(result.current.net.isUmbrel).toBe(false);
+    expect(result.current.net.torProxy).toBe(false);
+    expect(result.current.net.config.mempoolBaseUrl).toBe("https://mempool.space/api");
+    expect(result.current.net.apiReady).toBe(true);
+    expect(result.current.tip).toBe(870000);
+    expect(calledUrls(fetchFn).some((u) => u.includes("mempool.space") && u.includes("tip"))).toBe(false);
+  });
+
+  it("says how the node stands, and leaves it out on another network", async () => {
+    mockFetch({ ...LITE_ROUTES, "/api/tracker/node": { delay: 20, body: { state: "syncing" } } });
+    const { useNetwork } = await import("@/context/NetworkContext");
+    const { result } = renderHook(() => useNetwork(), { wrapper: await wrapper() });
+    await flush();
+    expect(result.current.liteNode?.state).toBe("syncing");
+    act(() => result.current.setNetwork("signet")); // the node is mainnet: signet keeps its server
+    expect(result.current.liteNode).toBeNull();
+  });
+
+  it("without a lite node, or on Umbrel and the full mempool profile, nothing changes", async () => {
+    mockFetch({ ...LITE_ROUTES, "/api/tracker/node": { delay: 20, status: 404, body: { detail: "Not Found" } } });
+    const { useNetwork } = await import("@/context/NetworkContext");
+    const none = renderHook(() => useNetwork(), { wrapper: await wrapper() });
+    await flush();
+    expect(none.result.current.liteNode).toBeNull();
+    expect(none.result.current.config.mempoolBaseUrl).toBe("https://mempool.space/api");
+    cleanup();
+
+    vi.resetModules();
+    const fetchFn = mockFetch(UMBREL_ROUTES);
+    const umbrel = await import("@/context/NetworkContext");
+    const { result } = renderHook(() => umbrel.useNetwork(), { wrapper: await wrapper() });
+    await flush();
+    expect(result.current.isUmbrel && result.current.liteNode === null).toBe(true);
+    expect(calledUrls(fetchFn).some((u) => u.includes("/api/tracker/node"))).toBe(false);
+  });
+});
+
 describe("NetworkProvider backend network (genesis check)", () => {
   async function renderNetwork() {
     const { NetworkProvider, useNetwork } = await import("@/context/NetworkContext");

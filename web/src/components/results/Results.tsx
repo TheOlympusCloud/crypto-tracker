@@ -84,7 +84,7 @@ export function Results(props: ResultsProps) {
     localLookup = null, localOutputTxCounts = null, onLocalLookup, onBroadcastSuccess,
   } = props;
   const { t } = useTranslation();
-  const { config, customApiUrl, isUmbrel } = useNetwork();
+  const { config, customApiUrl, isUmbrel, liteNode } = useNetwork();
   const { devMode } = useDevMode();
   const [broadcastOpen, setBroadcastOpen] = useState(false);
   const closeBroadcast = useCallback(() => setBroadcastOpen(false), []);
@@ -174,7 +174,7 @@ export function Results(props: ResultsProps) {
         {local && <Suspense fallback={null}><BeforeYouSend local={local} txData={txData} result={result} lookup={localLookup} outputTxCounts={localOutputTxCounts} onLookup={onLocalLookup ?? (() => {})} endpoint={endpointHost(config.mempoolBaseUrl)} onBroadcast={onBroadcastSuccess ? () => setBroadcastOpen(true) : undefined} /></Suspense>}
         {local && broadcastOpen && onBroadcastSuccess && (
           <Suspense fallback={null}>
-            <BroadcastDialog local={local} tx={txData ?? local.tx} result={result} baseUrl={config.mempoolBaseUrl} cls={backendClass({ isUmbrel, customApiUrl })} onClose={closeBroadcast} onSuccess={onBroadcastSuccess} unknownSent={unknownFor === local} onUnknownChange={onUnknownChange} />
+            <BroadcastDialog local={local} tx={txData ?? local.tx} result={result} baseUrl={liteNode?.api ?? config.mempoolBaseUrl} cls={liteNode ? "self-hosted" : backendClass({ isUmbrel, customApiUrl })} scanHost={liteNode ? endpointHost(config.mempoolBaseUrl) : undefined} onClose={closeBroadcast} onSuccess={onBroadcastSuccess} unknownSent={unknownFor === local} onUnknownChange={onUnknownChange} />
           </Suspense>
         )}
 

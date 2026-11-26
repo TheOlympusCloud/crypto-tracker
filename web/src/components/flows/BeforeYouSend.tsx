@@ -58,7 +58,9 @@ const SAFETY_EN: Record<SafetyItem["id"], string> = {
 /** The Before you send panel for a PSBT / raw tx analyzed in memory, before it is broadcast. */
 export function BeforeYouSend({ local, txData, result, lookup, outputTxCounts, onLookup, endpoint, onBroadcast }: BeforeYouSendProps) {
   const { t, i18n } = useTranslation();
-  const { config } = useNetwork();
+  const { config, liteNode } = useNetwork();
+  // crypto-tracker: estimates from its lite node when there is one
+  const feeApi = liteNode?.api ?? config.mempoolBaseUrl;
   const tx = txData ?? local.tx;
   const known = tx.vin.every((v) => v.prevout);
 
@@ -67,9 +69,9 @@ export function BeforeYouSend({ local, txData, result, lookup, outputTxCounts, o
   useEffect(() => {
     if (!known || fees) return;
     const ac = new AbortController();
-    createMempoolClient(config.mempoolBaseUrl, { signal: ac.signal }).getRecommendedFees().then(setFees, () => {});
+    createMempoolClient(feeApi, { signal: ac.signal }).getRecommendedFees().then(setFees, () => {});
     return () => ac.abort();
-  }, [known, fees, config.mempoolBaseUrl]);
+  }, [known, fees, feeApi]);
 
   const checklist = useMemo(
     () => buildChecklist({ local, tx, result, fees, outputTxCounts }),

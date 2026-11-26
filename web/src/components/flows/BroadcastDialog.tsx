@@ -27,9 +27,11 @@ interface BroadcastDialogProps {
   unknownSent?: boolean;
   /** Reports the "unknown" state so it survives the dialog closing. */
   onUnknownChange?: (unknown: boolean) => void;
+  /** crypto-tracker: sent by its lite node, the scan that follows asks this public host: the user starts it. */
+  scanHost?: string;
 }
 
-type Phase = "idle" | "sending" | "rejected" | "unknown" | "mismatch" | "confirmed";
+type Phase = "idle" | "sending" | "rejected" | "unknown" | "mismatch" | "confirmed" | "sent";
 
 /** How long the txid mismatch note stays up before the scan takes over. */
 export const MISMATCH_NOTE_MS = 2000;
@@ -41,7 +43,7 @@ const REASON_EN: Record<BroadcastReason, string> = {
 };
 
 /** Confirm step before a signed local tx is sent. One POST per confirm, never retried. */
-export function BroadcastDialog({ local, tx, result, baseUrl, cls, onClose, onSuccess, unknownSent = false, onUnknownChange }: BroadcastDialogProps) {
+export function BroadcastDialog({ local, tx, result, baseUrl, cls, onClose, onSuccess, unknownSent = false, onUnknownChange, scanHost }: BroadcastDialogProps) {
   const { t, i18n } = useTranslation();
   const dialogRef = useRef<HTMLDivElement>(null);
   const [phase, setPhase] = useState<Phase>(unknownSent ? "unknown" : "idle");
@@ -49,6 +51,13 @@ export function BroadcastDialog({ local, tx, result, baseUrl, cls, onClose, onSu
   const [rejection, setRejection] = useState<{ message: string; reason: BroadcastReason } | null>(null);
   const [dryRun, setDryRun] = useState<{ allowed: boolean; reason?: string } | null>(null);
   const [status, setStatus] = useState<"checking" | "not-found" | "error" | null>(null);
+  const [sent, setSent] = useState<string | null>(null);
+  const hold = useCallback((txid: string) => {
+    sendingRef.current = false;
+    setSent(txid);
+    setPhase("sent");
+    onUnknownChange?.(false);
+  }, [onUnknownChange]);
 
   const host = endpointHost(baseUrl);
   const endpointPath = `${baseUrl.replace(/\/+$/, "")}/tx`;
@@ -84,6 +93,7 @@ export function BroadcastDialog({ local, tx, result, baseUrl, cls, onClose, onSu
     // Focus inside the dialog so global keys (Backspace = back) cannot act mid-send.
     dialogRef.current?.focus();
     const out = await broadcastTx(baseUrl, local.signedHex, tx.txid);
+    if (out.kind === "sent" && scanHost) { hold(out.txid); return; }
     // On a txid mismatch the node's txid is the one to scan; say so briefly first.
     if (out.kind === "sent" && out.mismatch) {
       setPhase("mismatch");
@@ -97,15 +107,15 @@ export function BroadcastDialog({ local, tx, result, baseUrl, cls, onClose, onSu
     if (out.kind === "unknown") { setPhase("unknown"); onUnknownChange?.(true); return; }
     setRejection({ message: out.message, reason: out.reason });
     setPhase("rejected");
-  }, [baseUrl, local.signedHex, tx.txid, onSuccess, onUnknownChange]);
+  }, [baseUrl, local.signedHex, tx.txid, onSuccess, onUnknownChange, scanHost, hold]);
 
   const checkStatus = useCallback(async () => {
     setStatus("checking");
     const s = await getTxStatus(baseUrl, tx.txid);
-    if (s === "mempool" || s === "confirmed") { onSuccess(tx.txid); return; }
+    if (s === "mempool" || s === "confirmed") { if (scanHost) hold(tx.txid); else onSuccess(tx.txid); return; }
     setStatus(s);
     if (s === "not-found") { setPhase("idle"); onUnknownChange?.(false); }
-  }, [baseUrl, tx.txid, onSuccess, onUnknownChange]);
+  }, [baseUrl, tx.txid, onSuccess, onUnknownChange, scanHost, hold]);
 
   const sending = phase === "sending" || phase === "mismatch";
   const name = cls === "self-hosted"
@@ -227,6 +237,13 @@ export function BroadcastDialog({ local, tx, result, baseUrl, cls, onClose, onSu
             </p>
           )}
 
+          {phase === "sent" && sent && (
+            <div role="status" data-testid="broadcast-sent" className="space-y-1.5">
+              <p className="text-foreground break-words">{t("tracker-exposure:node.sent", { txid: sent })}</p>
+              <p className="text-muted">{t("tracker-exposure:node.scan_note", { host: scanHost })}</p>
+            </div>
+          )}
+
           {phase === "unknown" && (
             <div role="alert" className="space-y-1.5">
               <p className="text-severity-medium">{t("broadcast.unknown", { defaultValue: "It is unknown whether the transaction was sent. Check its status before trying again." })}</p>
@@ -275,9 +292,19 @@ export function BroadcastDialog({ local, tx, result, baseUrl, cls, onClose, onSu
                 {t("broadcast.openConfirmed", { defaultValue: "Open the transaction" })}
               </button>
             )}
+            {phase === "sent" && sent && (
+              <button
+                type="button"
+                data-testid="broadcast-scan-sent"
+                onClick={() => onSuccess(sent)}
+                className="inline-flex items-center justify-center gap-1.5 px-4 py-2 font-semibold text-sm rounded-lg bg-bitcoin/10 text-bitcoin hover:bg-bitcoin/20 transition-colors cursor-pointer"
+              >
+                {t("tracker-exposure:node.scan", { host: scanHost })}
+              </button>
+            )}
             {!sending && (
               <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-muted hover:text-foreground transition-colors cursor-pointer">
-                {phase === "confirmed" ? t("common.close", { defaultValue: "Close" }) : t("broadcast.cancel", { defaultValue: "Cancel" })}
+                {phase === "confirmed" || phase === "sent" ? t("common.close", { defaultValue: "Close" }) : t("broadcast.cancel", { defaultValue: "Cancel" })}
               </button>
             )}
           </div>

@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { abortSignalAny, abortSignalTimeout } from "@/lib/abort-signal";
 import { chainFromHint, detectBackendChain, type BackendChain } from "@/lib/api/backend-network";
+import { probeLiteNode, type LiteNodeState } from "@/lib/tracker/node";
 
 export type LocalApiStatus = "checking" | "available" | "unavailable";
 
@@ -31,6 +32,11 @@ interface LocalApiResult {
    * (local-info bitcoinNetwork, Umbrel's APP_BITCOIN_NETWORK). null = unknown.
    */
   chain: BackendChain | null;
+  /**
+   * crypto-tracker: its lite node (a pruned node, no address index), on a host that is not
+   * Umbrel: fees, the tip and broadcasts go to it, scans stay on the public server. null: none.
+   */
+  liteNode: LiteNodeState | null;
 }
 
 const MEMPOOL_TIMEOUT_MS = 3_000;
@@ -117,7 +123,8 @@ async function probe(
 
   if (!info) {
     // Not on Umbrel - skip Phase 2 entirely
-    return { isUmbrel: false, torProxy: false, status: "unavailable", mempoolPort: null, mempoolOnion: null, mempoolExternalUrl: null, chain: null };
+    const liteNode = await probeLiteNode(abortSignalAny([signal, abortSignalTimeout(LOCAL_INFO_TIMEOUT_MS)]));
+    return { isUmbrel: false, torProxy: false, status: "unavailable", mempoolPort: null, mempoolOnion: null, mempoolExternalUrl: null, chain: null, liteNode };
   }
 
   // Umbrel detected! Push early state so badge shows "Local" immediately
@@ -129,6 +136,7 @@ async function probe(
     mempoolOnion: info.mempoolOnion,
     mempoolExternalUrl: info.mempoolExternalUrl,
     chain: info.hint,
+    liteNode: null,
   };
   earlyUpdate(earlyResult);
 
@@ -149,6 +157,7 @@ async function probe(
     mempoolOnion: info.mempoolOnion,
     mempoolExternalUrl: info.mempoolExternalUrl,
     chain: genesis ?? info.hint,
+    liteNode: null,
   };
 }
 
@@ -164,7 +173,7 @@ async function probe(
  */
 export function useLocalApi(): LocalApiResult {
   const [result, setResult] = useState<LocalApiResult>(
-    () => cachedResult ?? { isUmbrel: false, torProxy: false, status: "checking", mempoolPort: null, mempoolOnion: null, mempoolExternalUrl: null, chain: null },
+    () => cachedResult ?? { isUmbrel: false, torProxy: false, status: "checking", mempoolPort: null, mempoolOnion: null, mempoolExternalUrl: null, chain: null, liteNode: null },
   );
 
   useEffect(() => {
