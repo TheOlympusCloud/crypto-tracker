@@ -244,7 +244,10 @@ def risk(where, me, real, parties, twins, hub=False, errors=(), held=True, label
     say = lambda level, text: out.append({"level": level, "text": text})
     label, category = me.get("label"), me.get("category")
     if category == "flagged":
-        say("bad", f"Flagged: {label}. A scam, a hack or sanctions, by its label.")
+        say(
+            "bad",
+            f"Flagged: {label}. A scam, a hack, sanctions or a stablecoin freeze, by its label.",
+        )
     elif category == "mixer":
         say(
             "bad",
@@ -257,8 +260,8 @@ def risk(where, me, real, parties, twins, hub=False, errors=(), held=True, label
     for text in errors:
         say("unknown", f"Not everything could be read ({text}).")
     if not labels:
-        say("unknown", "No open label set is downloaded yet, so known scam, hack and sanctioned "
-            "addresses go unrecognised: they come with the next sync, unless CT_LABELS=off.")  # fmt: skip
+        say("unknown", "No open label set is downloaded yet, so known scam, hack, sanctioned and "
+            "frozen addresses go unrecognised: they come with the next sync, unless CT_LABELS=off.")  # fmt: skip
     times = [t[7] for t in real if t[7]]
     count = len({t[1] for t in real})
     if not real and not held:
