@@ -14,11 +14,18 @@ import httpx
 
 from .. import chains, lookup
 from .. import db as database
-from . import exchange, flagged, funder, multichain, names
+from . import deposit, exchange, flagged, funder, multichain, names
 
 # id -> (severity, scoreImpact, confidence, adversaryTiers, temporality). A first proposal, to
 # be tuned on real wallets (docs/design/multichain.md, 6.1).
 IMPACT = {
+    "x-deposit-address-shared": (
+        "high",
+        -10,
+        "high",
+        ["passive_observer", "kyc_exchange"],
+        "historical",
+    ),
     "x-exchange-exposure": ("high", -15, "deterministic", ["kyc_exchange"], "historical"),
     "x-flagged-address": ("critical", -20, "deterministic", ["kyc_exchange"], "active_risk"),
     "x-flagged-counterparty": ("high", -15, "deterministic", ["kyc_exchange"], "historical"),
@@ -33,7 +40,7 @@ IMPACT = {
 }
 # Checks per chain family; "any" runs on every one.
 CHECKS = {
-    "any": [exchange.check, flagged.check, funder.check],
+    "any": [deposit.check, exchange.check, flagged.check, funder.check],
     "evm": [multichain.check, names.check],
     "solana": [names.check],
     "tron": [],

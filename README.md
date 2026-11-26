@@ -67,8 +67,8 @@ own menu and look.
 | Ethereum, Avalanche C | yes | Native coin and ERC-20 transfers, every ERC-20 token held, counterparties expanded. |
 | Base, Arbitrum, Optimism, Polygon | **needs `CT_BLOCKSCOUT_KEY`** | Same as Ethereum once the key is set. One free [Blockscout key](https://dev.blockscout.com) covers all four. Arbitrum and Polygon can also use a free `CT_ETHERSCAN_KEY`. |
 | BNB Chain | **needs `CT_NODEREAL_KEY`** | Read through [NodeReal](https://nodereal.io)'s MegaNode with a free key: BNB, internal and BEP-20 transfers, the balance and the tokens held. Addresses that are not yours: about the last day only. Etherscan's free plan no longer covers BNB Chain; a paid Etherscan key can be set instead in a `CT_CHAINS` file (`"bsc": {"url": "https://api.etherscan.io/v2/api", "params": {"chainid": "56"}, "apikey": "…", "symbol": "BNB", "llama": "bsc"}`). |
-| Tron | yes | TRX and TRC-20 transfers, the 200 newest; counterparties not expanded automatically. |
-| Solana | yes | SOL and SPL tokens (Token-2022 too, e.g. xStocks), the 25 newest transactions, read as net balance changes; counterparties not expanded automatically. |
+| Tron | yes | TRX and TRC-20 transfers, the 200 newest; counterparties not expanded automatically, except [shared ones](#shared-counterparties). |
+| Solana | yes | SOL and SPL tokens (Token-2022 too, e.g. xStocks), the 25 newest transactions, read as net balance changes; counterparties not expanded automatically, except [shared ones](#shared-counterparties). |
 
 The depths above are for other addresses (counterparties, lookups). Your own wallets are
 read in full on every chain: each sync reads what is new, then continues further back
@@ -108,6 +108,18 @@ wallets are answered from their stored history once it is complete.
 Names: an EVM address is looked up in ENS (on Ethereum) and Basenames (on Base), a Solana
 address in SNS (.sol). Base needs no key for this: names are asked of Base's own contracts,
 not of its indexer. Bitcoin Cash addresses that a name lists are not read yet.
+
+### Shared counterparties
+
+Each sync also reads up to 10 addresses that two or more of your wallets dealt with and
+that were never read, busiest first: in full, as a lookup reads them (Tron: three TronGrid
+calls), or on Solana with one call that only tells whether the address is busy (1,000
+transactions or more). Dogecoin's are left out: its free indexer allows too few lookups.
+The others wait for the next sync. A busy address (an exchange's hot wallet, a payment
+processor) then ends every link through it, as a labelled service does. A quiet one that
+sends everything to one exchange is that exchange's deposit address, and two of your
+wallets that paid it get a `deposit-address` link (see
+[What is a fact and what is a guess](#what-is-a-fact-and-what-is-a-guess)).
 
 ## Install
 
@@ -465,6 +477,7 @@ scanned yet.
 | First funded by a busy address | 0, low | As two rows up, but the stranger turned out busy or a known service, so it is stored as a very active address and links nobody. |
 | Has a public name | -15, high | The address's primary name: ENS, Basenames or SNS (.sol). Counted only when the name points back at the address, since anybody can point their own reverse record at any name. |
 | Its name lists addresses on other chains | -5, medium | The addresses of Bitcoin, Litecoin, Dogecoin, Tron, Solana or other EVM chains that the name publishes (ENSIP-9). |
+| Shares an exchange deposit address | -10, high | One of your own wallets only: it and another wallet of yours paid the same exchange deposit address (the `deposit-address` guess, 85%). |
 
 The score is am-i-exposed's address score: 93, plus the impacts, kept within 0 to 100;
 A+ from 90, B from 75, C from 50, D from 25, F below (`tracker/exposure/`, tested against
@@ -473,6 +486,7 @@ real wallets. Each finding lists the transactions it rests on, with links to the
 explorer (a name rests on no transaction, so it lists none). Only labels from a source that
 states them count: a guessed label (behaviour, a contract name) makes no finding, and a
 token a stranger airdropped makes no counterparty.
+The one guess among the findings, a shared deposit address, says it is one and how sure.
 No finding is no clean bill: only labelled addresses can be recognised.
 
 The first funder is the sender of the earliest native coin the address received on each
@@ -547,6 +561,10 @@ and Circle's freezes are read as the stablecoin contracts' events, from Ethereum
 (Routescan, or yours through `CT_CHAINS`) and from TronGrid: the question names only the
 contract, never an address of yours. `CT_LABELS=off` turns all of it off.
 
+Shared counterparties: up to 10 addresses per sync that two of your wallets dealt with are
+looked up at the indexer of their chain (the Solana RPC for Solana ones). That indexer
+already served the histories they appear in; it now also sees them asked for from your IP.
+
 Prices: only asset identifiers (coin names, token contracts) go to the price API, never
 addresses or amounts.
 
@@ -585,7 +603,7 @@ shown wherever the address appears, together with where the name comes from:
 | sanctions and freezes | [OFAC's sanctions lists](https://github.com/0xB10C/ofac-sanctioned-digital-currency-addresses) per currency, as extracted by 0xB10C (MIT), for every chain the tracker reads; the addresses Tether (USDT) and Circle (USDC) froze and did not unfreeze, from their contracts' events on Ethereum and Tron. | Fact; outranks the open label sets. |
 | an open label set | [etherscan-labels](https://github.com/brianleect/etherscan-labels) for Ethereum, BNB Chain, Polygon, Arbitrum, Optimism, Avalanche and Fantom (a 2023 snapshot), [GraphSense TagPacks](https://github.com/graphsense/graphsense-tagpacks) for Bitcoin, Ethereum, Litecoin and Tron, the program names of the [Solana explorer](https://github.com/solana-labs/explorer) (all MIT), and OKX's [proof-of-reserves](https://www.okx.com/proof-of-reserves) list: every address OKX signs as its own ("I am an OKX address") on Bitcoin, Litecoin, Dogecoin, the EVM chains, Tron and Solana, about 570,000, mostly deposit addresses. | Fact, but no barrier: see below. |
 | the explorer | The verified contract name of an EVM address ("UniswapV2Router02"). The name is a fact; the type read from it is a guess. | Guess, 80%. |
-| behaviour | An address that forwards everything to an exchange (a deposit address); one that takes one asset from you and returns another in the same transaction (a pool or router); one with too much history to read (some service). | Guess, 60%. |
+| behaviour | An address that was read in full, sends everything to one exchange and was paid by 3 senders at most (a deposit address); one that takes one asset from you and returns another in the same transaction (a pool or router); one with too much history to read (some service). | Guess, 60%. |
 
 The label sets are downloaded whole (about 1.1 million labels; OKX's list alone is a
 110 MB file, published anew each month, and each copy replaces the last) on the first sync
@@ -635,6 +653,7 @@ in `tracker/heuristics.py` and `tracker/graph.py`.
 | swap | 0.95 | THORChain or Maya Protocol recorded a swap from one address to the other (for example ETH in, BTC out). The record is public and names the destination, so this is close to a fact. Several swaps between the same two addresses stay at 0.95. |
 | name | 0.8 | The primary name of one of your EVM addresses (ENS, Basenames), checked forward, lists the other address (a Bitcoin, Solana... address, ENSIP-9). The name's owner published it, but anybody can type any address into their records. A stranger it lists is read first: a busy one, or a labelled service, links nobody. Several names listing the same address stay at 0.8. |
 | bridge-record | 0.95 | A bridge's own event, in the receipt of a transaction in which your wallet paid it, names the recipient on the other chain: Circle CCTP (`DepositForBurn`), Across (`FundsDeposited`), Wormhole's Token Bridge (a plain transfer), the OP Stack bridges into Base and Optimism (`ETHDepositInitiated`, `ERC20DepositInitiated`), Arbitrum's gateway router (`TransferRouted`). On Solana the token account it names is replaced by the account's owner; a token account closed since links nobody, and the verdict says so. A recipient that is not yours is read first: a busy address or a service links nobody, a quiet one is listed in the wallet's verdict. Declare it yours later and the next sync links it, without reading the receipt again. Several deposits to the same address stay at 0.95. |
+| deposit-address | 0.85 | Two of your wallets paid the same address, which was read in full without an error, is not a very active address, has no label but the tracker's own guess, sends everything to one labelled exchange, and was paid by 3 senders at most (two addresses of one wallet count once; the exchange topping up gas is one). A deposit address belongs to one exchange account. One row per deposit address: paying it again adds nothing, a second shared deposit address combines. EVM, Tron, Bitcoin, Litecoin and Bitcoin Cash. |
 
 Several transactions supporting the same guess combine as `1 - (1-c1)(1-c2)...`.
 
@@ -648,6 +667,8 @@ another joins them through a stranger (0.7), as any shared counterparty does. Th
 such a wallet reads that stranger first: a busy one is stored as a very active address, which
 no path passes through, so an unlabelled exchange wallet is not taken for one person who
 funded both.
+The exception is a shared deposit address, which is the `deposit-address` guess above,
+shown as a finding.
 
 A link between two wallets multiplies the confidences along its path (a transfer counts
 1.0) and then by 0.7 for every stranger it passes through. Links chain through your own
@@ -707,13 +728,19 @@ or at the hop limit, and says which.
   call (`"tokenlist": true`), so rebasing tokens are off.
 - Address checksums are verified, except the mixed-case form of EVM addresses and
   Bitcoin Cash's cashaddr.
-- An unlabelled exchange wallet looks like a stranger and can produce a false link;
-  label it in the UI and the link disappears. On Solana the only exchange labels are
-  OKX's own list, on Tron OKX's and GraphSense's: other exchanges' wallets there are
-  strangers until you label them.
+- An unlabelled exchange wallet looks like a stranger until it is read; each sync reads
+  10 of those that two of your wallets dealt with (none on Dogecoin), and a busy one ends
+  the link. One that looks quiet in what is read can still produce a false link; label it
+  in the UI and the link disappears. A read that failed on one chain is tried again on
+  later syncs, after the addresses never read. An address named only by OKX's list is read
+  and judged the same way. On Solana the only exchange labels are OKX's own list, on Tron
+  OKX's and GraphSense's: other exchanges' wallets there are strangers until you label them.
 - Stablecoin freezes are read on Ethereum and Tron only, where most USDT and USDC lives;
   Tether's and Circle's freezes on other chains are not flagged. Ethereum's are read from an
   Etherscan-style indexer: with one that has no `logs` module, that set is not downloaded.
+- A Solana address found quiet is not asked again, even if it gets busy later.
+- Every sender counts towards a deposit address's 3, also dust: two address-poisoning
+  payments of a token you hold (common with USDT on Tron) are enough to lose its link.
 
 ## Built on am-i-exposed
 

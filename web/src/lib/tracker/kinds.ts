@@ -59,15 +59,17 @@ export const LINKS: Record<string, string> = {
   "common-input": HUES.amber500,
   change: HUES.cyan500,
   bridge: HUES.blue500,
+  "deposit-address": HUES.fuchsia600,
   "exchange-flow": HUES.pink500,
   name: HUES.emerald600,
   swap: HUES.violet500,
-  "bridge-record": HUES.emerald600,
+  "bridge-record": HUES.yellow600,
 };
 const DASHES: Record<string, number[]> = {
   "common-input": [6, 4],
   change: [2, 3],
   bridge: [10, 4],
+  "deposit-address": [8, 2, 2, 2],
   "exchange-flow": [10, 3, 2, 3],
   name: [6, 2, 6, 6],
   swap: [5, 2, 1, 2, 1, 2],

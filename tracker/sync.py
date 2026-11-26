@@ -9,6 +9,7 @@ from . import (
     alerts,
     bridges,
     chains,
+    deposits,
     detect,
     graph,
     hd,
@@ -248,9 +249,11 @@ def run(addresses=None, depth=0, import_labels=False, wallets=()):
             status["current"] = "swaps"
             status["notes"] += swaps.sync(db, client)
             status["notes"] += bridges.sync(db, client)
+            deposits.read(db, client)  # after the labels: a named address is not read
             detect.behaviour(db)  # after the swaps, whose vault labels outrank a guess
             heuristics.match_bridges(db)
             heuristics.match_exchange_flows(db)
+            deposits.link(db)
             alerts.check(db)
             status["current"] = "prices"
             prices.snapshot(db, client)
@@ -316,6 +319,7 @@ def fill_in():
             detect.behaviour(db)
             heuristics.match_bridges(db)
             heuristics.match_exchange_flows(db)
+            deposits.link(db)
             alerts.check(db)
             tokens.mark(db, client)  # "arrived unasked" needs the whole history
     except Exception as e:  # noqa: BLE001 - a background thread must report, not die silently
