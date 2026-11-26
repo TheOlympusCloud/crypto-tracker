@@ -335,6 +335,25 @@ describe("NetworkProvider with crypto-tracker's lite node (pruned, no address in
     expect(result.current.liteNode).toBeNull();
   });
 
+  it("a node slow to answer, or a 5xx, is a busy node, never a reason to fall back to mempool.space", async () => {
+    // The probe's 1.5 s timeout on the fake clock (AbortSignal.timeout runs on the real one)
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+      const c = new AbortController();
+      setTimeout(() => c.abort(new DOMException("timed out", "TimeoutError")), ms);
+      return c.signal;
+    });
+    for (const slow of [{ delay: 3_000, body: { state: "ready" } }, { delay: 20, status: 500, body: "Internal Server Error" }]) {
+      vi.resetModules();
+      mockFetch({ ...LITE_ROUTES, "/api/tracker/node": slow });
+      const { useNetwork } = await import("@/context/NetworkContext");
+      const { result } = renderHook(() => useNetwork(), { wrapper: await wrapper() });
+      await flush(5_000);
+      expect(result.current.liteNode).toEqual({ api: "/api/tracker/node", state: "down" });
+      cleanup();
+    }
+    timeout.mockRestore();
+  });
+
   it("without a lite node, or on Umbrel and the full mempool profile, nothing changes", async () => {
     mockFetch({ ...LITE_ROUTES, "/api/tracker/node": { delay: 20, status: 404, body: { detail: "Not Found" } } });
     const { useNetwork } = await import("@/context/NetworkContext");

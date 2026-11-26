@@ -12,14 +12,25 @@ export type LiteNodeState = "ready" | "syncing" | "down";
 
 const STATES: readonly string[] = ["ready", "syncing", "down"];
 
-/** How the lite node stands, or null without one (404: no lite node, or not this app's server). */
+/**
+ * How the lite node stands, or null without one. Only a 404 says there is none: the server
+ * answers it at once without a node, while one with a node asks it first, which can take
+ * seconds while it syncs or starts. A timeout or a 5xx is that node, busy: "down", never a
+ * reason to send fees and broadcasts to the public server.
+ */
 export async function probeLiteNode(signal: AbortSignal): Promise<LiteNodeState | null> {
+  let res: Response;
   try {
-    const res = await fetch(NODE_API, { signal, credentials: "same-origin" });
-    if (!res.ok) return null;
+    res = await fetch(NODE_API, { signal, credentials: "same-origin" });
+  } catch {
+    return "down";
+  }
+  if (res.status >= 500) return "down";
+  if (!res.ok) return null;
+  try {
     const { state } = (await res.json()) as { state?: unknown };
     return typeof state === "string" && STATES.includes(state) ? (state as LiteNodeState) : null;
   } catch {
-    return null;
+    return null; // not this app's server (a static host's HTML fallback)
   }
 }
