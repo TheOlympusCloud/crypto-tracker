@@ -129,16 +129,17 @@ def _keep(db, owner, chain, rows):
 
 def state(db, address, chain):
     """Where the read of `address` on `chain` stands: {"next": the next block to read, or None
-    when it held nothing there; "done": read in full once}, or None before any read."""
+    when it held nothing there; "done": read in full once; "size": the window its approvals
+    allow, when crowded}, or None before any read."""
     row = db.execute("SELECT value FROM meta WHERE key = ?", (f"approvals:{address}:{chain}",))
     row = row.fetchone()
     return json.loads(row[0]) if row else None
 
 
-def _mark(db, address, chain, next, done):
+def _mark(db, address, chain, next, done, size=None):
     db.execute(
         "INSERT OR REPLACE INTO meta VALUES (?, ?)",
-        (f"approvals:{address}:{chain}", json.dumps({"next": next, "done": done})),
+        (f"approvals:{address}:{chain}", json.dumps({"next": next, "done": done, "size": size})),
     )
     db.commit()
 
@@ -161,9 +162,11 @@ def _read(db, client, cfg, chain, address, learnt, spend):
     on = learnt.setdefault(chain, {"window": WINDOW})
     if "top" not in on:
         on["top"] = _block(client, cfg, time.time(), spend) - SETTLE
-    low = _block(client, cfg, first, spend) if first else known["next"]
+    low = _block(client, cfg, first, spend) if first is not None else known["next"]
     done = bool(known and known["next"] is not None and known["done"])
-    size = on["window"]  # this read's: a crowded stretch narrows it for this address only
+    # This address's: a crowded stretch narrows it for this address only, kept from one sync
+    # to the next so that a heavily spammed address still gets on.
+    size = min(on["window"], (known or {}).get("size") or on["window"])
     while low <= on["top"]:
         high = min(on["top"], low + size - 1)
         try:
@@ -177,12 +180,13 @@ def _read(db, client, cfg, chain, address, learnt, spend):
             if not e.crowded:  # the indexer's limit, for every address in this sync
                 on["limit"] = min(on.get("limit", refused), refused)
                 on["window"] = min(on["window"], size)
+            _mark(db, address, chain, low, done, size)
             continue
         _keep(db, address, chain, found)
         low = high + 1
-        _mark(db, address, chain, low, done)
         # Grow while the indexer answers, below the smallest window it refused in this sync.
         size = min(size * 2, on.get("limit", 4 * size) // 2)
+        _mark(db, address, chain, low, done, size)
     _mark(db, address, chain, low, True)
     return True
 
@@ -220,10 +224,13 @@ def sync(db, client):
                 if chain in down:
                     done = False  # its indexer did not answer: the rest waits for the next sync
                     continue
+                before = state(db, address, chain)
                 try:
                     done &= _read(db, client, cfg, chain, address, learnt, spend)
                 except Turn:
                     done = False  # it goes on from its bookmarks at the next sync
+                    if (state(db, address, chain) or {}).get("next") == (before or {}).get("next"):
+                        failed.setdefault(chain, f"{address}: no block read in its turn")
                     break
                 except (httpx.HTTPError, chains.RateLimited) as e:
                     down.add(chain)

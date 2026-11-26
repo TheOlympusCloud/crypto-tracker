@@ -221,6 +221,27 @@ def test_one_address_cannot_use_the_whole_sync(db, monkeypatch):
     assert [p for p in asked if OWNER[2:] in p.get("topic1", "")]  # the other one had its turn
 
 
+def test_a_heavily_spammed_address_still_gets_on_from_sync_to_sync(db, monkeypatch):
+    own(db, SPAMMED, "ethereum")
+    monkeypatch.setattr(approvals, "PAGES", 1)  # every window holding the spam is crowded
+    monkeypatch.setattr(approvals, "PER_ADDRESS", 3)  # too few calls to narrow it in one sync
+    for _ in range(100):
+        approvals.sync(db, indexer([]))
+        if approvals.state(db, SPAMMED, "ethereum")["next"] == SPAM_BLOCK:
+            break
+    # Read up to the spammed block itself, which then fails alone, and says so.
+    assert approvals.state(db, SPAMMED, "ethereum")["next"] == SPAM_BLOCK
+    too_many = f"getLogs: too many approvals in block {SPAM_BLOCK}"
+    assert approvals.sync(db, indexer([])) == [f"approvals: ethereum: {SPAMMED}: {too_many}"]
+
+
+def test_a_turn_that_reads_no_block_says_so(db, monkeypatch):
+    own(db, SPAMMED, "ethereum")
+    monkeypatch.setattr(approvals, "PER_ADDRESS", 1)
+    notes = approvals.sync(db, indexer([]))
+    assert notes == [f"approvals: ethereum: {SPAMMED}: no block read in its turn"]
+
+
 def test_an_approval_of_a_token_id_or_with_no_amount_is_skipped(db):
     nft = {**RECORDED["logs"][0], "topics": RECORDED["logs"][0]["topics"] + ["0x" + "0" * 64]}
     empty = {**RECORDED["logs"][1], "data": "0x"}
