@@ -237,6 +237,68 @@ def test_origins_stay_fast_on_a_dense_graph_with_cycles(db):
     assert {s["reason"] for s in eth["sources"]} == {"hop limit"}
 
 
+def test_origins_follow_a_swap_to_the_chain_and_asset_paid_in(db):
+    """docs/design/multichain.md, 3.3: BTC paid out by a swap comes from what its sender paid
+    in (USDT on Ethereum), shared out in the same proportion; the vault is no source."""
+    usdt, vault_in, vault_out = "0x" + "7" * 40, "0x" + "5" * 40, "bc1qvault"
+    btc_wallet, stranger = BIP84[0], "bc1qsomeoneelse"
+    mine(db, A)
+    mine(db, btc_wallet)
+    db.execute(
+        "INSERT INTO label(address, name, category, source) VALUES (?, 'Binance 14', 'cex', 'user')",
+        (BINANCE,),
+    )
+    db.execute(
+        "INSERT INTO label(address, name, category, source) "
+        "VALUES (?, 'THORChain', 'dex', 'swap-protocol')",
+        (vault_out,),
+    )
+    transfer(db, "ethereum", "0x01", BINANCE, A, 1500, asset="USDT", token=usdt)
+    transfer(db, "ethereum", "0x02", C, A, 500, asset="USDT", token=usdt)
+    transfer(db, "ethereum", "0x03", BINANCE, A, 9)  # ETH: not what was swapped
+    transfer(db, "ethereum", "0xd48a", A, vault_in, 1920, asset="USDT", token=usdt)
+    transfer(db, "bitcoin", "736cd5", vault_out, btc_wallet, 0.03, asset="BTC")
+    transfer(db, "bitcoin", "99", stranger, btc_wallet, 0.03, asset="BTC")
+    db.execute(
+        "INSERT INTO swap(protocol, sender, recipient, tx_in, tx_out) "
+        "VALUES ('THORChain', ?, ?, 'D48A', '736CD5')",
+        (A, btc_wallet),
+    )
+    (btc,) = graph.origins(db)[btc_wallet]
+    assert (btc["chain"], btc["bridged_from"], btc["received"]) == ("bitcoin", "", 0.06)
+    got = {s["address"]: (s["kind"], s["share"], s["path"], s["via"]) for s in btc["sources"]}
+    assert got == {
+        stranger: ("unknown", 0.5, [btc_wallet, stranger], []),
+        BINANCE: ("cex", 0.375, [btc_wallet, A, BINANCE], ["THORChain"]),
+        C: ("unknown", 0.125, [btc_wallet, A, C], ["THORChain"]),
+    }
+
+
+def test_a_swap_from_a_sender_never_read_ends_at_the_sender(db):
+    """Someone paid me through THORChain: the record names them, the walk ends there."""
+    vault_out = "0x" + "5" * 40
+    mine(db, A)
+    transfer(db, "ethereum", "0xee", vault_out, A, 2)
+    db.execute(
+        "INSERT INTO swap(protocol, sender, recipient, tx_in, tx_out) "
+        "VALUES ('THORChain', 'bc1qpayer', ?, 'aa', 'EE')",
+        (A,),
+    )
+    (eth,) = graph.origins(db)[A]
+    assert [
+        (s["address"], s["kind"], s["reason"], s["path"], s["via"]) for s in eth["sources"]
+    ] == [("bc1qpayer", "unknown", "not expanded", [A, "bc1qpayer"], ["THORChain"])]
+
+    # A second record naming the same payout takes nothing more: 2 ETH came in, not 4.
+    db.execute(
+        "INSERT INTO swap(protocol, sender, recipient, tx_in, tx_out) "
+        "VALUES ('Maya Protocol', 'bc1qother', ?, 'bb', 'ee')",
+        (A,),
+    )
+    (eth,) = graph.origins(db)[A]
+    assert eth["received"] == 2 and sum(s["share"] for s in eth["sources"]) == 1
+
+
 def test_trace_prefers_strong_path_within_hop_limit(db):
     mine(db, A)
     mine(db, B)
@@ -1104,8 +1166,11 @@ def test_swaps_tie_both_ends_and_label_the_protocol_vaults(db, monkeypatch):
     assert labelled == {vault_in: ("Maya Protocol", "dex"), vault_out: ("Maya Protocol", "dex")}
     (verdict,) = [v for v in graph.verdicts(db) if v["address"] == BIP84[0]]
     assert verdict["links"][0]["kinds"] == ["swap"] and verdict["links"][0]["public"]
+    # Followed through the swap to the wallet that paid in, not stopped at the vault.
     (btc,) = graph.origins(db)[BIP84[0]]
-    assert [(s["name"], s["kind"]) for s in btc["sources"]] == [("Maya Protocol", "dex")]
+    assert [(s["address"], s["kind"], s["via"]) for s in btc["sources"]] == [
+        (A, "own", ["Maya Protocol"])
+    ]
 
     monkeypatch.setenv("CT_SWAPS", "off")
     before = len(asked)

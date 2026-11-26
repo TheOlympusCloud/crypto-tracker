@@ -145,12 +145,16 @@ export interface OriginSource {
   share: number;
   amount: number;
   path: string[];
+  /** The swaps and bridges the money crossed on its way, from the wallet upstream. */
+  via: string[];
 }
 
 export interface OriginAsset {
   chain: string;
   asset: string;
   token: string;
+  /** The chain it was bridged from, when only a bridge record shows it came in; else "". */
+  bridged_from: string;
   received: number;
   sources: OriginSource[];
 }
