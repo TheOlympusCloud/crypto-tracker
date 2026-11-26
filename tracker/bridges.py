@@ -10,7 +10,8 @@ into the `swap` table and becomes a 'bridge-record' link of 0.95. The amount-and
 Receipts come from the indexer that already reads the wallet, or the chain's `rpc` in
 CT_CHAINS; on Solana, the owner of the token account CCTP and Wormhole name comes from the
 Solana RPC that reads my wallets. No new party learns anything, so CT_SWAPS does not apply.
-Each receipt is read once.
+Each receipt is read once; the links are made from the records stored at every sync, so a
+recipient declared mine later is linked then.
 """
 
 import time
@@ -25,6 +26,7 @@ from .heuristics import pair
 CONFIDENCE = 0.95  # a protocol's own record, as a swap's (swaps.CONFIDENCE)
 SOURCE = "Bridge receipts"  # its row in the failure table, which the verdicts read
 PROTOCOLS = ("Circle CCTP", "Across", "Wormhole", "OP Stack", "Arbitrum")
+PAGES = 20  # Blockscout pages of 50 logs read per receipt: a deposit is far smaller
 
 # Topic 0 of each event read.
 CCTP_V1 = "0x2fa9ca894982930190727e75500a97d8dc500233a5065e0f3126c48fbe0343c0"  # DepositForBurn
@@ -179,7 +181,7 @@ def fetch(client, cfg, txid):
         result = chains._nr(client, cfg, "eth_getTransactionReceipt", txid)
     else:
         # Blockscout (whose extension is `tokenlist`) has no proxy module: the transaction's
-        # own page has the logs.
+        # own page has the logs, 50 at a time.
         query = (
             {"module": "transaction", "action": "gettxinfo"}
             if cfg.get("tokenlist")
@@ -187,11 +189,24 @@ def fetch(client, cfg, txid):
         )
         key = {"apikey": cfg["apikey"]} if cfg.get("apikey") else {}
         params = {**cfg.get("params", {}), **key, **query, "txhash": txid}
-        result = chains.get(client, cfg["url"], params).json().get("result")
+        result, logs = None, []
+        for _ in range(PAGES):
+            result = _answer(chains.get(client, cfg["url"], params).json().get("result"))
+            logs += result.get("logs") or []
+            if not result.get("next_page_params"):
+                break
+            params |= result["next_page_params"]
+        else:  # unread is not empty: a bridge event may sit on a page not read
+            raise RuntimeError(f"more than {PAGES} pages of logs")
+        result["logs"] = logs
+    return normal(_answer(result))
+
+
+def _answer(result):
     if not isinstance(result, dict):
         # Not indexed yet, or an error the API words as its result.
         raise RuntimeError("no receipt yet")  # noqa: TRY004 - an answer, not a bug
-    return normal(result)
+    return result
 
 
 def owner(client, account):
@@ -233,58 +248,94 @@ def _pending(db):
     return todo
 
 
+def _read(db, client, cfg, chain, txid, me):
+    """Store the records of my deposits in one receipt, then mark the receipt read."""
+    receipt = fetch(client, cfg, txid)
+    for protocol, sender, recipient, dest in decode(chain, receipt):
+        if me not in (sender, receipt["from"]):
+            continue  # someone else's deposit in the same transaction
+        note = ""
+        if dest == "solana":  # CCTP and Wormhole name a token account there
+            found = owner(client, recipient)
+            recipient, note = (found, "") if found else (recipient, "closed")
+        if database.valid(recipient):
+            db.execute(
+                "INSERT OR IGNORE INTO swap(protocol, sender, recipient, tx_in, tx_out, chain, "
+                "note) VALUES (?, ?, ?, ?, '', ?, ?)",
+                (protocol, me, recipient, txid, dest, note),
+            )
+    db.execute("INSERT OR IGNORE INTO receipt VALUES (?, ?)", (chain, txid))
+    db.commit()
+
+
+def _link(db, client, failed):
+    """Link every record of mine stored, not only this sync's: to a wallet of mine, or to a
+    stranger read and found quiet. So a record whose recipient is declared mine later is
+    linked then, with no receipt read again."""
+    rows = db.execute(
+        f"""SELECT s.protocol, s.sender, s.recipient, s.tx_in, s.chain dest, t.chain, t.amount,
+                   t.asset, COALESCE(n.mine, 0) mine, COALESCE(n.hub, 0) hub,
+                   EXISTS (SELECT 1 FROM link WHERE kind = 'bridge-record'
+                           AND a = MIN(s.sender, s.recipient)
+                           AND b = MAX(s.sender, s.recipient)) linked
+            FROM swap s JOIN transfer t ON t.txid = s.tx_in AND t.src = s.sender
+            LEFT JOIN node n ON n.address = s.recipient
+            WHERE s.protocol IN ({",".join("?" * len(PROTOCOLS))}) AND s.note = ''
+              AND s.sender != s.recipient AND s.sender IN (SELECT address FROM node WHERE mine)
+            ORDER BY t.token = '', t.amount DESC""",
+        PROTOCOLS,
+    )
+    records = {}
+    for r in rows:  # my transfers in the deposit: the token bridged before the coin for gas
+        records.setdefault((r["protocol"], r["tx_in"], r["recipient"]), r)
+    hubs = {}
+    for r in records.values():
+        to = r["recipient"]
+        if not r["mine"] and not r["linked"] and to not in hubs:
+            # A stranger is read first: one that is busy or a service links nobody. One found
+            # quiet has its link, and is not read again.
+            try:
+                hubs[to] = busy.check(db, client, to)
+            except (httpx.HTTPError, RuntimeError, ValueError, KeyError, TypeError) as e:
+                hubs[to] = True  # unread is not quiet: read again at the next sync
+                failed.setdefault(to[:12] + "...", chains.describe(e))
+        if r["mine"] or not (r["hub"] or hubs.get(to)):
+            coins = f"{r['amount']:g} {r['asset']}"
+            evidence = f"{r['protocol']}: {coins} {r['chain']} > {r['dest']} ({r['tx_in'][:18]})"
+            db.execute(
+                "INSERT OR REPLACE INTO link VALUES (?, ?, 'bridge-record', ?, ?)",
+                (*pair(r["sender"], to), CONFIDENCE, evidence),
+            )
+    db.commit()
+
+
 def sync(db, client):
-    """Read the receipts of my deposits into bridges that are not read yet, store the records
-    and their links. Returns what failed, which the next sync reads again."""
+    """Read the receipts of my deposits into bridges not read yet, store their records, then
+    link the records. Returns what failed, which the next sync tries again."""
     cfgs = chains.evm_chains()
-    hubs, down = {}, {}
+    down, failed = set(), {}
     for (chain, txid), paid in _pending(db).items():
         if chain in down:
-            continue  # the indexer is down: its other receipts wait for the next sync
+            continue  # its indexer is down: the other receipts wait for the next sync
         try:
-            receipt = fetch(client, cfgs[chain], txid)
-            for protocol, sender, recipient, dest in decode(chain, receipt):
-                me = paid["src"]
-                if me not in (sender, receipt["from"]):
-                    continue  # someone else's deposit in the same transaction
-                note = ""
-                if dest == "solana":  # CCTP and Wormhole name a token account there
-                    found = owner(client, recipient)
-                    recipient, note = (found, "") if found else (recipient, "closed")
-                if not database.valid(recipient):
-                    continue
-                if not note and recipient != me:
-                    if recipient not in hubs:
-                        # A stranger is read first: one that is busy or a service links nobody.
-                        hubs[recipient] = busy.check(db, client, recipient)
-                    if not hubs[recipient]:
-                        coins = f"{paid['amount']:g} {paid['asset']}"
-                        db.execute(
-                            "INSERT OR REPLACE INTO link VALUES (?, ?, 'bridge-record', ?, ?)",
-                            (
-                                *pair(me, recipient),
-                                CONFIDENCE,
-                                f"{protocol}: {coins} {chain} > {dest} ({txid[:18]})",
-                            ),
-                        )
-                db.execute(
-                    "INSERT OR IGNORE INTO swap(protocol, sender, recipient, tx_in, tx_out, chain, "
-                    "note) VALUES (?, ?, ?, ?, '', ?, ?)",
-                    (protocol, me, recipient, txid, dest, note),
-                )
-            db.execute("INSERT OR IGNORE INTO receipt VALUES (?, ?)", (chain, txid))
-            db.commit()
-        except (httpx.HTTPError, RuntimeError, ValueError, KeyError, TypeError) as e:
-            down[chain] = chains.describe(e)
-    reason = "; ".join(f"{chain}: {why}" for chain, why in sorted(down.items()))
-    if down:  # stored: until it is read, a record may be missing from every verdict
+            _read(db, client, cfgs[chain], chain, txid, paid["src"])
+        except (httpx.HTTPError, chains.RateLimited) as e:
+            down.add(chain)
+            failed[chain] = chains.describe(e)
+        except (RuntimeError, ValueError, KeyError, TypeError) as e:
+            # This receipt only (not indexed yet, an answer that does not parse): the chain's
+            # other receipts are still read, and this one again at the next sync.
+            failed.setdefault(chain, chains.describe(e))
+    _link(db, client, failed)
+    reason = "; ".join(f"{where}: {why}" for where, why in failed.items())
+    if failed:  # stored: until it is read, a record may be missing from every verdict
         db.execute(
             "INSERT OR REPLACE INTO failure VALUES (?, ?, ?)", (SOURCE, reason, int(time.time()))
         )
     else:
         db.execute("DELETE FROM failure WHERE source = ?", (SOURCE,))
     db.commit()
-    return [f"{SOURCE}: {reason}"] if down else []
+    return [f"{SOURCE}: {reason}"] if failed else []
 
 
 def strangers(db, addresses):

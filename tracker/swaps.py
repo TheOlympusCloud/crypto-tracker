@@ -120,6 +120,8 @@ def unchecked(db):
     off = os.environ.get("CT_SWAPS", "on") == "off"
     return [
         f"{r['source']} did not answer ({r['error']}), so swaps through it were not checked"
+        if r["source"] in SOURCES
+        else f"{r['source']} were not all read ({r['error']}), so a bridge record may be missing"
         for r in db.execute("SELECT * FROM failure ORDER BY source")
         if not (off and r["source"] in SOURCES)
     ]
