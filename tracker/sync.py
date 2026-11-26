@@ -17,6 +17,7 @@ from . import (
     heuristics,
     history,
     labels,
+    mixers,
     prices,
     swaps,
     tokens,
@@ -261,6 +262,7 @@ def run(addresses=None, depth=0, import_labels=False, wallets=()):
             status["current"] = "swaps"
             status["notes"] += swaps.sync(db, client)
             status["notes"] += bridges.sync(db, client)
+            status["notes"] += mixers.sync(db, client)
             deposits.read(db, client)  # after the labels: a named address is not read
             detect.behaviour(db)  # after the swaps, whose vault labels outrank a guess
             heuristics.match_bridges(db)
@@ -327,6 +329,7 @@ def fill_in():
             if swapping:
                 swaps.sync(db, client)
             bridges.sync(db, client)  # bridges paid in older transactions
+            mixers.sync(db, client)  # and mixers
             # What follows from the older transfers, as at the end of a sync.
             detect.behaviour(db)
             heuristics.match_bridges(db)

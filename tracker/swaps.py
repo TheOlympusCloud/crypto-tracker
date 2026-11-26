@@ -114,14 +114,19 @@ def notes(chains_of_wallet):
     return [NOTE] + ([OWN_NODE] if node.MEMPOOL and "bitcoin" in chains_of_wallet else [])
 
 
+LOST = {"Mixer pools": "a mixer link"}  # what a failed source other than bridges may miss
+
+
 def unchecked(db):
-    """Swap sources, and bridge receipts (bridges.py), that did not answer at the last sync,
-    as text for a verdict. With CT_SWAPS=off a swap source's old failure no longer counts."""
+    """Swap sources, and bridge receipts and mixer pools (bridges.py, mixers.py), that did not
+    answer at the last sync, as text for a verdict. With CT_SWAPS=off a swap source's old
+    failure no longer counts."""
     off = os.environ.get("CT_SWAPS", "on") == "off"
     return [
         f"{r['source']} did not answer ({r['error']}), so swaps through it were not checked"
         if r["source"] in SOURCES
-        else f"{r['source']} were not all read ({r['error']}), so a bridge record may be missing"
+        else f"{r['source']} were not all read ({r['error']}), so "
+        f"{LOST.get(r['source'], 'a bridge record')} may be missing"
         for r in db.execute("SELECT * FROM failure ORDER BY source")
         if not (off and r["source"] in SOURCES)
     ]
