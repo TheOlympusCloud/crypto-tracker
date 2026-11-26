@@ -1,9 +1,10 @@
-"""Mixer links: a Tornado Cash deposit by one wallet of mine and a withdrawal to another
+"""Mixer links: Tornado Cash deposits by one wallet of mine and a withdrawal to another
 (tracker/mixers.py).
 
 The receipts and pool logs in fixtures/mixers are real Ethereum answers recorded from
-Routescan: a deposit into the 100 ETH pool through Tornado's router (January 2024), and three
-later withdrawals from that pool with 2, 4 and 44 deposits in between.
+Routescan. In January 2024 one address made six deposits in a row into the 100 ETH pool
+through Tornado's router (`DEPOSITS`, oldest first). Three later withdrawals from that pool
+came after 2, 4 and 44 deposits by others.
 """
 
 import json
@@ -31,32 +32,31 @@ DEPOSITOR = "0xb529ba5dae11cb5d452128129664def1d568ecbe"
 TWO = "0x632ba6dab1c93d4ac42402f83d6bcbe5ccf78485"  # withdrew after 2 more deposits
 FOUR = "0xcfb8f97f1602c3a8fa91d19f62c069457e1a8c37"  # after 4
 CROWD = "0x455495b58b8096e429e624cdfaf4b875f0893156"  # after 44
-
-
-def fixture(name):
-    return json.loads((FIXTURES / f"{name}.json").read_text())
-
-
-TX = {name: fixture(name)["result"]["transactionHash"]
-      for name in ("deposit", "withdrawal-2", "withdrawal-4", "withdrawal-44")}  # fmt: skip
+RECEIPTS = json.loads((FIXTURES / "receipts.json").read_text())
+PAGES = json.loads((FIXTURES / "deposits.json").read_text())  # "from-to-offset" -> answer
+BLOCK = {tx: int(r["result"]["blockNumber"], 16) for tx, r in RECEIPTS.items()}
+DEPOSITS = sorted((tx for tx, r in RECEIPTS.items() if r["result"]["from"] == DEPOSITOR),
+                  key=BLOCK.get)  # fmt: skip
+TX = {to: next(tx for tx, r in RECEIPTS.items() if r["result"]["from"] == to)
+      for to in (TWO, FOUR, CROWD)}  # fmt: skip  # each withdrew itself, through the router
 
 
 class Routescan:
     """Answers from the recordings; every query is noted."""
 
-    def __init__(self):
-        self.receipts = {tx: fixture(name) for name, tx in TX.items()}
+    def __init__(self, pages=PAGES):
+        self.pages = pages
         self.asked = []
 
     def __call__(self, request):
         q = dict(request.url.params)
         self.asked.append(q)
         if q["module"] == "proxy":
-            return httpx.Response(200, json=self.receipts[q["txhash"]])
-        assert (q["module"], q["address"], q["topic0"], q["offset"]) == (
-            "logs", POOL, mixers.DEPOSIT, str(mixers.CROWD)
-        )  # fmt: skip
-        return httpx.Response(200, json=fixture(f"deposits-{q['fromBlock']}-{q['toBlock']}"))
+            return httpx.Response(200, json=RECEIPTS[q["txhash"]])
+        assert (q["module"], q["address"], q["topic0"]) == ("logs", POOL, mixers.DEPOSIT)
+        return httpx.Response(
+            200, json=self.pages[f"{q['fromBlock']}-{q['toBlock']}-{q['offset']}"]
+        )
 
 
 @pytest.fixture
@@ -71,13 +71,15 @@ def run(db, fake):
         return mixers.sync(db, client)
 
 
-def legs(db, *withdrawals):
-    """My deposit through the router, and the withdrawals named (by recipient) to wallets of mine."""
+def legs(db, *withdrawals, deposits=DEPOSITS[-1:]):
+    """The depositor's deposits through the router (its last one unless told), and the
+    withdrawals to the wallets of mine named."""
     mine(db, DEPOSITOR)
-    transfer(db, "ethereum", TX["deposit"], DEPOSITOR, ROUTER, 100, ts=1705300331)
-    for name, to in withdrawals:
+    for tx in deposits:
+        transfer(db, "ethereum", tx, DEPOSITOR, ROUTER, 100, ts=BLOCK[tx])
+    for to in withdrawals:
         mine(db, to)
-        transfer(db, "ethereum", TX[name], POOL, to, 100, ts=1705400000)
+        transfer(db, "ethereum", TX[to], POOL, to, 100, ts=BLOCK[TX[to]])
     db.commit()
 
 
@@ -85,36 +87,83 @@ def links(db):
     return {(r["a"], r["b"]): r["confidence"] for r in db.execute("SELECT * FROM link")}
 
 
+def logs(fake):
+    return [
+        (q["fromBlock"], q["toBlock"], q["offset"]) for q in fake.asked if q["module"] == "logs"
+    ]
+
+
 def test_few_deposits_between_give_the_bound_never_above_0_3(db, quiet):
-    legs(db, ("withdrawal-2", TWO), ("withdrawal-4", FOUR))
+    legs(db, TWO, FOUR)
 
     assert run(db, Routescan()) == []
 
     # 2 deposits between: 1/3, held at 0.3. 4 between: 1/5.
     assert links(db) == {pair(DEPOSITOR, TWO): 0.3, pair(DEPOSITOR, FOUR): 0.2}
-    (evidence,) = [r["evidence"] for r in db.execute("SELECT * FROM link WHERE b = ?", (FOUR,))]
-    assert evidence == f"Tornado Cash 100 ETH: 4 deposits between ({TX['deposit'][:18]} > " \
-                       f"{TX['withdrawal-4'][:18]})"  # fmt: skip
-    (link,) = [k for k in graph.build(db)["links"] if k["b"] == FOUR or k["a"] == FOUR]
+    (evidence,) = [
+        r["evidence"] for r in db.execute("SELECT * FROM link WHERE ? IN (a, b)", (FOUR,))
+    ]
+    assert evidence == f"Tornado Cash 100 ETH: 1 of the last 5 deposits ({DEPOSITS[-1][:18]} > " \
+                       f"{TX[FOUR][:18]})"  # fmt: skip
+    (link,) = [k for k in graph.build(db)["links"] if FOUR in (k["a"], k["b"])]
     assert (link["kind"], link["confidence"]) == ("mixer", 0.2)
 
 
 def test_a_large_pool_gives_no_link(db, quiet):
     """44 deposits between: the answer holds a full page of 20, which is enough to say the pair
     is hidden in the crowd (a bound under 5%)."""
-    legs(db, ("withdrawal-44", CROWD))
+    legs(db, CROWD)
     fake = Routescan()
 
     assert run(db, fake) == []
 
     assert links(db) == {}
     (scan,) = db.execute("SELECT * FROM mixer_scan").fetchall()
-    assert dict(scan) == {"chain": "ethereum", "pool": POOL, "low": 19010516, "high": 19045907,
-                          "deposits": mixers.CROWD}  # fmt: skip
+    assert dict(scan) == {"chain": "ethereum", "pool": POOL, "low": 19010516, "high": 19045906,
+                          "deposits": 20, "page": 20}  # fmt: skip
+
+
+def test_several_deposits_of_one_wallet_count_together(db, quiet):
+    """Each of the six deposits could be the one withdrawn: the oldest makes 6 of the last 10
+    deposits before FOUR's withdrawal (0.6, held at 0.3), and 6 of the last 50 before CROWD's,
+    which one deposit alone would leave hidden in the crowd."""
+    legs(db, FOUR, CROWD, deposits=DEPOSITS)
+    fake = Routescan()
+
+    assert run(db, fake) == []
+
+    assert links(db) == {pair(DEPOSITOR, FOUR): 0.3, pair(DEPOSITOR, CROWD): 0.12}
+    (evidence,) = [
+        r["evidence"] for r in db.execute("SELECT * FROM link WHERE ? IN (a, b)", (CROWD,))
+    ]
+    assert evidence.startswith("Tornado Cash 100 ETH: 6 of the last 50 deposits (")
+    # One window per deposit, each in one page big enough for all six (6 x 20).
+    assert {offset for _, _, offset in logs(fake)} == {"120"}
+    assert len(logs(fake)) == 12
+
+
+def test_older_deposits_are_not_counted_once_the_crowd_hides_them(db, quiet):
+    """A page as big as 20 per deposit of the wallet that comes back full hides every older
+    window too: one more deposit before it cannot reach 5%. So nothing older is asked."""
+    a, b = "0x" + "a" * 40, "0x" + "b" * 40
+    mine(db, a)
+    mine(db, b)
+    rows = [("d1", a, "deposit", 100), ("d2", a, "deposit", 1000), ("w", b, "withdrawal", 1100)]
+    db.executemany(
+        "INSERT INTO mixer_leg VALUES ('ethereum', ?, ?, ?, ?, ?)",
+        [(tx, POOL, who, side, block) for tx, who, side, block in rows],
+    )
+    row = PAGES["19010516-19045906-20"]["result"][0]
+    fake = Routescan({"1001-1099-40": {"status": "1", "message": "OK", "result": [row] * 40}})
+
+    assert run(db, fake) == []
+
+    assert logs(fake) == [("1001", "1099", "40")]
+    assert links(db) == {}
 
 
 def test_the_pool_scan_is_cached_by_block_range(db, quiet):
-    legs(db, ("withdrawal-2", TWO))
+    legs(db, TWO)
     run(db, Routescan())
     again = Routescan()
 
@@ -124,20 +173,38 @@ def test_the_pool_scan_is_cached_by_block_range(db, quiet):
 
     # A later withdrawal is a new range: one more page, and the old range is not asked again.
     mine(db, FOUR)
-    transfer(db, "ethereum", TX["withdrawal-4"], POOL, FOUR, 100)
+    transfer(db, "ethereum", TX[FOUR], POOL, FOUR, 100)
     db.commit()
     later = Routescan()
     run(db, later)
-    pages = [(q["fromBlock"], q["toBlock"]) for q in later.asked if q["module"] == "logs"]
-    assert pages == [("19010516", "19020224")]
+    assert logs(later) == [("19010516", "19020223", "20")]
     assert links(db) == {pair(DEPOSITOR, TWO): 0.3, pair(DEPOSITOR, FOUR): 0.2}
+
+
+def test_the_count_leaves_out_the_deposits_and_the_withdrawals_blocks(db, quiet):
+    """A deposit later in the withdrawal's own block cannot be its source; one earlier in it
+    could, and so could a stranger's in the deposit's block: leaving both blocks out errs
+    toward a higher bound. Back to back, nothing is between them, and nothing is asked."""
+    a, b = "0x" + "a" * 40, "0x" + "b" * 40
+    mine(db, a)
+    mine(db, b)
+    db.executemany(
+        "INSERT INTO mixer_leg VALUES ('ethereum', ?, ?, ?, ?, ?)",
+        [("d", POOL, a, "deposit", 500), ("w", POOL, b, "withdrawal", 501)],
+    )
+    fake = Routescan({})
+
+    assert run(db, fake) == []
+
+    assert logs(fake) == []
+    assert links(db) == {pair(a, b): 0.3}
 
 
 def test_only_a_deposit_and_a_withdrawal_of_two_wallets_of_mine_link(db, quiet):
     # The depositor is a stranger: its deposit is no leg of mine, and nothing is asked.
     mine(db, TWO)
-    transfer(db, "ethereum", TX["deposit"], DEPOSITOR, ROUTER, 100)
-    transfer(db, "ethereum", TX["withdrawal-2"], POOL, TWO, 100)
+    transfer(db, "ethereum", DEPOSITS[-1], DEPOSITOR, ROUTER, 100)
+    transfer(db, "ethereum", TX[TWO], POOL, TWO, 100)
     db.commit()
     fake = Routescan()
     run(db, fake)
@@ -151,7 +218,7 @@ def test_a_withdrawal_to_someone_else_is_no_leg(db, quiet):
     legs(db)
     relayer = "0x" + "5" * 40
     mine(db, relayer)
-    transfer(db, "ethereum", TX["withdrawal-4"], POOL, relayer, 0.5)
+    transfer(db, "ethereum", TX[FOUR], POOL, relayer, 0.5)
     db.commit()
     run(db, Routescan())
     assert [tuple(r) for r in db.execute("SELECT address, side FROM mixer_leg")] == [
@@ -166,9 +233,9 @@ def test_a_withdrawal_that_also_paid_a_relayer_of_mine_is_the_recipients_leg(db,
     legs(db)
     relayer = "0x" + "5" * 40
     mine(db, relayer)
-    transfer(db, "ethereum", TX["withdrawal-4"], POOL, relayer, 0.5)
+    transfer(db, "ethereum", TX[FOUR], POOL, relayer, 0.5)
     mine(db, FOUR)
-    transfer(db, "ethereum", TX["withdrawal-4"], POOL, FOUR, 99.5)
+    transfer(db, "ethereum", TX[FOUR], POOL, FOUR, 99.5)
     db.commit()
     run(db, Routescan())
     assert links(db) == {pair(DEPOSITOR, FOUR): 0.2}
@@ -188,19 +255,19 @@ def test_a_withdrawal_before_the_deposit_or_by_the_same_wallet_links_nothing(db)
 
 
 def test_a_mixer_link_is_a_finding_of_both_wallets(db, quiet):
-    legs(db, ("withdrawal-2", TWO), ("withdrawal-4", FOUR))
+    legs(db, TWO, FOUR, deposits=DEPOSITS)
     db.execute("UPDATE node SET name = 'Savings' WHERE address = ?", (DEPOSITOR,))
     run(db, Routescan())
     scan = lambda address: list(exposure.mixer.check(SimpleNamespace(db=db, address=address)))
 
     ((found, params, evidence),) = scan(FOUR)
     assert found == "x-mixer-linked"
-    assert params == {"pool": "100 ETH", "count": 4, "confidence": 20, "wallets": "Savings"}
-    assert evidence == [{"chain": "ethereum", "txid": TX["deposit"]},
-                        {"chain": "ethereum", "txid": TX["withdrawal-4"]}]  # fmt: skip
+    assert params == {"pool": "100 ETH", "count": 10, "own": 6, "confidence": 30,
+                      "wallets": "Savings"}  # fmt: skip
+    assert evidence == [{"chain": "ethereum", "txid": DEPOSITS[0]},
+                        {"chain": "ethereum", "txid": TX[FOUR]}]  # fmt: skip
     ((found, params, _),) = scan(DEPOSITOR)  # the strongest of its two links
-    assert params == {"pool": "100 ETH", "count": 2, "confidence": 30,
-                      "wallets": f"{TWO}, {FOUR}"}  # fmt: skip
+    assert params["wallets"] == f"{TWO}, {FOUR}"
 
     db.execute("UPDATE node SET synced_at = 1")
     got = wallets.scores(db, graph.verdicts(db))[FOUR]
@@ -209,7 +276,7 @@ def test_a_mixer_link_is_a_finding_of_both_wallets(db, quiet):
 
 
 def test_an_indexer_that_fails_marks_the_verdict_partly_checked(db, quiet):
-    legs(db, ("withdrawal-2", TWO))
+    legs(db, TWO)
 
     def down(request):
         return httpx.Response(503)
@@ -238,7 +305,7 @@ def test_bnb_chain_through_nodereal_reads_no_receipt(db, monkeypatch, quiet):
 
 
 def test_a_sync_reads_my_mixer_legs_and_links_them(db, quiet, monkeypatch):
-    legs(db, ("withdrawal-2", TWO))
+    legs(db, TWO)
     real = httpx.Client
     monkeypatch.setattr(
         httpx, "Client", lambda **kw: real(transport=httpx.MockTransport(Routescan()), **kw)
