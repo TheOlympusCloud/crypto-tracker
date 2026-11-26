@@ -222,13 +222,18 @@ def read_ofac(client):
     rows = []
     for currency in OFAC_LISTS:
         text = client.get(OFAC.format(currency)).raise_for_status().text
-        rows += parse_list(text, "Sanctioned by OFAC", "sanctioned (OFAC)", "ofac-sanctions")
+        got = list(parse_list(text, "Sanctioned by OFAC", "sanctioned (OFAC)", "ofac-sanctions"))
+        if not got:  # a broken answer, not a lifted sanction: it must not delist everyone
+            raise RuntimeError(f"OFAC's {currency} list came empty")
+        rows += got
     return rows
 
 
 def frozen(source, issuer, token, added, removed):
     """Flagged rows for the addresses `issuer` froze and has not unfrozen since. `added` and
     `removed` are [(position in the chain, address)]; what the indexer says is untrusted."""
+    if not added:  # an indexer still catching up, not a lifted freeze: keep the old copy
+        raise RuntimeError(f"no {issuer} freeze read")
     state = {}
     for _, address, on in sorted([(*e, True) for e in added] + [(*e, False) for e in removed]):
         state[address] = on
@@ -410,7 +415,10 @@ def import_open(db, client, everything=False):
             rows += read(client)
             done.append(name)
             replaced.append((name,))
-        except (httpx.HTTPError, RuntimeError, ValueError, KeyError, TypeError, IndexError):
+        except (
+            httpx.HTTPError, RuntimeError, ValueError, KeyError, TypeError, IndexError,
+            AttributeError,
+        ):  # fmt: skip
             failed.append(name)  # its old copy stays until a read succeeds
     db.executemany("DELETE FROM label WHERE source = ?", replaced)
     store(db, rows)

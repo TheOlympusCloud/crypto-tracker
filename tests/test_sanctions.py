@@ -24,16 +24,20 @@ SET = ("ofac-sanctions", "freezes-ethereum", "freezes-tron")
 
 class Internet:
     """The recorded lists and events, behind the test's fake indexers. `wide`: blocks above
-    which a getLogs query times out, as Routescan's does."""
+    which a getLogs query times out, as Routescan's does. `odd`: a host that answers a JSON
+    list instead of its usual object."""
 
-    def __init__(self, ofac=None, wide=10**9, broken=()):
+    def __init__(self, ofac=None, wide=10**9, broken=(), odd=()):
         self.ofac, self.wide, self.broken, self.asked = ofac or RECORDED["ofac"], wide, broken, []
+        self.odd = odd
 
     def __call__(self, request):
         url, q = request.url, parse_qs(request.url.query.decode())
         self.asked.append(request)
         if url.host in self.broken:
             return httpx.Response(404)
+        if url.host in self.odd:
+            return httpx.Response(200, json=[])
         if url.host == "raw.githubusercontent.com" and "/0xB10C/" in url.path:
             currency = url.path.rsplit("_", 1)[1].removesuffix(".txt")
             return httpx.Response(200, text=self.ofac.get(currency, ""))
@@ -149,6 +153,16 @@ def test_a_list_read_again_drops_who_left_it_and_a_failed_read_keeps_it(db, inte
     assert "freezes-tron" in failed and not {"ofac-sanctions", "freezes-ethereum"} & set(failed)
     assert ETH_SANCTIONED not in flagged(db)  # delisted
     assert "TVE2XCeDRqbLQQQhbcp6g6vit52zLgYzzT" in flagged(db)  # the old copy stays
+
+
+def test_an_empty_or_odd_answer_is_a_failed_read_and_keeps_the_old_copy(db, internet):
+    _, net = internet
+    load(db, net)
+    net.ofac = {**RECORDED["ofac"], "SOL": ""}  # GitHub answers one list with nothing
+    net.odd = ("api.trongrid.io",)
+    _, failed = load(db, net)
+    assert {"ofac-sanctions", "freezes-tron"} <= set(failed) and "freezes-ethereum" not in failed
+    assert {SOL_SANCTIONED, "TVE2XCeDRqbLQQQhbcp6g6vit52zLgYzzT"} <= set(flagged(db))
 
 
 def test_sanctions_outrank_the_open_sets_but_not_you(db, internet):
