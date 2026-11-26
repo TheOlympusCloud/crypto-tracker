@@ -17,6 +17,9 @@ list the wallets that are yours and mark as **public** the ones tied to your ide
   or through strangers, bridges, common inputs or a chain of your own wallets, with hop
   count and confidence; or "no link found", next to the list of what that check cannot
   rule out. It never says "safe".
+- **What an observer sees**: which of your wallets look like one person, across chains,
+  the public wallets among them and the links holding each group together, weakest first.
+  See [Groups of wallets](#groups-of-wallets).
 - **A privacy grade per wallet**, across all its chains: am-i-exposed's score and grade,
   with the findings behind it by chain. See
   [Privacy grade of your wallets](#privacy-grade-of-your-wallets).
@@ -780,6 +783,19 @@ Funds origin is an estimate of the mix, not a coin trace: an address that forwar
 passes on its own sources in proportion to what it received of that asset, ignoring
 timing. It stops at a label, at one of your wallets, at an address that was not expanded,
 or at the hop limit, and says which.
+
+### Groups of wallets
+
+The verdicts list pairs; the portfolio's **What an observer sees** also groups your wallets
+into the ones that look like one person. Two wallets are in one group when a link of 50% or
+more (the alert threshold) ties them without passing through a third wallet of yours, and
+groups chain: A tied to B and B to C puts all three in one group, whatever their chains. A
+group shows its wallets and chains, says so first when one of them is public (whoever knows
+it can name the others), and lists the links holding it together, weakest first. When one
+link alone holds two parts of a group together, it says so, with the two parts: that is the
+guess a whole group rests on. **Show in graph** highlights every link of the group. A group
+with a wallet not read in full says "Partly checked": it may be larger. The groups are worked
+out on the server from the verdicts (`tracker/clusters.py`); nothing is fetched.
 
 ## Known limits
 
