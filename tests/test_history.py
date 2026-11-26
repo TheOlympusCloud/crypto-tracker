@@ -24,7 +24,10 @@ def test_each_chain_has_its_sources(evm):
     assert history.sources(BCH) == ["bitcoincash"]
     assert history.sources(DOGE) == ["dogecoin"]
     # every EVM chain this server can read, each list on its own; none for a chain without key
-    assert history.sources(A) == ["ethereum:txlist", "ethereum:txlistinternal", "ethereum:tokentx"]
+    assert history.sources(A) == [
+        "ethereum:txlist", "ethereum:txlistinternal", "ethereum:tokentx",
+        "ethereum:tokennfttx", "ethereum:token1155tx",
+    ]  # fmt: skip
     assert history.sources(TRX) == ["tron:native", "tron:trc20"]
     assert history.sources(SOL) == ["solana"]
 
@@ -47,6 +50,8 @@ def test_an_address_is_complete_only_when_every_source_is(db, evm):
     history.put(db, A, "ethereum:txlist", complete=1, oldest_ts=100)
     history.put(db, A, "ethereum:txlistinternal", complete=1, oldest_ts=200)
     history.put(db, A, "ethereum:tokentx", oldest_ts=300)
+    for source in ("ethereum:tokennfttx", "ethereum:token1155tx"):
+        history.put(db, A, source, complete=1)  # no NFT ever: no date either
     # Filling in: read back to the latest of the sources still filling in.
     assert history.state(db, A) == {"complete": False, "oldest_ts": 300}
     history.put(db, A, "ethereum:tokentx", complete=1)
@@ -175,6 +180,8 @@ class Etherscan:
             ],
             "txlistinternal": [],
             "tokentx": [],
+            "tokennfttx": [],
+            "token1155tx": [],
         }
         self.asked = []
 

@@ -63,6 +63,10 @@ def _links(db):
 # Transfers of a token judged fake in one of my wallets: never drawn, not even with "Unknown
 # tokens", so an address that only sent me such tokens is not in the graph at all.
 FAKE = "token IN (SELECT token FROM balance WHERE trust = 'scam')"
+# An NFT's contract (chains.nft_transfers): its NFTs are drawn as one edge, not one each.
+COLLECTION = (
+    "CASE WHEN instr(token, '#') THEN substr(token, 1, instr(token, '#') - 1) ELSE token END"
+)
 
 
 def build(db, spam=False):
@@ -70,9 +74,10 @@ def build(db, spam=False):
     edges = [
         dict(r)
         for r in db.execute(
-            f"""SELECT chain, src, dst, asset, token, COUNT(*) count, SUM(amount) amount,
-                       MIN(ts) first, MAX(ts) last, MIN(txid) txid, MIN({MIXED}) coinjoin
-                FROM transfer WHERE {where} GROUP BY chain, src, dst, token"""
+            f"""SELECT chain, src, dst, asset, {COLLECTION} token, COUNT(*) count,
+                       SUM(amount) amount, MIN(ts) first, MAX(ts) last, MIN(txid) txid,
+                       MIN({MIXED}) coinjoin
+                FROM transfer WHERE {where} GROUP BY chain, src, dst, {COLLECTION}"""
         )
     ]
     links = _links(db)
@@ -419,8 +424,8 @@ def origins(db, max_hops=HOPS):
     symbols = {}
     for r in db.execute(
         f"""SELECT chain, src, dst, asset, token, SUM(amount) amount FROM transfer
-            WHERE {TRUSTED} GROUP BY chain, src, dst, token"""
-    ):
+            WHERE {TRUSTED} AND NOT instr(token, '#') GROUP BY chain, src, dst, token"""
+    ):  # an NFT (chains.nft_transfers) is no money
         inbound[(r["dst"], r["chain"], r["token"])][r["src"]] = r["amount"]
         symbols[(r["chain"], r["token"])] = r["asset"]
     _records(db, inbound, symbols)

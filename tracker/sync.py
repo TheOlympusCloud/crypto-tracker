@@ -111,11 +111,12 @@ def sync_address(db, client, address):
         )
         if not data["hub"]:
             # The whole history is loaded, so token balances follow from it; this covers
-            # indexers without a token-balance call. Rebasing tokens will be off.
+            # indexers without a token-balance call. Rebasing tokens will be off. NFTs ("#" in
+            # their key, chains.nft_transfers) are no balance.
             db.execute(
                 """INSERT OR IGNORE INTO balance(address, chain, asset, token, amount)
                    SELECT ?1, chain, asset, token, SUM(CASE WHEN dst = ?1 THEN amount ELSE -amount END)
-                   FROM transfer WHERE token != '' AND ?1 IN (src, dst)
+                   FROM transfer WHERE token != '' AND NOT instr(token, '#') AND ?1 IN (src, dst)
                    GROUP BY chain, token HAVING SUM(CASE WHEN dst = ?1 THEN amount ELSE -amount END) > 1e-9""",
                 (address,),
             )

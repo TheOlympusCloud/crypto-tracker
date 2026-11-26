@@ -765,6 +765,34 @@ def evm_transfers(chain, native, items, token=False):
     return rows
 
 
+NFT_LISTS = ("tokennfttx", "token1155tx")  # ERC-721 and ERC-1155 transfers
+NOBODY = {"0x" + "0" * 40, "0x000000000000000000000000000000000000dead"}  # mints and burns
+
+
+def nft_transfers(chain, items):
+    """Transfer rows of NFT list rows. An NFT is keyed by its contract and id ("0x…#42"), so
+    trusting what my wallets sent (heuristics.TRUSTED) covers that NFT only, never a whole
+    contract: a shared one, like OpenSea's storefront, lets anybody mint into it. A mint or a
+    burn is left out: everybody who minted or burned would be linked through the zero address."""
+    rows = []
+    for it in items:
+        try:
+            if {it["from"].lower(), (it.get("to") or "").lower()} & NOBODY:
+                continue
+            rows.append(
+                it
+                | {
+                    "value": it.get("tokenValue") or "1",  # an ERC-721 row is one NFT
+                    "tokenDecimal": "0",
+                    "contractAddress": f"{it['contractAddress']}#{it['tokenID']}",
+                    "tokenSymbol": it.get("tokenSymbol") or it.get("tokenName"),
+                }
+            )
+        except (KeyError, AttributeError, TypeError):
+            continue  # a row we do not understand is not a transfer
+    return evm_transfers(chain, "", rows, token=True)
+
+
 def _evm_call(client, cfg, address, action, partial=False, **extra):
     params = {"module": "account", "action": action, "address": address}
     if cfg.get("apikey"):
@@ -781,7 +809,7 @@ def _evm_call(client, cfg, address, action, partial=False, **extra):
 
 
 def page_evm(client, cfg, address, action, cursor=None):
-    """One page of an EVM list (txlist, txlistinternal, tokentx) from block `cursor` down.
+    """One page of an EVM list (history.LISTS) from block `cursor` down.
     Always the first page of a query that ends at a lower block, so a source that serves only
     the newest 10,000 rows of a query never stops it."""
     extra = {
