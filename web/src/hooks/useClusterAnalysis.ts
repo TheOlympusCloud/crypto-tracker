@@ -11,6 +11,7 @@ import {
   type ClusterProgress,
 } from "@/lib/analysis/cluster/build-cluster";
 import type { MempoolTransaction } from "@/lib/api/types";
+import { scanConfig } from "@/lib/bitcoin/chain-profile";
 
 type ClusterPhase = "idle" | "analyzing" | "complete" | "error";
 
@@ -43,7 +44,7 @@ export function useClusterAnalysis() {
       setState({ phase: "analyzing", progress: null, result: null, error: null });
 
       try {
-        const api = createApiClient(config, controller.signal);
+        const api = createApiClient(scanConfig(config), controller.signal); // crypto-tracker: the scanned chain's
         const result = await buildFirstDegreeCluster(
           targetAddress,
           txs,

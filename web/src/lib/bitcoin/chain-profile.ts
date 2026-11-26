@@ -22,6 +22,7 @@ export type Feature =
 
 export interface ChainProfile {
   id: ChainId;
+  name: string;
   unit: string;
   blockSeconds: number;
   /** Base units below which an output is dust. */
@@ -43,6 +44,7 @@ const DOGE = 100_000_000;
 export const CHAINS: Record<ChainId, ChainProfile> = {
   bitcoin: {
     id: "bitcoin",
+    name: "Bitcoin",
     unit: "BTC",
     blockSeconds: 600,
     dust: 1000,
@@ -53,6 +55,7 @@ export const CHAINS: Record<ChainId, ChainProfile> = {
   },
   litecoin: {
     id: "litecoin",
+    name: "Litecoin",
     unit: "LTC",
     blockSeconds: 150,
     dust: 1000,
@@ -64,6 +67,7 @@ export const CHAINS: Record<ChainId, ChainProfile> = {
   },
   dogecoin: {
     id: "dogecoin",
+    name: "Dogecoin",
     unit: "DOGE",
     blockSeconds: 60,
     dust: DOGE / 100, // Dogecoin Core's dust limit, 0.01 DOGE
@@ -76,6 +80,7 @@ export const CHAINS: Record<ChainId, ChainProfile> = {
   },
   bitcoincash: {
     id: "bitcoincash",
+    name: "Bitcoin Cash",
     unit: "BCH",
     blockSeconds: 600,
     dust: 1000,
@@ -121,6 +126,13 @@ export function otherChain(input: string): ChainId | null {
   }
   return null;
 }
+
+/**
+ * The backend of a scan on chain `id` (the active one by default): Bitcoin's is the one in the
+ * settings, the others are the tracker's. Every client of a scan's result page takes it from here.
+ */
+export const scanConfig = <C extends { mempoolBaseUrl: string }>(config: C, id: ChainId = active.id): C =>
+  id === "bitcoin" ? config : { ...config, mempoolBaseUrl: CHAINS[id].api };
 
 /** The scanner's form of an address: Bitcoin Cash's without its prefix. */
 export const bareAddress = (address: string): string => address.replace(/^bitcoincash:/i, "");
