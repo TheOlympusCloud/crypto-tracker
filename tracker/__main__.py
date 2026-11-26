@@ -5,7 +5,7 @@ from pathlib import Path
 
 import uvicorn
 
-from tracker import sync
+from tracker import node, sync
 
 
 def password_from_file():
@@ -32,4 +32,6 @@ if __name__ == "__main__":
     # Wallets not read in full keep filling in between syncs (the app is imported by uvicorn,
     # in this process; tests that import it start no thread).
     sync.every(sync.FILL_EVERY, sync.fill_in)
+    if node.BITCOIND:  # the lite node: register my wallets with it and keep what it finds
+        node.watch()
     uvicorn.run("tracker.app:app", host=host, port=int(os.environ.get("CT_PORT", "8000")))

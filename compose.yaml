@@ -7,6 +7,8 @@
 #
 # Optional, a Bitcoin node of your own next to it (README, "A Bitcoin node of your own"):
 # COMPOSE_PROFILES=mempool in .env, then docker compose up -d. About 1.1 TB of disk.
+# Or a lite one, pruned, that watches your own wallets only (README, "A lite node"):
+# COMPOSE_PROFILES=node-lite and NODE_MAX_DISK_GB=50 (its most disk, at least 20) in .env.
 services:
   crypto-tracker:
     build:
@@ -27,6 +29,7 @@ services:
       CT_MEMPOOL_PORT: ${MEMPOOL_PORT:-8080}
     volumes:
       - data:/data
+      - bitcoind-rpc:/rpc:ro # the lite node's RPC cookie (tracker/node.py)
 
   # ---- profile "mempool": bitcoind, its address index (Fulcrum) and mempool on top ----
   bitcoind:
@@ -113,9 +116,37 @@ services:
       - "${MEMPOOL_PORT:-8080}:8080" # mempool's own site, a block explorer on your network
     depends_on: [mempool-api]
 
+  # ---- profile "node-lite": bitcoind alone, pruned to NODE_MAX_DISK_GB ----
+  # No address index: the app reads my own wallets from a watch-only wallet in it, any other
+  # address from the public server (tracker/node.py). Never together with "mempool".
+  bitcoind-lite:
+    profiles: [node-lite]
+    image: bitcoin/bitcoin:31.3@sha256:bb5098778c3cb2fb27fc53669db68157877df5cbe9a04b210b0b702c5fc422fc
+    <<: *node
+    # Sizes -prune from the cap, or refuses one below the floor, then runs the image's entrypoint.
+    entrypoint: ["/bin/sh", "/bitcoind-lite.sh"]
+    environment:
+      NODE_MAX_DISK_GB: ${NODE_MAX_DISK_GB:-50}
+    command:
+      - -server=1
+      - -maxmempool=300 # MB; mempool.dat on disk stays below it (counted in the cap)
+      - -nodebuglogfile=1 # logs only to Docker's, capped above at 30 MB
+      - -rpcbind=0.0.0.0 # reachable on the compose network only: no port is published
+      - -rpcallowip=10.0.0.0/8
+      - -rpcallowip=172.16.0.0/12
+      - -rpcallowip=192.168.0.0/16
+      - -rpccookiefile=/home/bitcoin/rpc/.cookie
+      - -rpccookieperms=all
+    volumes:
+      - bitcoind-lite:/home/bitcoin/.bitcoin
+      - bitcoind-rpc:/home/bitcoin/rpc
+      - ./node/bitcoind-lite.sh:/bitcoind-lite.sh:ro
+    stop_grace_period: 5m
+
 volumes:
   data:
   bitcoind:
+  bitcoind-lite:
   bitcoind-rpc:
   fulcrum:
   mempool-db:

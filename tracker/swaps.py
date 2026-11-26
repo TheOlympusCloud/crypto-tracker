@@ -111,7 +111,8 @@ def notes(chains_of_wallet):
     """What a wallet on these chains must know about its swaps."""
     if os.environ.get("CT_SWAPS", "on") == "off":
         return []
-    return [NOTE] + ([OWN_NODE] if node.MEMPOOL and "bitcoin" in chains_of_wallet else [])
+    own = node.MEMPOOL or node.BITCOIND
+    return [NOTE] + ([OWN_NODE] if own and "bitcoin" in chains_of_wallet else [])
 
 
 LOST = {"Mixer pools": "a mixer link"}  # what a failed source other than bridges may miss
@@ -137,7 +138,7 @@ def sync(db, client):
     if os.environ.get("CT_SWAPS", "on") == "off":
         return []
     mine = [r["address"] for r in db.execute("SELECT address FROM node WHERE mine")]
-    if node.MEMPOOL:  # Bitcoin addresses go to your own node and nowhere else
+    if node.MEMPOOL or node.BITCOIND:  # Bitcoin addresses go to your own node and nowhere else
         mine = [a for a in mine if database.chain_of(a) != "bitcoin"]
     failed = []
     for protocol, url in SOURCES.items():

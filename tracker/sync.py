@@ -18,6 +18,7 @@ from . import (
     history,
     labels,
     mixers,
+    node,
     prices,
     swaps,
     tokens,
@@ -43,7 +44,9 @@ def _client():
     return httpx.Client(timeout=30, headers={"User-Agent": "crypto-tracker"})
 
 
-def sync_address(db, client, address):
+def sync_address(db, client, address, own=False):
+    """Read `address` and store it. `own`: an HD wallet's address, mine before it is marked so,
+    which the lite node answers for and no public server ever sees."""
     if database.chain_of(address) == "dogecoin":
         # The Dogecoin indexer's hourly quota goes to addresses not read in the last hour.
         fresh = db.execute(
@@ -54,7 +57,7 @@ def sync_address(db, client, address):
             return
     try:
         mine = {r["address"] for r in db.execute("SELECT address FROM node WHERE mine")}
-        data = chains.fetch(client, address, mine)
+        data = chains.fetch(client, address, mine | {address} if own else mine)
         if address in mine:
             # My own addresses are read in full over time: see history.advance.
             more = history.advance(client, db, address, mine, data.get("count"))
@@ -186,7 +189,7 @@ def discover(db, client, wallet):
             while unused < hd.GAP and failures < 3:
                 address = hd.address(descriptor, branch, index)
                 status["current"] = address
-                sync_address(db, client, address)
+                sync_address(db, client, address, own=True)
                 status["done"] += 1
                 status["total"] += 1
                 error = db.execute(
@@ -214,6 +217,7 @@ def discover(db, client, wallet):
     if problem:
         problem = f"address scan incomplete, some lookups failed ({problem})"
         status["notes"].append(f"{wallet['name'] or wallet['id']}: {problem}")
+    problem = problem or (node.BITCOIND and node.missing(db, wallet["id"])) or None
     db.execute("UPDATE hdwallet SET error = ? WHERE id = ?", (problem, wallet["id"]))
     db.commit()
     return found

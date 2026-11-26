@@ -65,6 +65,9 @@ CREATE TABLE IF NOT EXISTS mixer_scan(chain TEXT, pool TEXT, low INT, high INT, 
   page INT, PRIMARY KEY(chain, pool, low, high));
 CREATE TABLE IF NOT EXISTS approval(address TEXT, chain TEXT, token TEXT, spender TEXT, txid TEXT,
   PRIMARY KEY(address, chain, token, spender));
+CREATE TABLE IF NOT EXISTS bitcoind_tx(txid TEXT PRIMARY KEY, height INT, time INT, data TEXT);
+CREATE TABLE IF NOT EXISTS bitcoind_addr(address TEXT, txid TEXT, PRIMARY KEY(address, txid));
+CREATE TABLE IF NOT EXISTS bitcoind_watch(key TEXT PRIMARY KEY, since INT NOT NULL);
 """
 
 EVM_RE = re.compile(r"0x[0-9a-fA-F]{40}")
