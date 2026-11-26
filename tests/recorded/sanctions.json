@@ -1,0 +1,162 @@
+{
+ "_note": "Recorded 2026-11-25 from 0xB10C's lists (first lines of each file), Routescan's getLogs for Ethereum (USDT, USDC) and TronGrid's contract events (USDT, USDC on Tron). Trimmed to a few rows.",
+ "ofac": {
+  "ETH": "0x0330070FD38Ec3bB94F58FA55D40368271E9e54A\n0x038989cbb1710c72b9920dc4fa529158f463e72c\n",
+  "XBT": "123WBUDmSJv4GctdVEz6Qq6z8nXSKrJ4KX\n125W5ek3DT6Zqy5S2iPt4FHQdNMCbZA3FU\n",
+  "BCH": "18M8bJWMzWHDBMxoLqjHHAffdRy4SrzkfB\nqpf2cphc5dkuclkqur7lhj2yuqq9pk3hmukle77vhq\n",
+  "LTC": "LNf2JDiuunBz7GMDKFYHN4rq5meXWxiwfb\nLNwgtMxcKUQ51dw7bQL1yPQjBVZh6QEqsd\n",
+  "ARB": "0x4f47bc496083c727c5fbe3ce9cdf2b0f6496270c\n",
+  "USDC": "0x983a81ca6FB1e441266D2FbcB7D8E530AC2E05A2\n0xb6f5ec1a0a9cd1526536d3f0426c429529471f40\n",
+  "TRX": "TA3rH2A7iHnm6pKH8gr9cK1EZnShnmZdFg\nTA82wQ77kb9DieW4C8q7C4KwMfnCzfziqN\n",
+  "SOL": "42RLPACwZPx3vYYmxSueqsogfynBDqXK298EDsNoyoHi\n6wjqWWra8ombzaw6VHrG5xpQ972jCYF6bbHiFCbWmr4U\n",
+  "USDT": "0x175d44451403Edf28469dF03A9280c1197ADb92c\nTA3941uFAvmVibSkQ6fMJXxmaSNovX86mz\n",
+  "BSC": "0x4f47bc496083c727c5fbe3ce9cdf2b0f6496270c\n"
+ },
+ "ethereum": {
+  "0x42e160154868087d6bfdc0ca23d96a1c1cfa32f1b72ba9ba27b69b98a0d819dc": [
+   {
+    "address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "topics": [
+     "0x42e160154868087d6bfdc0ca23d96a1c1cfa32f1b72ba9ba27b69b98a0d819dc"
+    ],
+    "data": "0x0000000000000000000000009faf5515f177f3a8a845d48c19032b33cc54c09c",
+    "blockNumber": "0x46c855",
+    "blockHash": "0xd80cfd2124d019ee0b088a511344ae81cbc2383015ca12f70c7b57c03f5032db",
+    "timeStamp": "0x5a1d912e",
+    "gasPrice": "0x25a01c500",
+    "gasUsed": "0x16f77",
+    "logIndex": "0x41",
+    "transactionHash": "0x17ce88e3e2417f6c13db93f619423cc4c5f51e89660587631dc34c823fac54a8",
+    "transactionIndex": "0x6a"
+   },
+   {
+    "address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "topics": [
+     "0x42e160154868087d6bfdc0ca23d96a1c1cfa32f1b72ba9ba27b69b98a0d819dc"
+    ],
+    "data": "0x000000000000000000000000008fe40574e881e7247b50b991c0cc057d66647f",
+    "blockNumber": "0x57dff2",
+    "blockHash": "0x26198a6159b89a1c14cd16b1d3ae853731cc533f74915203d74795fc945c2319",
+    "timeStamp": "0x5b1bc8ae",
+    "gasPrice": "0x9502f9000",
+    "gasUsed": "0x1752f",
+    "logIndex": "0x1",
+    "transactionHash": "0x348a042dfedaf64400bf6660fe0ed523b373f172b7914985600d882ac09e0631",
+    "transactionIndex": "0x1"
+   }
+  ],
+  "0xd7e9ec6e6ecd65492dce6bf513cd6867560d49544421d0783ddf06e76c24470c": [
+   {
+    "address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "topics": [
+     "0xd7e9ec6e6ecd65492dce6bf513cd6867560d49544421d0783ddf06e76c24470c"
+    ],
+    "data": "0x0000000000000000000000009faf5515f177f3a8a845d48c19032b33cc54c09c",
+    "blockNumber": "0x46c8a2",
+    "blockHash": "0xb203b97d68ec0dc97ee117dfa5f8986811e6242e498aabb76d747f2a251b225c",
+    "timeStamp": "0x5a1d95fb",
+    "gasPrice": "0x4e3b29200",
+    "gasUsed": "0xfc57",
+    "logIndex": "0x57",
+    "transactionHash": "0x520a66112467b4b79016c2a62658b56e8f78049bae8bf6f4ce4bf39ec2d75ba8",
+    "transactionIndex": "0x89"
+   }
+  ],
+  "0xffa4e6181777692565cf28528fc88fd1516ea86b56da075235fa575af6a4b855": [
+   {
+    "address": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "topics": [
+     "0xffa4e6181777692565cf28528fc88fd1516ea86b56da075235fa575af6a4b855",
+     "0x000000000000000000000000aa05f7c7eb9af63d6cc03c36c4f4ef6c37431ee0"
+    ],
+    "data": "0x",
+    "blockNumber": "0x9cc78d",
+    "blockHash": "0x63e90b0d1c642a3390be561f7f9fb83693b165686cab27dc4278905a8673ea55",
+    "timeStamp": "0x5ee84cec",
+    "gasPrice": "0x8d8f9fc00",
+    "gasUsed": "0xbbac",
+    "logIndex": "0x4e",
+    "transactionHash": "0x15cbde1b9bf285db50e22eeff1a7d04ea267dd94726df8ecabdb4cb6c2b590cb",
+    "transactionIndex": "0x71"
+   }
+  ],
+  "0x117e3210bb9aa7d9baff172026820255c6f6c30ba8999d1c2fd88e2848137c4e": []
+ },
+ "tron": {
+  "AddedBlackList": [
+   {
+    "block_number": 20973608,
+    "block_timestamp": 1593186954000,
+    "caller_contract_address": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+    "contract_address": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+    "event_index": 0,
+    "event_name": "AddedBlackList",
+    "result": {
+     "0": "0xd337e17c5bc42b9e81ca36dcbe1076c2c094707e",
+     "_user": "0xd337e17c5bc42b9e81ca36dcbe1076c2c094707e"
+    },
+    "result_type": {
+     "_user": "address"
+    },
+    "event": "AddedBlackList(address indexed _user)",
+    "transaction_id": "fd69e248edbb8009e4a3569b4a150589ce8370434edc3da2d1b8c40790b1dc77"
+   },
+   {
+    "block_number": 29101145,
+    "block_timestamp": 1617716631000,
+    "caller_contract_address": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+    "contract_address": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+    "event_index": 0,
+    "event_name": "AddedBlackList",
+    "result": {
+     "0": "0xe3b4d2395929bb60bad8e16c0001adfce5eb71ab",
+     "_user": "0xe3b4d2395929bb60bad8e16c0001adfce5eb71ab"
+    },
+    "result_type": {
+     "_user": "address"
+    },
+    "event": "AddedBlackList(address indexed _user)",
+    "transaction_id": "27a7c2db9991baaf7be3a8e4775860279376709c29a72245b930ff4eb3406c17"
+   }
+  ],
+  "RemovedBlackList": [
+   {
+    "block_number": 32451121,
+    "block_timestamp": 1627830444000,
+    "caller_contract_address": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+    "contract_address": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+    "event_index": 1,
+    "event_name": "RemovedBlackList",
+    "result": {
+     "0": "0xe3b4d2395929bb60bad8e16c0001adfce5eb71ab",
+     "_user": "0xe3b4d2395929bb60bad8e16c0001adfce5eb71ab"
+    },
+    "result_type": {
+     "_user": "address"
+    },
+    "event": "RemovedBlackList(address indexed _user)",
+    "transaction_id": "736870f36759d9f75174569222061e63708057c4d5607ed537454d9c95fc2303"
+   }
+  ],
+  "Blacklisted": [
+   {
+    "block_number": 39354219,
+    "block_timestamp": 1648613316000,
+    "caller_contract_address": "TEkxiTehnzSmSe2XqrBj4w32RUN966rdz8",
+    "contract_address": "TEkxiTehnzSmSe2XqrBj4w32RUN966rdz8",
+    "event_index": 0,
+    "event_name": "Blacklisted",
+    "result": {
+     "0": "0x7db418b5d567a4e0e8c59ad71be1fce48f3e6107",
+     "_account": "0x7db418b5d567a4e0e8c59ad71be1fce48f3e6107"
+    },
+    "result_type": {
+     "_account": "address"
+    },
+    "event": "Blacklisted(address indexed _account)",
+    "transaction_id": "df36b1ff7347acbee1d0d3129871ff7fb769b3e3e80fb57ac09e81132847013c"
+   }
+  ],
+  "UnBlacklisted": []
+ }
+}

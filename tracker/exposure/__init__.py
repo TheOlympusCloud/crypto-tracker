@@ -20,6 +20,7 @@ from . import exchange, flagged, funder, multichain
 # be tuned on real wallets (docs/design/multichain.md, 6.1).
 IMPACT = {
     "x-exchange-exposure": ("high", -15, "deterministic", ["kyc_exchange"], "historical"),
+    "x-flagged-address": ("critical", -20, "deterministic", ["kyc_exchange"], "active_risk"),
     "x-flagged-counterparty": ("high", -15, "deterministic", ["kyc_exchange"], "historical"),
     "x-funder-exchange": ("medium", -5, "deterministic", ["kyc_exchange"], "historical"),
     "x-funder-hub": ("low", 0, "deterministic", ["passive_observer"], "historical"),

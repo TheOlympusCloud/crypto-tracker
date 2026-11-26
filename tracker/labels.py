@@ -10,7 +10,11 @@ Labels come from four places, and the stronger one wins:
 
 The datasets are downloaded in full, so looking an address up in them tells nobody which
 addresses are of interest. All are MIT-licensed: brianleect/etherscan-labels,
-graphsense/graphsense-tagpacks and the program names of solana-labs/explorer.
+graphsense/graphsense-tagpacks, the program names of solana-labs/explorer and 0xB10C's
+OFAC lists. Tether's and Circle's freezes are read whole from the stablecoins' own events
+(docs/design/multichain.md, 2.2 #4). Sanctions and freezes are flagged labels that outrank
+the other datasets, and a list read anew replaces its old copy, so a delisted or unfrozen
+address loses its label.
 """
 
 import io
@@ -22,6 +26,10 @@ import time
 
 import httpx
 import yaml
+from embit import base58
+
+from . import chains
+from . import db as database
 
 EXPLORER_DUMPS = (
     "https://raw.githubusercontent.com/brianleect/etherscan-labels/main/data/{}/combined/"
@@ -32,13 +40,39 @@ TAGPACKS = "https://codeload.github.com/graphsense/graphsense-tagpacks/tar.gz/re
 SOLANA_PROGRAMS = (
     "https://raw.githubusercontent.com/solana-labs/explorer/master/app/utils/programs.ts"
 )
+OFAC = (
+    "https://raw.githubusercontent.com/0xB10C/ofac-sanctioned-digital-currency-addresses/lists/"
+    "sanctioned_addresses_{}.txt"
+)
+# The lists of the chains the tracker reads (XBT is Bitcoin; USDT holds Ethereum and Tron ones).
+OFAC_LISTS = ["XBT", "LTC", "BCH", "ETH", "BSC", "ARB", "USDT", "USDC", "TRX", "SOL"]
+# Freeze and unfreeze events: Tether's AddedBlackList/RemovedBlackList, Circle's
+# Blacklisted/UnBlacklisted. On Ethereum (issuer, token, contract, first block, topics).
+ETH_FREEZES = [
+    ("Tether", "USDT", "0xdac17f958d2ee523a2206206994597c13d831ec7", 4634748,
+     "0x42e160154868087d6bfdc0ca23d96a1c1cfa32f1b72ba9ba27b69b98a0d819dc",
+     "0xd7e9ec6e6ecd65492dce6bf513cd6867560d49544421d0783ddf06e76c24470c"),
+    ("Circle", "USDC", "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", 6082465,
+     "0xffa4e6181777692565cf28528fc88fd1516ea86b56da075235fa575af6a4b855",
+     "0x117e3210bb9aa7d9baff172026820255c6f6c30ba8999d1c2fd88e2848137c4e"),
+]  # fmt: skip
+TRON_FREEZES = [
+    ("Tether", "USDT", "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t", "AddedBlackList", "RemovedBlackList"),
+    ("Circle", "USDC", "TEkxiTehnzSmSe2XqrBj4w32RUN966rdz8", "Blacklisted", "UnBlacklisted"),
+]
+SPAN = 2_000_000  # blocks per getLogs query: Routescan gives up on wider ones in the busy years
+LOG_ROWS = 1000  # logs per answer, Etherscan's most
+TRON_PAUSE = 1.5  # seconds between TronGrid event pages: without a key it suspends the hasty
 REFRESH = 30 * 86400  # the sets are downloaded again when the copy is older than this
 
 LOADER = getattr(yaml, "CBaseLoader", yaml.BaseLoader)  # libyaml is ~10x faster
 
 # The source column holds 'user', 'swap-protocol', 'explorer', 'heuristic' or a dataset's name.
+# A sanction or a freeze matters more to whoever sends money there than who runs the address
+# (Garantex is an exchange, and sanctioned), so they outrank the other datasets; OFAC first.
 _RANK = (
-    "(CASE {} WHEN 'user' THEN 5 WHEN 'swap-protocol' THEN 4 WHEN 'explorer' THEN 2 "
+    "(CASE {} WHEN 'user' THEN 6 WHEN 'ofac-sanctions' THEN 5 WHEN 'swap-protocol' THEN 4 "
+    "WHEN 'freezes-ethereum' THEN 4 WHEN 'freezes-tron' THEN 4 WHEN 'explorer' THEN 2 "
     "WHEN 'heuristic' THEN 1 ELSE 3 END)"
 )
 # How sure a label is, by where it came from. Below 1 it is shown as a guess, and a path
@@ -174,6 +208,126 @@ def parse_solana_programs(text):
         yield program, name[:80], category, kind, "solana-programs"
 
 
+def parse_list(text, name, kind, source):
+    """Flagged rows for a list of addresses, one per line, in their canonical form. A line
+    that is no address of a chain read here is skipped."""
+    for line in text.splitlines():
+        try:
+            yield database.norm(line), name, "flagged", kind, source
+        except ValueError:
+            continue
+
+
+def read_ofac(client):
+    rows = []
+    for currency in OFAC_LISTS:
+        text = client.get(OFAC.format(currency)).raise_for_status().text
+        rows += parse_list(text, "Sanctioned by OFAC", "sanctioned (OFAC)", "ofac-sanctions")
+    return rows
+
+
+def frozen(source, issuer, token, added, removed):
+    """Flagged rows for the addresses `issuer` froze and has not unfrozen since. `added` and
+    `removed` are [(position in the chain, address)]; what the indexer says is untrusted."""
+    state = {}
+    for _, address, on in sorted([(*e, True) for e in added] + [(*e, False) for e in removed]):
+        state[address] = on
+    name, kind = f"Frozen by {issuer} ({token})", f"frozen by {issuer}"
+    return [
+        (a, name, "flagged", kind, source) for a, on in state.items() if on and database.valid(a)
+    ]
+
+
+def _head(client, url, base):
+    """The newest block: Etherscan and Routescan say it in their proxy module, Blockscout in
+    its block module."""
+    for module, action in (("proxy", "eth_blockNumber"), ("block", "eth_block_number")):
+        got = chains.get(client, url, {**base, "module": module, "action": action}).json()
+        if str(got.get("result")).startswith("0x"):
+            return int(got["result"], 16)
+    raise RuntimeError("the indexer says no block number")
+
+
+def evm_logs(client, cfg, head, contract, topic, start):
+    """[((block, log index), address)] of one event of `contract`, from block `start` to
+    `head`, in windows of blocks: a public indexer gives up on a wide range, and a full
+    answer is read on from its last block (read again, kept once). The address is the
+    event's only argument, indexed (in the topics) or not (in the data)."""
+    base = {**cfg.get("params", {}), **({"apikey": cfg["apikey"]} if cfg.get("apikey") else {})}
+    hexint = lambda v: int(v[2:] or "0", 16)  # Etherscan writes a zero as "0x"
+    found, low, span = {}, start, SPAN
+    while low <= head:
+        high = min(low + span - 1, head)
+        query = {"module": "logs", "action": "getLogs", "address": contract, "topic0": topic}
+        query |= {"fromBlock": low, "toBlock": high, "page": 1, "offset": LOG_ROWS}
+        data = chains.get(client, cfg["url"], {**base, **query}).json()
+        rows = data.get("result")
+        if not isinstance(rows, list):  # a list, empty when nothing was found
+            if "narrower" in str(data.get("message")) and span > 10_000:
+                span //= 2
+                continue
+            raise RuntimeError(f"getLogs: {data.get('message')} {str(rows)[:80]}")
+        for r in rows:
+            word = r["topics"][1] if len(r["topics"]) > 1 else r["data"]
+            found[(hexint(r["blockNumber"]), hexint(r["logIndex"]))] = "0x" + word[-40:].lower()
+        if len(rows) < LOG_ROWS:
+            low = high + 1
+        elif (last := max(p[0] for p in found)) > low:
+            low = last
+        else:
+            raise RuntimeError("getLogs: more events in one block than an answer holds")
+    return list(found.items())
+
+
+def read_freezes_ethereum(client):
+    cfg = chains.evm_chains().get("ethereum", {})
+    if not cfg.get("url") or cfg.get("needs_key") or cfg.get("api"):  # NodeReal has no logs
+        raise RuntimeError("Ethereum is read by no Etherscan-style indexer")
+    head = _head(client, cfg["url"], cfg.get("params", {}))
+    rows = []
+    for issuer, token, contract, start, on, off in ETH_FREEZES:
+        added, removed = (evm_logs(client, cfg, head, contract, t, start) for t in (on, off))
+        rows += frozen("freezes-ethereum", issuer, token, added, removed)
+    return rows
+
+
+def tron_events(client, contract, event):
+    """[((block, index), address)] of one event of a Tron contract, a page at a time. The
+    event names the address in hex (0x or 41, then 20 bytes); here it takes its usual form."""
+    url = f"{chains.TRON}/v1/contracts/{contract}/events"
+    query = {"event_name": event, "limit": chains.TRON_ROWS, "only_confirmed": "true"}
+    query["order_by"] = "block_timestamp,asc"
+    out = []
+    while True:
+        data = chains.get(client, url, query).json()
+        if "data" not in data:  # TronGrid answers a suspension with an error, not a page
+            raise RuntimeError(str(data.get("Error") or data)[:120])
+        for r in data["data"]:
+            raw = bytes.fromhex(r["result"]["0"][-40:])
+            out.append(((r["block_number"], r["event_index"]), base58.encode_check(b"\x41" + raw)))
+        fingerprint = data.get("meta", {}).get("fingerprint")
+        if len(data["data"]) < chains.TRON_ROWS or not fingerprint:
+            return out
+        query["fingerprint"] = fingerprint
+        time.sleep(TRON_PAUSE)
+
+
+def read_freezes_tron(client):
+    rows = []
+    for issuer, token, contract, on, off in TRON_FREEZES:
+        added, removed = (tron_events(client, contract, e) for e in (on, off))
+        rows += frozen("freezes-tron", issuer, token, added, removed)
+    return rows
+
+
+# Lists read whole each time, replacing their old copy. Read last, so they are stored last.
+FACTS = {
+    "freezes-ethereum": read_freezes_ethereum,
+    "freezes-tron": read_freezes_tron,
+    "ofac-sanctions": read_ofac,
+}
+
+
 def store(db, rows):
     """Insert (address, name, category, type, source) rows. A label only replaces one from
     an equal or weaker source: a dataset never overwrites the user, a guess never a dataset."""
@@ -188,6 +342,7 @@ def store(db, rows):
 
 
 SETS = [f"{explorer}-labels" for explorer in EXPLORERS] + ["graphsense-tagpacks", "solana-programs"]
+SETS += list(FACTS)
 
 
 def stale(db):
@@ -208,6 +363,8 @@ def due(db):
 def import_open(db, client, everything=False):
     """Download the stale label sets (all of them with `everything`) and load them. One set
     failing does not stop the others. Returns (labels read, names of the sets not read)."""
+    if os.environ.get("CT_LABELS", "on") == "off":
+        return 0, []  # not even when asked for everything
     wanted = SETS if everything else stale(db)
     rows, done, failed = [], [], []
     for explorer in EXPLORERS:
@@ -245,6 +402,17 @@ def import_open(db, client, everything=False):
             done.append("solana-programs")
         except httpx.HTTPError:
             failed.append("solana-programs")
+    replaced = []
+    for name, read in FACTS.items():
+        if name not in wanted:
+            continue
+        try:
+            rows += read(client)
+            done.append(name)
+            replaced.append((name,))
+        except (httpx.HTTPError, RuntimeError, ValueError, KeyError, TypeError, IndexError):
+            failed.append(name)  # its old copy stays until a read succeeds
+    db.executemany("DELETE FROM label WHERE source = ?", replaced)
     store(db, rows)
     now = str(time.time())
     db.executemany(
