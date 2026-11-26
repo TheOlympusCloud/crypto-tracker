@@ -483,6 +483,21 @@ def test_a_damaged_okx_list_is_one_failed_set_not_a_failed_sync(db, client, monk
     assert not db.execute("SELECT 1 FROM label WHERE source = 'okx-por'").fetchone()
 
 
+def test_a_new_okx_list_replaces_the_old_one_but_an_empty_one_does_not(db, client, monkeypatch):
+    here = sys.modules[__name__]
+    okx = lambda: {r[0] for r in db.execute("SELECT address FROM label WHERE source = 'okx-por'")}
+    with httpx.Client() as web:
+        labels.import_open(db, web)
+        assert OKX_SOL in okx() and len(okx()) == 4
+        later = "\n".join(line for line in OKX_CSV.splitlines() if OKX_SOL not in line)
+        monkeypatch.setattr(here, "OKX_CSV", later)
+        labels.import_open(db, web, everything=True)
+        assert OKX_SOL not in okx() and len(okx()) == 3  # no longer OKX's: no longer named
+        monkeypatch.setattr(here, "OKX_CSV", "coin,amount\nUSDT,8265265024\n")
+        _, failed = labels.import_open(db, web, everything=True)
+    assert "okx-por" in failed and len(okx()) == 3  # a list come empty keeps the old copy
+
+
 def test_lookup_spots_an_address_made_to_look_like_one_i_use(db, client):
     mine(db, A)
     db.execute("INSERT INTO transfer VALUES ('ethereum', 'x', ?, ?, 'ETH', '', 1, 1)", (A, B))
