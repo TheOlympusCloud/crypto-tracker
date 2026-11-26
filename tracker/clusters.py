@@ -65,7 +65,8 @@ def groups(db, verdicts):
 
 def _chains(db, addresses):
     """The chains these addresses dealt on; an address with no transfer counts on its own
-    chain ("evm" for an EVM address, which exists on all of them)."""
+    chain ("evm" for an EVM address, which exists on all of them, unless another EVM address
+    names a chain)."""
     marks = ",".join("?" * len(addresses))
     used = defaultdict(set)
     for r in db.execute(
@@ -74,4 +75,7 @@ def _chains(db, addresses):
         addresses * 2,
     ):
         used[r[0]].add(r[1])
-    return sorted({c for a in addresses for c in used[a] or {database.chain_of(a)}})
+    found = {c for a in addresses for c in used[a] or {database.chain_of(a)}}
+    if any(used[a] for a in addresses if database.chain_of(a) == "evm"):
+        found.discard("evm")
+    return sorted(found)

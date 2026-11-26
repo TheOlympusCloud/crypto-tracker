@@ -86,6 +86,18 @@ def test_a_group_spans_chains_and_waits_for_partly_checked_wallets(db):
     assert group["checked"] == "none"
 
 
+def test_an_evm_wallet_without_transfers_adds_no_second_evm_mark(db):
+    mine(db, A)
+    mine(db, B)
+    db.execute("INSERT INTO transfer VALUES ('ethereum', 't1', ?, ?, 'ETH', '', 1, 0)", (A, D))
+    link(db, A, B, "name", 0.8)
+    (group,) = groups(db)
+    assert group["chains"] == ["ethereum"]  # not also "evm" for B, which never moved funds
+    db.execute("DELETE FROM transfer")
+    (group,) = groups(db)
+    assert group["chains"] == ["evm"]
+
+
 def test_a_wallet_alone_or_an_hd_wallet_is_one_member(db):
     mine(db, A)
     for address in (BTC, "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"):
