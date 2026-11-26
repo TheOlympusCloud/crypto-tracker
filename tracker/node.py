@@ -51,7 +51,7 @@ COOKIE = "/rpc/.cookie"
 WALLET = "crypto-tracker"
 # shortcut: an HD branch used past index 999 is not watched beyond it; raise RANGE then.
 RANGE = 1000  # addresses watched per branch of an HD wallet (sync.discover stops 20 past use)
-WATCH_EVERY = 15  # seconds between looks at what it found: while it syncs, it prunes fast
+WATCH_EVERY = 5  # seconds between looks at what it found: while it syncs, it prunes fast
 SCAN_EVERY = 600  # seconds a balance scan is reused: one takes minutes on mainnet
 
 STALE = 6 * 3600  # a chain tip older than this: the node is still catching up
@@ -247,6 +247,8 @@ def _register(db):
         db.execute(
             "INSERT OR REPLACE INTO bitcoind_watch VALUES (?, ?)", (key, low if errors else 0)
         )
+        # What its rescan found sits in older blocks than the last look: list all again.
+        db.execute("DELETE FROM meta WHERE key = 'bitcoind_lastblock'")
     db.commit()
 
 
@@ -257,17 +259,20 @@ def _capture(db):
     were mine filled in from their own transactions; a stranger's stays unknown."""
     row = db.execute("SELECT value FROM meta WHERE key = 'bitcoind_lastblock'").fetchone()
     found = rpc("listsinceblock", row[0] if row else "", 1, False, True, wallet=True)
+    global _found
     gone = [(e["txid"],) for e in found["removed"]]  # a reorg
     db.executemany("DELETE FROM bitcoind_tx WHERE txid = ?", gone)
     db.executemany("DELETE FROM bitcoind_addr WHERE txid = ?", gone)
+    _found += len(gone)
     confirmed = {
-        (e["blockheight"], e["txid"], e["blockhash"], e["blocktime"])
+        (e["blockheight"], e["blockindex"], e["txid"], e["blockhash"], e["blocktime"])
         for e in found["transactions"]
         if e.get("blockhash")
     }
-    for height, txid, block, ts in sorted(confirmed):
+    for height, _, txid, block, ts in sorted(confirmed):  # a parent before its children
         if db.execute("SELECT 1 FROM bitcoind_tx WHERE txid = ?", (txid,)).fetchone():
             continue
+        _found += 1
         try:
             tx = rpc("getrawtransaction", txid, 2, block)
         except RpcError:  # "Block not available": pruned
@@ -356,6 +361,7 @@ def read(address, mine=()):
 
 
 _scan = {"at": 0.0, "key": None, "sats": {}}
+_found = 0  # transactions kept or dropped so far: a new one makes the last scan stale
 _scanning = threading.Lock()
 
 
@@ -368,7 +374,7 @@ def balance(address):
             descs = rpc("listdescriptors", wallet=True)["descriptors"]
             objects = [{"desc": d["desc"], "range": d["range"]} if "range" in d else d["desc"]
                        for d in descs]  # fmt: skip
-            key = json.dumps(objects)
+            key = json.dumps([objects, _found])
             if key != _scan["key"] or _scan["at"] < time.time() - SCAN_EVERY:
                 found = rpc("scantxoutset", "start", objects, timeout=3600)
                 sats = Counter()

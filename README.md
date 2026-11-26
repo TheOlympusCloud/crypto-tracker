@@ -444,6 +444,12 @@ While it syncs, your Bitcoin wallets wait, as with the full node, and the status
 "your own node is still syncing"; other Bitcoin addresses are read from the public server
 meanwhile. An HD wallet is watched up to its 1,000th address on each branch.
 
+The app looks at what the node found every 5 seconds. While it syncs, each time the node
+reaches its cap it deletes every block but the newest 288. If it got through more than 288
+blocks since the app's last look, a transaction of yours among them keeps your side only: who
+paid you stays unknown. That takes a very fast first sync, the app stopped meanwhile, or a
+wallet added during the sync, whose read-back holds up the looks; a larger cap makes it rarer.
+
 Use one node or the other, never both. To switch, `docker compose down` (the volumes stay),
 change `COMPOSE_PROFILES`, then `docker compose up -d`. The full node's volumes (`bitcoind`,
 `fulcrum`, `mempool-db`) keep their terabyte until you remove them with `docker volume rm`.

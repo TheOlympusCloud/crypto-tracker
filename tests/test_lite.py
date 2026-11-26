@@ -204,6 +204,7 @@ class Core:
         since = next((b["height"] for b in self.blocks if b["hash"] == blockhash), -1)
         entries = [
             {"txid": txid, "blockhash": self.blocks[h]["hash"], "blockheight": h,
+             "blockindex": [t["txid"] for t in self.blocks[h]["txs"]].index(txid),
              "blocktime": self.blocks[h]["time"], "category": "receive"}
             for txid, h in self.wallet["txs"].items() if h > since
         ]  # fmt: skip
@@ -387,6 +388,48 @@ def test_my_wallet_is_read_from_the_node_with_who_paid_me(db, lite):
     never_public(lite, MINE)
 
 
+def test_a_wallet_added_after_the_first_look_gets_its_history_too(db, lite):
+    mine(db, MINE)
+    db.commit()
+    node.refresh()  # the watcher's first look
+    lite.connect([tx("9" * 64, [("c" * 64, 3, SENDER, 9000)], [(SATOSHI, 8000)])])
+    node.refresh()  # and the next: it has seen that block
+    mine(db, SATOSHI)  # a second wallet, added later, paid in a block still kept
+    db.commit()
+    with lite.client() as client:
+        sync.sync_address(db, client, SATOSHI)
+    got = {(r["txid"], r["src"], r["dst"]) for r in db.execute("SELECT * FROM transfer")}
+    assert ("9" * 64, SENDER, SATOSHI) in got
+    never_public(lite, SATOSHI)
+
+
+def test_the_balance_follows_a_new_transaction(db, lite):
+    mine(db, MINE)
+    db.commit()
+    lite.connect([tx("1" * 64, [("c" * 64, 4, SENDER, 9000)], [(MINE, 8000)])])
+    with lite.client() as client:
+        sync.sync_address(db, client, MINE)
+        lite.connect([tx("2" * 64, [("c" * 64, 5, SENDER, 6000)], [(MINE, 5000)])])
+        sync.sync_address(db, client, MINE)  # well within the scan's 10 minutes
+    row = db.execute("SELECT amount FROM balance WHERE address = ?", (MINE,)).fetchone()
+    assert row["amount"] == 13_000 / 1e8
+
+
+def test_a_parent_in_the_same_pruned_block_is_read_first(db, lite):
+    mine(db, MINE)
+    db.commit()
+    node.refresh()
+    parent = tx("f" * 64, [("c" * 64, 6, SENDER, 9000)], [(MINE, 8000)])
+    child = tx("0" * 64, [("f" * 64, 0, MINE, 8000)], [(SATOSHI, 7000)])  # first by txid
+    lite.connect([parent, child])
+    lite.prune(len(lite.blocks))  # gone before the next look
+    lite.connect([])
+    with lite.client() as client:
+        sync.sync_address(db, client, MINE)
+    got = {(r["txid"], r["src"], r["dst"]) for r in db.execute("SELECT * FROM transfer")}
+    assert ("0" * 64, MINE, SATOSHI) in got  # its input, mine, filled in from the parent
+
+
 def test_strangers_are_read_from_the_public_server_and_my_bitcoin_waits_for_the_node(db, lite):
     mine(db, MINE)
     db.commit()
@@ -523,7 +566,7 @@ def test_one_setting_sizes_the_node(tmp_path):
     # 50 GB less the 18 the chain state and the rest take: 32 GB of blocks, in MiB
     assert done.stdout.split() == ["-server=1", f"-prune={32 * 1024}"]
     assert start(tmp_path, "20").stdout.split()[-1] == "-prune=2048"  # the floor
-    for bad in ("19", "", "fifty", "50.5", None):
+    for bad in ("19", "", "fifty", "50.5", "050", None):
         refused = start(tmp_path, bad)
         assert refused.returncode == 1 and "NODE_MAX_DISK_GB" in refused.stderr, bad
         assert "at least 20" in refused.stderr and not refused.stdout
