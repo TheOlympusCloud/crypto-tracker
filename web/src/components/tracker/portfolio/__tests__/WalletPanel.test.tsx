@@ -193,6 +193,24 @@ describe("WalletPanel", () => {
     expect(screen.getByText("20% from smaller sources not listed (the empty end of the bar)")).toBeTruthy();
   });
 
+  it("names the bridge money crossed, on its source and in the path it opens", () => {
+    const binance = "0x28c6c06298d514db089934071355e5743bf21d60";
+    const bridged = {
+      chain: "solana", asset: "ETH", token: "", bridged_from: "ethereum", received: 1.5,
+      sources: [{
+        address: binance, name: "Binance 14", kind: "cex", guess: false, type: "", public: false, reason: "",
+        share: 1, amount: 1.5, path: [PHONE, HOT, binance], via: ["Wormhole"],
+      }],
+    };
+    const origins = { ...ANALYSIS.origins, [PHONE]: [bridged] };
+    const { tracker } = renderTracker(<WalletPanel address={PHONE} />, { analysis: { ...ANALYSIS, origins } });
+    expect(screen.getByRole("heading", { name: "1.5 ETH bridged from ethereum to solana" })).toBeTruthy();
+    const source = screen.getByRole("button", { name: /Binance 14/ });
+    expect(source.textContent).toContain("1.5 ETH · 2 hops · via Wormhole");
+    fireEvent.click(source);
+    expect(tracker.showPath).toHaveBeenCalledWith([PHONE, HOT, binance], "Origin of ETH in Phone · via Wormhole", PHONE);
+  });
+
   it("lists an HD wallet's addresses, each with its deep scan", () => {
     const cold = GRAPH.nodes.find((n) => n.address === COLD)!;
     const fakeBalance = { chain: "bitcoin", asset: "XYZ", amount: 9, token: "x", trust: { level: "scam" as const, reason: "airdrop" } };

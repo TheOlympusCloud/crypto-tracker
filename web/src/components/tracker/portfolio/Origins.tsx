@@ -3,7 +3,7 @@
 import { useTranslation } from "react-i18next";
 import { num } from "@/lib/tracker/format";
 import { pct, short, sourceKind, typeOf } from "@/lib/tracker/kinds";
-import type { OriginAsset } from "@/lib/tracker/types";
+import type { OriginAsset, OriginSource } from "@/lib/tracker/types";
 import { Bar, ROW, Segment } from "../bits";
 import { KindIcon } from "../Glyph";
 import { useTracker } from "../TrackerProvider";
@@ -29,10 +29,16 @@ export function OriginRows({ address }: { address: string }) {
   const { analysis, nameOf, showPath } = useTracker();
   const assets = analysis.origins[address] ?? [];
   if (!assets.length) return <p className="text-sm text-muted">{t("tracker-portfolio:origin.none")}</p>;
+  const via = (s: OriginSource) => (s.via.length ? ` · ${t("tracker-portfolio:origin.via", { protocols: s.via.join(", ") })}` : "");
   return assets.map((a) => (
-    <div key={`${a.chain}:${a.token}:${a.asset}`} className="mt-4">
+    <div key={`${a.chain}:${a.bridged_from}:${a.token}:${a.asset}`} className="mt-4">
       <h4 className="text-sm font-semibold text-foreground">
-        {t("tracker-portfolio:origin.received", { amount: num(a.received, i18n.language), asset: a.asset, chain: a.chain })}
+        {t(a.bridged_from ? "tracker-portfolio:origin.bridged" : "tracker-portfolio:origin.received", {
+          amount: num(a.received, i18n.language),
+          asset: a.asset,
+          chain: a.chain,
+          from: a.bridged_from,
+        })}
       </h4>
       <OriginBar asset={a} />
       <ul className="mt-1">
@@ -41,14 +47,14 @@ export function OriginRows({ address }: { address: string }) {
             <button
               type="button"
               className={ROW}
-              onClick={() => showPath(s.path, t("tracker-portfolio:origin.heading", { asset: a.asset, name: nameOf(address) }), address)}
+              onClick={() => showPath(s.path, t("tracker-portfolio:origin.heading", { asset: a.asset, name: nameOf(address) }) + via(s), address)}
             >
               <KindIcon kind={sourceKind(s)} size={14} />
               <b className="num w-10 shrink-0 text-sm text-foreground">{pct(s.share)}</b>
               <span className="min-w-0 text-sm text-foreground">
                 <span className="break-words">{`${s.name || short(s.address)} · ${typeOf(s, t)}`}</span>
                 <small className="block text-xs text-muted">
-                  {`${num(s.amount, i18n.language)} ${a.asset} · ${t("tracker-portfolio:hops", { count: s.path.length - 1 })}`}
+                  {`${num(s.amount, i18n.language)} ${a.asset} · ${t("tracker-portfolio:hops", { count: s.path.length - 1 })}${via(s)}`}
                   {s.reason ? ` · ${t("tracker-portfolio:origin.stopped", { reason: s.reason })}` : ""}
                 </small>
               </span>
