@@ -493,7 +493,10 @@ tracker.example.org {
 ```
 
 Then publish the port on loopback only (`"127.0.0.1:8000:8000"` in `compose.yaml`) so that
-only the proxy reaches the app.
+only the proxy reaches the app. Another proxy must pass the `Host` the browser asked for
+(nginx: `proxy_set_header Host $host;`): over plain HTTP the app checks a broadcast's origin
+against it, and refuses the scanner's broadcasts through the
+[lite node](#the-scanner-with-a-lite-node) otherwise.
 
 ### Settings
 
