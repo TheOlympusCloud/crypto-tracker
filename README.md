@@ -72,7 +72,7 @@ own menu and look.
 | Base, Arbitrum, Optimism, Polygon | **needs `CT_BLOCKSCOUT_KEY`** | Same as Ethereum once the key is set. One free [Blockscout key](https://dev.blockscout.com) covers all four. Arbitrum and Polygon can also use a free `CT_ETHERSCAN_KEY`. |
 | BNB Chain | **needs `CT_NODEREAL_KEY`** | Read through [NodeReal](https://nodereal.io)'s MegaNode with a free key: BNB, internal and BEP-20 transfers, the balance and the tokens held. Addresses that are not yours: about the last day only. Etherscan's free plan no longer covers BNB Chain; a paid Etherscan key can be set instead in a `CT_CHAINS` file (`"bsc": {"url": "https://api.etherscan.io/v2/api", "params": {"chainid": "56"}, "apikey": "…", "symbol": "BNB", "llama": "bsc"}`). |
 | Tron | yes | TRX and TRC-20 transfers, the 200 newest; counterparties not expanded automatically, except [shared ones](#shared-counterparties). |
-| Solana | yes | SOL and SPL tokens (Token-2022 too, e.g. xStocks), the 25 newest transactions, read as net balance changes; counterparties not expanded automatically, except [shared ones](#shared-counterparties). |
+| Solana | yes | SOL and SPL tokens (Token-2022 too, e.g. xStocks), the 25 newest transactions, read as net balance changes; fee payers and co-signers linked; the rent of a closed token account counts as sent by its owner; counterparties not expanded automatically, except [shared ones](#shared-counterparties). |
 
 The depths above are for other addresses (counterparties, lookups). Your own wallets are
 read in full on every chain: each sync reads what is new, then continues further back
@@ -605,6 +605,11 @@ Shared counterparties: up to 10 addresses per sync that two of your wallets deal
 looked up at the indexer of their chain (the Solana RPC for Solana ones). That indexer
 already served the histories they appear in; it now also sees them asked for from your IP.
 
+Solana signers: a stranger that paid the fee of, or signed, a transaction of one of your
+wallets is looked up once at the same Solana RPC (its newest 1000 signatures), to tell a
+relayer or a marketplace from a person. That RPC already sees your wallet; it now also sees
+the stranger's address asked about.
+
 Prices: only asset identifiers (coin names, token contracts) go to the price API, never
 addresses or amounts.
 
@@ -695,8 +700,16 @@ in `tracker/heuristics.py` and `tracker/graph.py`.
 | name | 0.8 | The primary name of one of your EVM addresses (ENS, Basenames), checked forward, lists the other address (a Bitcoin, Solana... address, ENSIP-9). The name's owner published it, but anybody can type any address into their records. A stranger it lists is read first: a busy one, or a labelled service, links nobody. Several names listing the same address stay at 0.8. |
 | bridge-record | 0.95 | A bridge's own event, in the receipt of a transaction in which your wallet paid it, names the recipient on the other chain: Circle CCTP (`DepositForBurn`), Across (`FundsDeposited`), Wormhole's Token Bridge (a plain transfer), the OP Stack bridges into Base and Optimism (`ETHDepositInitiated`, `ERC20DepositInitiated`), Arbitrum's gateway router (`TransferRouted`). On Solana the token account it names is replaced by the account's owner; a token account closed since links nobody, and the verdict says so. A recipient that is not yours is read first: a busy address or a service links nobody, a quiet one is listed in the wallet's verdict. Declare it yours later and the next sync links it, without reading the receipt again. Several deposits to the same address stay at 0.95. |
 | deposit-address | 0.85 | Two of your wallets paid the same address, which was read in full without an error, is not a very active address, has no label but the tracker's own guess or OKX's list's, sends everything to one labelled exchange, and was paid by 3 senders at most (two addresses of one wallet count once; the exchange topping up gas is one). A deposit address belongs to one exchange account. One row per deposit address: paying it again adds nothing, a second shared deposit address combines. EVM, Tron, Bitcoin, Litecoin and Bitcoin Cash. |
+| fee-payer | 0.9 | Solana: one address paid the fee of a transaction the other signed. Both hold a key of it: one owner, unless the payer is a relayer. |
+| co-signer | 0.9 | Solana: two addresses, neither of them the fee payer, signed one transaction: Solana's common input. |
 
 Several transactions supporting the same guess combine as `1 - (1-c1)(1-c2)...`.
+
+A Solana fee payer or co-signer that is not yours is read first (its newest 1000
+signatures): 1000 of them, or a label from a source that states it, make it a very active
+address, which links nobody, and no line to it is stored. Only a quiet one is linked.
+The rent of a closed token account is booked to the account's owner: a refund to another
+address is a transfer from the owner to it.
 
 The findings of the [privacy scan](#privacy-scan-of-evm-solana-and-tron-addresses) are
 facts: a transfer read from the chain, with a counterparty that an open label set or you
@@ -789,6 +802,11 @@ or at the hop limit, and says which.
 - A Solana address found quiet is not asked again, even if it gets busy later.
 - Every sender counts towards a deposit address's 3, also dust: two address-poisoning
   payments of a token you hold (common with USDT on Tron) are enough to lose its link.
+- A Solana fee payer or co-signer that cannot be read when its transaction is first read
+  gets no link; the sync's error names it. The 25 newest transactions are read again on
+  each sync, older ones are not.
+- A lookup reads no stranger, so it lists a Solana address's fee payers and co-signers as
+  guesses even when one of them is a relayer.
 
 ## Built on am-i-exposed
 
