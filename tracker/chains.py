@@ -545,7 +545,7 @@ def _rpc(client, method, *params, url=None):
             break
         time.sleep(2 ** (attempt + 1))
     if r.status_code == 429:
-        raise RuntimeError("rate limited by the RPC (HTTP 429): raise CT_DELAY")
+        raise RateLimited("rate limited by the RPC (HTTP 429): raise CT_DELAY")
     data = r.raise_for_status().json()
     if "error" in data:
         raise RuntimeError(f"{method}: {str(data['error'].get('message'))[:120]}")

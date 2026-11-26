@@ -326,3 +326,121 @@ def test_no_new_host_with_swaps_off_and_a_failed_read_is_retried(db, quiet, monk
     assert set(fake.asked) <= {"api.routescan.io", "api.mainnet-beta.solana.com"}
     (verdict,) = [v for v in graph.verdicts(db) if v["address"] == ACROSS_SENDER]
     assert verdict["checked"] == "full"
+
+
+def test_a_recipient_declared_mine_later_is_linked_with_no_new_read(db, quiet):
+    """A busy recipient links nobody; once declared a wallet of mine, the next sync links it
+    from the record stored, without reading the receipt again."""
+    mine(db, WORMHOLE_SENDER)
+    wormhole = fixture("wormhole-solana")["result"]["transactionHash"]
+    transfer(db, "ethereum", wormhole, WORMHOLE_SENDER, "0x3ee18b2214aff97000d974cf647e7c347e8fa585",
+             1852.06, asset="X", token="0x" + "7" * 40)  # fmt: skip
+    db.commit()
+    fake = Chain({WORMHOLE_TOKEN_ACCOUNT: "solana-account-wormhole"}, signatures=1000)
+    assert run(db, fake) == [] and links(db) == {}
+
+    db.execute("UPDATE node SET mine = 1 WHERE address = ?", (WORMHOLE_OWNER,))  # as app.py
+    db.commit()
+    fake.asked.clear()
+    assert run(db, fake) == [] and fake.asked == []
+
+    assert links(db) == {
+        tuple(sorted((WORMHOLE_SENDER, WORMHOLE_OWNER))): (
+            0.95, f"Wormhole: 1852.06 X ethereum > solana ({wormhole[:18]})"
+        )
+    }  # fmt: skip
+    (verdict,) = [v for v in graph.verdicts(db) if v["address"] == WORMHOLE_SENDER]
+    assert verdict["links"][0]["kinds"] == ["bridge-record"] and verdict["bridged"] == []
+
+
+def test_an_arbitrum_token_deposit_names_the_token_not_the_eth_for_gas(db, quiet, monkeypatch):
+    """The token goes to a gateway, the ETH for the deposit to the router: the link says what
+    was bridged."""
+    sender, other = "0x492222c37faea031f1c2f7401c14a033c109d3cb", "0x" + "5" * 40
+    mine(db, sender)
+    mine(db, other)
+    r = receipt("arbitrum")
+    routed = r["logs"][0]
+    r["logs"][0] = {**routed, "topics": [*routed["topics"][:3], "0x" + "0" * 24 + other[2:]]}
+    monkeypatch.setattr(bridges, "fetch", lambda client, cfg, txid: r)
+    txid = fixture("arbitrum")["result"]["transactionHash"]
+    transfer(db, "ethereum", txid, sender, bridges.ARBITRUM_ROUTER, 0.0004)
+    transfer(db, "ethereum", txid, sender, "0xa3a7b6f88361f48403514059f1f16c8e78d60eec",
+             0.07676676, asset="WBTC", token="0x2260fac5e5542a773aa44fbcfedf7c193bc2c599")  # fmt: skip
+    db.commit()
+
+    assert run(db, Chain()) == []
+
+    assert links(db) == {
+        tuple(sorted((sender, other))): (
+            0.95, f"Arbitrum: 0.0767668 WBTC ethereum > arbitrum ({txid[:18]})"
+        )
+    }  # fmt: skip
+
+
+def test_a_receipt_that_fails_holds_back_no_other_of_its_chain(db, quiet):
+    """An answer that cannot be read (here a token account that is a mint) keeps its receipt
+    unread and says so; the chain's other receipts are read all the same."""
+    mine(db, CCTP_SENDER)
+    mine(db, ACROSS_SENDER)
+    db.execute("UPDATE node SET synced_at = 1")  # read in full: only the bridge records wait
+    cctp, across = (fixture(n)["result"]["transactionHash"] for n in ("cctp-v1-solana", "across"))
+    transfer(db, "ethereum", cctp, CCTP_SENDER, "0xc4922d64a24675e16e1586e3e3aa56c06fabe907",
+             9000.0, asset="USDC", token=USDC)  # fmt: skip
+    transfer(db, "ethereum", across, ACROSS_SENDER, "0x5c7bcd6e7de5423a257d81b442095a1a6ced35c5",
+             1.0, asset="USDT", token=USDT)  # fmt: skip
+    db.commit()
+    mint = fixture("solana-account-cctp")
+    del mint["result"]["value"]["data"]["parsed"]["info"]["owner"]
+    fake = Chain()
+
+    def answer(request):
+        if request.url.host == "api.mainnet-beta.solana.com":
+            body = json.loads(request.content)
+            if body["method"] == "getAccountInfo":
+                return httpx.Response(200, json=mint)
+        return fake(request)
+
+    for _ in range(2):  # the same at every sync: it never holds back the Across deposit
+        assert run(db, answer) == ["Bridge receipts: ethereum: 'owner'"]
+    assert [tuple(r) for r in db.execute("SELECT * FROM receipt")] == [("ethereum", across)]
+    assert tuple(sorted((ACROSS_SENDER, ACROSS_RECIPIENT))) in links(db)
+    (verdict,) = [v for v in graph.verdicts(db) if v["address"] == ACROSS_SENDER]
+    assert verdict["checked"] == "partial"
+    assert verdict["coverage"]["error"] == (
+        "Bridge receipts were not all read (ethereum: 'owner'), so a bridge record may be missing"
+    )
+
+
+def test_blockscout_logs_are_read_page_by_page(monkeypatch):
+    """Blockscout gives a transaction's logs 50 at a time: a bridge event on a later page is
+    read, and a transaction wider than PAGES pages is not taken as read."""
+    monkeypatch.setattr(chains.time, "sleep", lambda s: None)
+    whole = fixture("op-base-blockscout")["result"]
+    txid = whole["hash"]
+    more = {"action": "gettxinfo", "index": 120, "module": "transaction", "txhash": txid}
+    first = {**whole, "logs": whole["logs"][:1], "next_page_params": more}
+    rest = {**whole, "logs": whole["logs"][1:], "next_page_params": None}
+    asked = []
+
+    def handler(request):
+        asked.append(dict(request.url.params))
+        page = rest if request.url.params.get("index") == "120" else first
+        return httpx.Response(200, json={"message": "OK", "result": page, "status": "1"})
+
+    cfg = {"url": "https://api.blockscout.com/v2/api", "params": {"chain_id": "1"}}
+    cfg |= {"apikey": "KEY", "tokenlist": True}
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        got = bridges.fetch(client, cfg, txid)
+    assert got == receipt("op-base-blockscout")
+    assert bridges.decode("ethereum", got) == bridges.decode("ethereum", receipt("op-base"))
+    assert [q.get("index") for q in asked] == [None, "120"] and asked[1]["apikey"] == "KEY"
+
+    def endless(request):
+        return httpx.Response(200, json={"message": "OK", "result": first, "status": "1"})
+
+    with (
+        httpx.Client(transport=httpx.MockTransport(endless)) as client,
+        pytest.raises(RuntimeError, match="more than 20 pages"),
+    ):
+        bridges.fetch(client, cfg, txid)
