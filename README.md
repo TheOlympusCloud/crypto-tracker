@@ -102,6 +102,12 @@ above that the bridge reaches, Solana included (CCTP and Wormhole). That recipie
 to the wallet as a `bridge-record` ([below](#what-is-a-fact-and-what-is-a-guess)), whether
 you declared it or not.
 
+Mixers: when one of your wallets deposits into a Tornado Cash pool (on Ethereum, BNB Chain,
+Polygon, Arbitrum, Optimism or Avalanche) and another withdraws from the same pool, the
+deposits made into that pool between the two are counted. Few of them hide little: the two
+wallets get a `mixer` link of at most 30% ([below](#what-is-a-fact-and-what-is-a-guess)).
+BNB Chain read through NodeReal is left out: NodeReal does not serve the pool's logs.
+
 The privacy scan reads an address as deeply as a lookup does (the depths above), so a scan
 of a busy Solana or Tron address says "Partly checked". Its first funder comes from that read
 when it holds the whole history, else from one more call per chain that lists the address's
@@ -484,6 +490,7 @@ am-i-exposed's scan with their own profile (below).
 | Has a public name | -15, high | The address's primary name: ENS, Basenames or SNS (.sol). Counted only when the name points back at the address, since anybody can point their own reverse record at any name. |
 | Its name lists addresses on other chains | -5, medium | The addresses of Bitcoin, Litecoin, Dogecoin, Tron, Solana or other EVM chains that the name publishes (ENSIP-9). |
 | Shares an exchange deposit address | -10, high | One of your own wallets only: it and another wallet of yours paid the same exchange deposit address (the `deposit-address` guess, 85%). |
+| The mixer hides little | -5, medium | One of your own wallets only: it deposited into a Tornado Cash pool and another wallet of yours withdrew from it, or the reverse, with fewer than 20 deposits in between (the `mixer` guess, 30% at most). |
 
 The score is am-i-exposed's address score: 93, plus the impacts, kept within 0 to 100;
 A+ from 90, B from 75, C from 50, D from 25, F below (`tracker/exposure/`, tested against
@@ -492,7 +499,8 @@ real wallets. Each finding lists the transactions it rests on, with links to the
 explorer (a name rests on no transaction, so it lists none). Only labels from a source that
 states them count: a guessed label (behaviour, a contract name) makes no finding, and a
 token a stranger airdropped makes no counterparty.
-The one guess among the findings, a shared deposit address, says it is one and how sure.
+The two guesses among the findings, a shared deposit address and a mixer that hides little,
+say they are guesses and how sure.
 No finding is no clean bill: only labelled addresses can be recognised.
 
 The first funder is the sender of the earliest native coin the address received on each
@@ -528,7 +536,7 @@ score (93 plus the impacts, the same grades) over:
 |---|---|---|
 | Tied to your public wallet | -70 x the link's confidence (-49 at 70%); critical from 50% | The strongest link of the wallet's verdict to a wallet you marked public (`tracker/exposure/wallets.py`). A public wallet does not get it: it is tied to you anyway. |
 | Reused addresses | -10 per address, at most -40; medium | A Bitcoin, Litecoin, Dogecoin or Bitcoin Cash address of the wallet paid in two or more transactions. |
-| The scan's findings | as above | An address of the wallet that is itself on a sanctions list or frozen; exchanges, flagged addresses and mixers, once per chain, from the stored transfers of all the wallet's addresses (the trusted ones, as the verdict reads them); the same address on several EVM chains; the first funder of an EVM, Solana or Tron address, from its stored history; its names, as the last sync looked them up; an exchange deposit address it shares with another of your wallets. An HD wallet's addresses that find the same thing on a chain show it once, with each one's transactions. |
+| The scan's findings | as above | An address of the wallet that is itself on a sanctions list or frozen; exchanges, flagged addresses and mixers, once per chain, from the stored transfers of all the wallet's addresses (the trusted ones, as the verdict reads them); the same address on several EVM chains; the first funder of an EVM, Solana or Tron address, from its stored history; its names, as the last sync looked them up; an exchange deposit address it shares with another of your wallets; a Tornado Cash pool another of your wallets deposited into or withdrew from, with few deposits in between. An HD wallet's addresses that find the same thing on a chain show it once, with each one's transactions. |
 
 Each finding counts once, at its worst over the wallet's addresses and chains: one
 exchange is enough to be exposed. Reuse is the exception, counted per address, so one slip
@@ -635,6 +643,13 @@ from the indexer that already reads that wallet (or from the `"rpc"` of that cha
 read from the Solana RPC that reads your Solana wallets (`CT_SOLANA`). Neither learns
 anything new, so `CT_SWAPS` does not apply. A recipient that is not yours is read once,
 like a counterparty, to tell a stranger from a service.
+
+Mixers: the receipt of each transaction in which your wallet paid a Tornado Cash pool (or
+its router), or a pool paid your wallet, is read once from the indexer that already reads
+that wallet. For a deposit and a withdrawal of two of your wallets, the pool's deposits
+between their two blocks are asked of the same indexer, once per pair (its `logs` module,
+one page of 20). That question names only the pool and two block numbers, but they are the
+blocks of your own two transactions, which that indexer already served you.
 
 Labels: the label sets and OFAC's sanctions lists are downloaded whole from GitHub, and OKX's
 list of its own addresses from OKX's site, so none of them learns which addresses you look
@@ -744,6 +759,7 @@ in `tracker/heuristics.py` and `tracker/graph.py`.
 | deposit-address | 0.85 | Two of your wallets paid the same address, which was read in full without an error, is not a very active address, has no label but the tracker's own guess or OKX's list's, sends everything to one labelled exchange, and was paid by 3 senders at most (two addresses of one wallet count once; the exchange topping up gas is one). A deposit address belongs to one exchange account. One row per deposit address: paying it again adds nothing, a second shared deposit address combines. EVM, Tron, Bitcoin, Litecoin and Bitcoin Cash. |
 | fee-payer | 0.9 | Solana: one address paid the fee of a transaction the other signed. Both hold a key of it: one owner, unless the payer is a relayer. |
 | co-signer | 0.9 | Solana: two addresses, neither of them the fee payer, signed one transaction: Solana's common input. |
+| mixer | 0.3 at most | One of your wallets deposited into a Tornado Cash pool and another of yours withdrew from the same pool later: with n deposits made in between, the withdrawal is the first wallet's with odds of at most 1/(1+n), held at 0.3, so it never raises an alert on its own. It is an upper bound: older deposits not yet withdrawn hide the pair further, and are not counted. From 20 deposits in between (under 5%) the pool hides the pair and no line is drawn. Each withdrawal is paired with each other wallet's latest deposit before it; two addresses of one HD wallet are not paired. Several pairs between the same two wallets stay at the strongest. |
 
 Several transactions supporting the same guess combine as `1 - (1-c1)(1-c2)...`.
 
@@ -766,8 +782,8 @@ funded both.
 So is reuse in a
 [wallet's grade](#privacy-grade-of-your-wallets); "tied to your public wallet" is as sure as
 the link it rests on, and costs in proportion.
-The exception is a shared deposit address, which is the `deposit-address` guess above,
-shown as a finding.
+The exceptions are a shared deposit address and a mixer that hides little, which are the
+`deposit-address` and `mixer` guesses above, shown as findings.
 
 A link between two wallets multiplies the confidences along its path (a transfer counts
 1.0) and then by 0.7 for every stranger it passes through. Links chain through your own
@@ -792,6 +808,9 @@ or at the hop limit, and says which.
   time only. Wormhole transfers with a payload, wrapped tokens burned on their way back
   through Wormhole, Across to Solana and transfers out of Solana are not read as records.
 - Mixers are not correlated by amount: their fixed denominations make it meaningless.
+  Tornado Cash is read through its pools' own events instead (the `mixer` link), only
+  between two wallets you declared, and not on BNB Chain read through NodeReal. Other mixers
+  are only recognised by their labels.
 - HD wallets are Bitcoin only (no Ltub, dgub or EVM account keys yet). A plain xpub is scanned as four address types (legacy,
   wrapped segwit, segwit, taproot), about 160 lookups when empty; a zpub, ypub or
   descriptor scans only its own.
