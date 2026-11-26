@@ -33,8 +33,9 @@ list the wallets that are yours and mark as **public** the ones tied to your ide
 - **Lookup of any address**, yours or not: paste, type or scan it in the box at the top of
   every view. See [Look up an address](#look-up-an-address).
 - **Privacy score of any address** on every chain the scan covers: am-i-exposed's for
-  Bitcoin, the tracker's for EVM, Solana and Tron. See
-  [Privacy scan of EVM, Solana and Tron addresses](#privacy-scan-of-evm-solana-and-tron-addresses).
+  Bitcoin, Litecoin, Dogecoin and Bitcoin Cash, the tracker's for EVM, Solana and Tron. See
+  [Privacy scan of EVM, Solana and Tron addresses](#privacy-scan-of-evm-solana-and-tron-addresses)
+  and [Litecoin, Dogecoin and Bitcoin Cash](#litecoin-dogecoin-and-bitcoin-cash).
 
 A wallet is a single address or an HD wallet: paste an xpub, ypub, zpub or output
 descriptor and all its used addresses are found and treated as one wallet.
@@ -434,8 +435,8 @@ one, and so does **Privacy score** in the tracker's panels. A Bitcoin address go
 am-i-exposed's own scan, in the browser. Any of the others opens the tracker's scan
 (`/tracker/scan/`), which the server makes: the same score, grade, findings list and score
 breakdown as am-i-exposed's, so a score means the same on every chain. An EVM address first
-asks which chains to read, as a lookup does. Litecoin, Dogecoin and Bitcoin Cash are not
-scanned yet.
+asks which chains to read, as a lookup does. Litecoin, Dogecoin and Bitcoin Cash go to
+am-i-exposed's scan with their own profile (below).
 
 | Finding | Impact | What it rests on |
 |---|---|---|
@@ -477,6 +478,39 @@ first funder is a stranger who also funded another of your wallets: that strange
 first (one call on Solana and Tron, a sync elsewhere), and stored as a very active address
 when it is one.
 
+### Litecoin, Dogecoin and Bitcoin Cash
+
+A Litecoin, Dogecoin or Bitcoin Cash address (in the scanner's box, a `litecoin:` or
+`dogecoin:` link, or **Privacy score** in the tracker) runs am-i-exposed's own scan with that
+chain's profile: the same address and transaction checks, score and result page as for
+Bitcoin, in the chain's unit and with links to its explorer. A transaction of these chains is
+opened from a scan of one of its addresses, or as `/#tx=<txid>&chain=litecoin` (`dogecoin`,
+`bitcoincash`).
+
+The profile (`web/src/lib/bitcoin/chain-profile.ts`) leaves out what the chain does not have:
+
+| Left out | On | Why |
+|---|---|---|
+| Wallet fingerprints, Whirlpool, tx0, Wasabi, WabiSabi, Stonewall, JoinMarket, BIP47, ricochet, post-mix | all three | Bitcoin wallets and protocols. Equal outputs are still found, as a CoinJoin of unknown kind. |
+| The entity index and its OFAC list | all three | Bitcoin addresses only. |
+| Witness and address-type checks | Dogecoin, Bitcoin Cash | No segwit. |
+| RBF | Bitcoin Cash | It has no RBF: an RBF finding there would be false. |
+| Exact fee rate | Dogecoin | Its wallets all pay a fixed rate per kB. |
+
+Thresholds follow the chain: dust is 0.01 DOGE on Dogecoin (1,000 base units elsewhere), a
+round amount there is a multiple of 1,000 DOGE, and block counts (a transaction held before
+it was mined, the age of coins spent together) are scaled to 2.5-minute blocks on Litecoin and
+1-minute blocks on Dogecoin.
+
+The browser asks the tracker's server (`/api/tracker/utxo/<chain>/`), which answers in
+Esplora's form from the indexers of [Chains](#chains): Litecoin's is passed through, Dogecoin's
+and Bitcoin Cash's are converted. So the depths are the tracker's: the 50 newest transactions
+of a Dogecoin address and the 100 newest of a Bitcoin Cash one, and the result says
+**Some data could not be fetched** when an address has more. Those two indexers do not count
+an address's outputs: they are counted in the transactions read, at least one when the totals
+say so. Once Dogecoin's hourly quota is used up, what the scan still needs is skipped and the
+result says the same instead of failing; the quota is shared with syncs.
+
 ## Privacy
 
 The database says which wallets are yours. Keep it on your machine.
@@ -485,7 +519,8 @@ The database says which wallets are yours. Keep it on your machine.
 browser: with [a Bitcoin node of your own](#a-bitcoin-node-of-your-own), at that node through
 this server; otherwise at mempool.space (or at the mempool instance set in its own settings),
 and tor-check.copexit.workers.dev to see whether you use Tor. `CT_ESPLORA` and `CT_CHAINS` do
-not apply to it. The privacy scan of an EVM, Solana or Tron address is made by the tracker's
+not apply to it. A Litecoin, Dogecoin or Bitcoin Cash scan goes through this server instead, to
+the indexer of its chain (`CT_LITECOIN`, `CT_DOGECOIN`, `CT_BITCOINCASH`), and stores nothing. The privacy scan of an EVM, Solana or Tron address is made by the tracker's
 server instead: like a lookup, it sends the address to the indexer of its chain, nowhere
 else, and stores nothing. Finding its first funder can take one more call to the same indexer.
 On a wallet of yours, a stranger who first funded it and also funded another of your wallets
@@ -635,6 +670,11 @@ or at the hop limit, and says which.
   Bitcoin Cash's cashaddr.
 - An unlabelled exchange wallet looks like a stranger and can produce a false link;
   label it in the UI and the link disappears.
+- A Litecoin, Dogecoin or Bitcoin Cash scan uses am-i-exposed's own words: some findings and
+  the top recommendation speak of sats, sat/vB and Bitcoin wallets, and the clearnet notice
+  still names mempool.space although the scan goes through this server. A recent scan of one
+  of their transactions reopens on Bitcoin (their addresses find their chain again); open it
+  from the address instead.
 
 ## Built on am-i-exposed
 
@@ -659,6 +699,15 @@ its look, its two themes and its six languages.
   `NetworkContext`, and the hooks and panels of those services), and EVM, Solana and Tron
   addresses let through the input boxes (`AddressInput.tsx`, `InlineSearchBar.tsx`) and sent
   on to the tracker's scan where upstream would call them invalid (`useAnalysis.ts`).
+  Litecoin, Dogecoin and Bitcoin Cash in the scanner thread a chain profile through the
+  engine: `chain-profile.ts` is new, and the gates and thresholds are one or two lines each
+  in `detect-input.ts`, `heuristic-steps.ts`, `tx-pipeline.ts`, `address-orchestrator.ts`,
+  `orchestrator.ts`, `heuristics/` (`coinjoin`, `fee-analysis`, `tx-utils`, `round-amount`,
+  `dust-output`, `utxo-analysis`, `anonymity-set`, `timing`, `utxo-age-spread`),
+  `chain/backward.ts`, `chain/entity-proximity.ts`, `entity-filter/` (`entity-match`,
+  `entity-index`), `bitcoin/address-type.ts`, `format.ts`, `useAnalysis.ts`,
+  `useHashRouting.ts`, `useScanner.ts`, `Results.tsx`, `FindingCardTables.tsx` and
+  `GraphSidebar.tsx`.
 - The tracker's server (`tracker/`, Python) stays behind the app: it keeps the database,
   syncs, and answers under `/api/tracker/`. `/api/` itself is left to am-i-exposed, which
   looks there for a self-hosted mempool.
