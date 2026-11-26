@@ -10,6 +10,7 @@ import os
 import time
 from collections import Counter, defaultdict, namedtuple
 from datetime import datetime
+from urllib.parse import urlparse
 
 import httpx
 from embit import base58
@@ -23,9 +24,14 @@ ESPLORA = (
     os.environ.get("CT_ESPLORA") or (node.MEMPOOL and f"{node.MEMPOOL}/api")
     or "https://blockstream.info/api"
 ).rstrip("/")  # fmt: skip
+# With the lite node (node.py), my own Bitcoin addresses are read from it, any other from ESPLORA.
+LITE = (
+    "Your Bitcoin wallets are read from your own node; other Bitcoin addresses from "
+    f"{urlparse(ESPLORA).hostname}, which sees them."
+)
 # chain -> asset, API flavour, base URL, and what a reader of a verdict must know about it.
 UTXO = {
-    "bitcoin": ("BTC", "esplora", ESPLORA, ""),
+    "bitcoin": ("BTC", "esplora", ESPLORA, LITE if node.BITCOIND else ""),
     "litecoin": ("LTC", "esplora", os.environ.get("CT_LITECOIN", "https://litecoinspace.org/api"), ""),
     "bitcoincash": (
         "BCH", "haskoin", os.environ.get("CT_BITCOINCASH", "https://api.haskoin.com/bch"),
@@ -464,13 +470,50 @@ def _haskoin_tx(t):
     }
 
 
+def _core_tx(t):
+    """A transaction of the lite node (node.read: getrawtransaction's, verbosity 2) in
+    Esplora's shape. An input whose coin the node could not tell has no prevout."""
+
+    def coin(c):
+        script = c["scriptPubKey"]
+        sats = round(c["value"] * 1e8)
+        return _coin(script.get("address"), sats, script_type(script["hex"]), script["hex"])
+
+    def vin(i):
+        return {
+            "txid": i.get("txid"),
+            "vout": i.get("vout"),
+            "prevout": coin(i["prevout"]) if i.get("prevout") else None,
+            "scriptsig": (i.get("scriptSig") or {}).get("hex", ""),
+            "is_coinbase": "coinbase" in i,
+            "sequence": i.get("sequence"),
+        }
+
+    return {
+        "txid": t["txid"],
+        "version": t.get("version", 1),
+        "locktime": t.get("locktime", 0),
+        "size": t.get("size", 0),
+        "weight": t.get("weight", 0),
+        "fee": round(t.get("fee", 0) * 1e8),
+        "vin": [vin(i) for i in t["vin"]],
+        "vout": [coin(o) for o in t["vout"]],
+        "status": {"confirmed": True, "block_height": t["height"], "block_time": t["time"]},
+    }
+
+
 def fetch_utxo(client, address, chain="bitcoin", keep=()):
     asset, api, url, _ = UTXO[chain]
-    node.guard(url)
-    txs, balance, count = {"esplora": _esplora, "blockcypher": _blockcypher, "haskoin": _haskoin}[
-        api
-    ](client, url, address)
-    return {
+    # The lite node answers for my own Bitcoin addresses (None: not mine, read from `url`).
+    own = node.read(address, keep) if chain == "bitcoin" and node.BITCOIND else None
+    if own is not None:
+        txs = [_core_tx(t) for t in own[0]]
+        balance, count = node.balance(address), len(txs)
+    else:
+        node.guard(url)
+        readers = {"esplora": _esplora, "blockcypher": _blockcypher, "haskoin": _haskoin}
+        txs, balance, count = readers[api](client, url, address)
+    out = {
         "transfers": [
             row for tx in txs for row in utxo_transfers(address, tx, chain, asset, keep=keep)
         ],
@@ -482,6 +525,9 @@ def fetch_utxo(client, address, chain="bitcoin", keep=()):
         "hub": count > len(txs),
         "count": count,  # the address's transactions, as the indexer counts them
     }
+    if own and own[1]:
+        out["errors"] = [own[1]]  # registered once the node had pruned
+    return out
 
 
 # One page of an address's history, newest first: the raw items, their positions (block
@@ -494,6 +540,9 @@ Page = namedtuple("Page", "items positions next last span", defaults=[None])
 def page_utxo(client, chain, address, cursor=None):
     """One page of a UTXO address's history from `cursor` back (None: the newest)."""
     _, api, url, _ = UTXO[chain]
+    if chain == "bitcoin" and node.BITCOIND:  # all at once: only mine are read so (history.py)
+        txs = [_core_tx(t) for t in node.read(address, (address,))[0]]
+        return Page(txs, [t["status"]["block_height"] for t in txs], None, True)
     node.guard(url)
     if api == "esplora":
         txs, nxt, last = _esplora_page(client, url, address, cursor)
