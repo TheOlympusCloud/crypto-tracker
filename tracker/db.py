@@ -105,6 +105,11 @@ def connect(path=None):
         db.execute("DELETE FROM history WHERE source = 'solana'")
         db.execute("INSERT OR IGNORE INTO meta VALUES ('solana_reread', '1')")
         db.commit()
+    if not db.execute("SELECT 1 FROM meta WHERE key = 'tron_reread'").fetchone():
+        # Tron native lists read before delegation links are read once more, from the newest.
+        db.execute("DELETE FROM history WHERE source = 'tron:native'")
+        db.execute("INSERT OR IGNORE INTO meta VALUES ('tron_reread', '1')")
+        db.commit()
     return db
 
 

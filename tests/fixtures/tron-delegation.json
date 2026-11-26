@@ -1,0 +1,118 @@
+[
+ {
+  "txID": "b1f184cf06d313f7b3d745c6516b051c23157256ac127cf78725713d1a2864bd",
+  "block_timestamp": 1795353642000,
+  "ret": [
+   {
+    "contractRet": "SUCCESS"
+   }
+  ],
+  "raw_data": {
+   "contract": [
+    {
+     "type": "DelegateResourceContract",
+     "parameter": {
+      "value": {
+       "balance": 600000000,
+       "receiver_address": "41a51dcb3c04e3d0f8873453d10707683d0a58a47e",
+       "owner_address": "41288b5829b1ce806c591a2bddac1b2ae3ef8572d1"
+      }
+     }
+    }
+   ]
+  }
+ },
+ {
+  "txID": "7ffac583452897a64dadf10c11d6aba2ef24655c7892923479b2972edb44c88d",
+  "block_timestamp": 1795353732000,
+  "ret": [
+   {
+    "contractRet": "SUCCESS"
+   }
+  ],
+  "raw_data": {
+   "contract": [
+    {
+     "type": "UnDelegateResourceContract",
+     "parameter": {
+      "value": {
+       "balance": 600000000,
+       "receiver_address": "41a51dcb3c04e3d0f8873453d10707683d0a58a47e",
+       "owner_address": "41288b5829b1ce806c591a2bddac1b2ae3ef8572d1"
+      }
+     }
+    }
+   ]
+  }
+ },
+ {
+  "txID": "4402d410ab7bc3ace6a04cc784e7aa7a3ce4604d7b86abf79e5b871bd25baebf",
+  "block_timestamp": 1791836886000,
+  "ret": [
+   {
+    "contractRet": "SUCCESS"
+   }
+  ],
+  "raw_data": {
+   "contract": [
+    {
+     "type": "TransferContract",
+     "parameter": {
+      "value": {
+       "amount": 18303500,
+       "owner_address": "41a51dcb3c04e3d0f8873453d10707683d0a58a47e",
+       "to_address": "4142617573fceb9b78200eb434ff341fc9a4b6215a"
+      }
+     }
+    }
+   ]
+  }
+ },
+ {
+  "txID": "f0e6e9d4a8297e179722aa0dacfe956a9f80ba5d33c9fcb533ff7c855a3160a9",
+  "block_timestamp": 1791836799000,
+  "ret": [
+   {
+    "contractRet": "SUCCESS"
+   }
+  ],
+  "raw_data": {
+   "contract": [
+    {
+     "type": "TransferContract",
+     "parameter": {
+      "value": {
+       "amount": 25000000,
+       "owner_address": "4142617573fceb9b78200eb434ff341fc9a4b6215a",
+       "to_address": "41a51dcb3c04e3d0f8873453d10707683d0a58a47e"
+      }
+     }
+    }
+   ]
+  }
+ },
+ {
+  "txID": "daae05f127e5968f56d2bfba823b54fb44ee790c1fe8f2e0dd3c2a1871e3bab5",
+  "block_timestamp": 1795701165000,
+  "ret": [
+   {
+    "contractRet": "SUCCESS"
+   }
+  ],
+  "raw_data": {
+   "contract": [
+    {
+     "type": "DelegateResourceContract",
+     "parameter": {
+      "value": {
+       "balance": 16700000000,
+       "resource": "ENERGY",
+       "receiver_address": "41ca078364392000387eb056cb9b036d56e0225946",
+       "owner_address": "41288b5829b1ce806c591a2bddac1b2ae3ef8572d1"
+      }
+     }
+    }
+   ]
+  }
+ }
+]

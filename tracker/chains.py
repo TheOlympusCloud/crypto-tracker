@@ -16,7 +16,7 @@ from embit import base58
 
 from . import db as database
 from . import node
-from .heuristics import btc_inputs, btc_links, looks_like_coinjoin, solana_links
+from .heuristics import DELEGATION, btc_inputs, btc_links, looks_like_coinjoin, pair, solana_links
 
 # Your own mempool when there is one (node.MEMPOOL), else a public Esplora.
 ESPLORA = (
@@ -524,12 +524,12 @@ def fetch_btc(client, address):
     return fetch_utxo(client, address, "bitcoin")
 
 
+def b58(hex_address):  # Tron's native list speaks hex
+    return base58.encode_check(bytes.fromhex(hex_address))
+
+
 def tron_transfers(native, tokens):
     """Transfer rows of Tron's native and TRC-20 lists, and the tokens seen, by contract."""
-
-    def b58(hex_address):  # the native transfer list speaks hex
-        return base58.encode_check(bytes.fromhex(hex_address))
-
     transfers, info = [], {}
     for t in native:
         try:
@@ -552,6 +552,26 @@ def tron_transfers(native, tokens):
         except (KeyError, ValueError, TypeError):
             continue
     return transfers, info
+
+
+def tron_links(native):
+    """`delegation` links of a native list: one address lent its staked energy or bandwidth
+    to another. A stranger may be a rental service: busy.vet reads it before any link to it
+    is stored. Undelegating takes it back and adds nothing."""
+    links = []
+    for t in native:
+        try:
+            contract = t["raw_data"]["contract"][0]
+            v = contract["parameter"]["value"]
+            if (
+                contract["type"] == "DelegateResourceContract"
+                and t["ret"][0]["contractRet"] == "SUCCESS"
+            ):
+                ends = pair(b58(v["owner_address"]), b58(v["receiver_address"]))
+                links.append((*ends, "delegation", DELEGATION, t["txID"]))
+        except (KeyError, IndexError, ValueError, TypeError):
+            continue
+    return links
 
 
 def page_tron(client, address, kind, cursor=None):
@@ -587,7 +607,7 @@ def fetch_tron(client, address):
                 balances.append(("tron", token["symbol"][:20], contract, amount))
     return {
         "transfers": transfers,
-        "links": [],
+        "links": tron_links(native),
         "balances": balances,
         "hub": len(native) >= TRON_ROWS or len(tokens) >= TRON_ROWS,
     }

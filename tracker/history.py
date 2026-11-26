@@ -92,7 +92,11 @@ def _convert(source, address, items, keep):
     nothing = {"links": [], "coinjoins": [], "wide": [], "sent": []}
     if chain == "tron":
         native, tokens = (items, []) if action == "native" else ([], items)
-        return {"transfers": chains.tron_transfers(native, tokens)[0], **nothing}
+        return {
+            **nothing,
+            "transfers": chains.tron_transfers(native, tokens)[0],
+            "links": chains.tron_links(native),
+        }
     if chain == "solana":
         rows = [r for sig, tx in items if tx for r in chains.solana_transfers(address, sig, tx)]
         links = [k for sig, tx in items if tx for k in chains.solana_links(address, sig, tx)]

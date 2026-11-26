@@ -77,7 +77,7 @@ own menu and look.
 | Ethereum, Avalanche C | yes | Native coin and ERC-20 transfers, every ERC-20 token held, counterparties expanded. Your own wallets' NFT transfers too (ERC-721, ERC-1155): see [NFTs](#what-is-a-fact-and-what-is-a-guess). |
 | Base, Arbitrum, Optimism, Polygon | **needs `CT_BLOCKSCOUT_KEY`** | Same as Ethereum once the key is set. One free [Blockscout key](https://dev.blockscout.com) covers all four. Arbitrum and Polygon can also use a free `CT_ETHERSCAN_KEY`. |
 | BNB Chain | **needs `CT_NODEREAL_KEY`** | Read through [NodeReal](https://nodereal.io)'s MegaNode with a free key: BNB, internal and BEP-20 transfers, the balance and the tokens held; no NFTs. Addresses that are not yours: about the last day only. Etherscan's free plan no longer covers BNB Chain; a paid Etherscan key can be set instead in a `CT_CHAINS` file (`"bsc": {"url": "https://api.etherscan.io/v2/api", "params": {"chainid": "56"}, "apikey": "…", "symbol": "BNB", "llama": "bsc"}`). |
-| Tron | yes | TRX and TRC-20 transfers, the 200 newest; counterparties not expanded automatically, except [shared ones](#shared-counterparties). |
+| Tron | yes | TRX and TRC-20 transfers, the 200 newest; energy and bandwidth delegations linked; counterparties not expanded automatically, except [shared ones](#shared-counterparties). |
 | Solana | yes | SOL and SPL tokens (Token-2022 too, e.g. xStocks), the 25 newest transactions, read as net balance changes; fee payers and co-signers linked; the rent of a closed token account counts as sent by its owner; counterparties not expanded automatically, except [shared ones](#shared-counterparties). |
 
 The depths above are for other addresses (counterparties, lookups). Your own wallets are
@@ -662,6 +662,11 @@ wallets is looked up once at the same Solana RPC (its newest 1000 signatures), t
 relayer or a marketplace from a person. That RPC already sees your wallet; it now also sees
 the stranger's address asked about.
 
+Tron delegations: a stranger that lent energy or bandwidth to one of your wallets, or that
+one of them lent to, is looked up once at TronGrid (its newest 200 transactions), to tell an
+energy rental service from a person. TronGrid already sees your wallet; it now also sees the
+stranger's address asked about.
+
 Prices: only asset identifiers (coin names, token contracts) go to the price API, never
 addresses or amounts.
 
@@ -754,12 +759,16 @@ in `tracker/heuristics.py` and `tracker/graph.py`.
 | deposit-address | 0.85 | Two of your wallets paid the same address, which was read in full without an error, is not a very active address, has no label but the tracker's own guess or OKX's list's, sends everything to one labelled exchange, and was paid by 3 senders at most (two addresses of one wallet count once; the exchange topping up gas is one). A deposit address belongs to one exchange account. One row per deposit address: paying it again adds nothing, a second shared deposit address combines. EVM, Tron, Bitcoin, Litecoin and Bitcoin Cash. |
 | fee-payer | 0.9 | Solana: one address paid the fee of a transaction the other signed. Both hold a key of it: one owner, unless the payer is a relayer. |
 | co-signer | 0.9 | Solana: two addresses, neither of them the fee payer, signed one transaction: Solana's common input. |
+| delegation | 0.8 | Tron: one address lent the energy or bandwidth of its staked TRX to the other (`DelegateResourceContract`). People lend resources to their own wallets so these need not hold TRX for fees; energy rental services lend to everyone. Taking it back adds nothing. |
 
 Several transactions supporting the same guess combine as `1 - (1-c1)(1-c2)...`.
 
 A Solana fee payer or co-signer that is not yours is read first (its newest 1000
 signatures): 1000 of them, or a label from a source that states it, make it a very active
 address, which links nobody, and no line to it is stored. Only a quiet one is linked.
+A Tron address that lent resources to one of your wallets, or was lent them, is read the same
+way (one TronGrid page): its newest 200 transactions filling the page, as an energy rental
+service's do, or such a label, make it a very active address.
 The rent of a closed token account is booked to the account's owner: a refund to another
 address is a transfer from the owner to it.
 
@@ -905,7 +914,16 @@ out on the server from the verdicts (`tracker/clusters.py`); nothing is fetched.
   wallet reads "Partly checked". A rent refund stored before keeps its old row, from the
   token account, next to the new one from the owner: a few thousandths of a SOL counted twice.
 - A lookup reads no stranger, so it lists a Solana address's fee payers and co-signers as
-  guesses even when one of them is a relayer.
+  guesses even when one of them is a relayer, and a Tron address's delegations even when
+  they come from a rental service.
+- A database from before the Tron delegation links reads each Tron wallet's TRX history once
+  more, from the newest, so older delegations get their links too; until it is done the
+  wallet reads "Partly checked".
+- Tron delegations made before Stake 2.0 (April 2023), by freezing TRX for another address,
+  are not read.
+- A delegation to or from a Tron stranger that cannot be read gets no link; the sync's error
+  names the stranger. Tron's newest 200 transactions are read again on each sync, older ones
+  are not.
 - A Litecoin, Dogecoin or Bitcoin Cash scan uses am-i-exposed's own words: some findings and
   the top recommendation speak of sats, sat/vB and Bitcoin wallets, and the clearnet notice
   still names mempool.space although the scan goes through this server. A recent scan of one
