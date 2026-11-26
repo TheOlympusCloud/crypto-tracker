@@ -22,6 +22,8 @@ list the wallets that are yours and mark as **public** the ones tied to your ide
   [Privacy grade of your wallets](#privacy-grade-of-your-wallets).
 - **Funds origin**: where each wallet's money came from, followed back to a labelled
   source (exchange, bridge, mixer...), one of your wallets, or the edge of what is known.
+  Through a THORChain or Maya swap, or a bridge record, it carries on on the other chain:
+  Solana money bridged from Ethereum is traced to the exchange that funded the Ethereum side.
 - **A 3D graph** of your wallets, their counterparties (labelled by type) and the links
   between them. Any link or origin opens as a highlighted path with each hop spelled
   out. A flat 2D graph is the default on phones and where WebGL is missing. A busy address
@@ -100,7 +102,8 @@ the OP Stack bridges into Base and Optimism or Arbitrum's gateway router, the br
 event in that transaction's receipt names who gets the money on the other chain: any chain
 above that the bridge reaches, Solana included (CCTP and Wormhole). That recipient is linked
 to the wallet as a `bridge-record` ([below](#what-is-a-fact-and-what-is-a-guess)), whether
-you declared it or not.
+you declared it or not. A wallet of yours that received through such a record has its funds
+origin followed on the chain it was bridged from.
 
 The privacy scan reads an address as deeply as a lookup does (the depths above), so a scan
 of a busy Solana or Tron address says "Partly checked". Its first funder comes from that read
@@ -634,7 +637,8 @@ from the indexer that already reads that wallet (or from the `"rpc"` of that cha
 `CT_CHAINS`, your own node). When it names a Solana token account, the account's owner is
 read from the Solana RPC that reads your Solana wallets (`CT_SOLANA`). Neither learns
 anything new, so `CT_SWAPS` does not apply. A recipient that is not yours is read once,
-like a counterparty, to tell a stranger from a service.
+like a counterparty, to tell a stranger from a service. Funds origin follows swap and bridge
+records from what is already stored: it asks nobody anything.
 
 Labels: the label sets and OFAC's sanctions lists are downloaded whole from GitHub, and OKX's
 list of its own addresses from OKX's site, so none of them learns which addresses you look
@@ -781,10 +785,24 @@ passes on its own sources in proportion to what it received of that asset, ignor
 timing. It stops at a label, at one of your wallets, at an address that was not expanded,
 or at the hop limit, and says which.
 
+A swap or bridge record is not where it stops: the money is followed on from the record's
+sender, on the chain and in the asset paid in, as one hop, and the source says which
+protocols it crossed ("via Wormhole"). That sender is passed through even when it is one of
+your wallets, since the money changed chain or asset there. A swap's payout transaction is
+known (THORChain and Maya name it), so its vault is no longer a source. A bridge names no
+payout transaction, and on Solana it mints the tokens, which no transfer shows: what a
+bridge record brought in is listed as an asset of its own, "bridged from" the source chain.
+A sender that was never read ends the walk, as any address that was not expanded does.
+
 ## Known limits
 
 - Swaps that change the asset are matched only through THORChain and Maya Protocol,
   whose records are public. Other swap services and instant exchangers are not.
+- Funds origin lists money that came in through a bridge record apart, as "bridged from"
+  its chain, because the bridge's payout transaction is not known. On an EVM chain that
+  payout is also a transfer (a mint from the zero address, a relayer's), listed under the
+  asset received, so the same money shows twice there, once with its real origin. A bridge
+  record is followed for the wallet that received it, not for a stranger it passes through.
 - A bridge or exchange flow is only matched by amount and time when both ends are wallets
   you declared. Bridge records also find a recipient you did not declare, but only for a
   deposit your wallet makes straight into the bridge, or through a contract a label set
