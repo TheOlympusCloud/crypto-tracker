@@ -127,3 +127,46 @@ def test_no_room_for_a_node_is_refused_before_anything_is_made(tmp_path):
     # More disk than the default is fine when the storage has it.
     big = run(tmp_path, MEMPOOL="1", MEMPOOL_DISK="1500", FAKE_FREE_KIB=str(2000 * 1048576))
     assert big.returncode == 0 and "--rootfs local-lvm:1516" in (tmp_path / "calls").read_text()
+
+
+def test_a_lite_node_gets_its_cap_and_stays_on(tmp_path):
+    done = run(tmp_path, NODE="lite", NODE_MAX_DISK_GB="40")
+    assert done.returncode == 0, done.stderr
+    calls = (tmp_path / "calls").read_text().splitlines()
+    create = next(c for c in calls if c.startswith("pct create"))
+    # 16 GB for the app and the cap for the node, which may take all of it
+    for part in ("--rootfs local-lvm:56", "--memory 6144", "--cores 4"):
+        assert part in create
+    env = "/opt/crypto-tracker/.env"
+    on = f"pct exec 105 -- sh -c echo COMPOSE_PROFILES=node-lite >>{env} && echo NODE_MAX_DISK_GB=40 >>{env}"
+    assert calls.index(on) < next(i for i, c in enumerate(calls) if "docker compose up" in c)
+    assert "logs -f --tail 5 bitcoind-lite" in done.stdout and "at most 40 GB" in done.stdout
+    assert "Explorer" not in done.stdout  # no mempool site on a pruned node
+
+    (tmp_path / "default").mkdir()
+    default = run(tmp_path / "default", NODE="lite")
+    assert "--rootfs local-lvm:66" in (tmp_path / "default" / "calls").read_text()
+    assert default.returncode == 0
+    (tmp_path / "full").mkdir()
+    run(tmp_path / "full", NODE="full")  # MEMPOOL=1's other name
+    assert "COMPOSE_PROFILES=mempool" in (tmp_path / "full" / "calls").read_text()
+
+
+def test_a_lite_node_below_its_floor_is_refused_before_anything_is_made(tmp_path):
+    for given, said in (
+        ({"NODE_MAX_DISK_GB": "19"}, "NODE_MAX_DISK_GB must be a whole number of GB, at least 20"),
+        (
+            {"NODE_MAX_DISK_GB": "30GB"},
+            "NODE_MAX_DISK_GB must be a whole number of GB, at least 20",
+        ),
+        ({"NODE": "half"}, "NODE must be none, full or lite"),
+    ):
+        refused = run(tmp_path, **{"NODE": "lite", **given})
+        assert refused.returncode == 1 and said in refused.stderr, given
+    small = run(tmp_path, NODE="lite", FAKE_FREE_KIB=str(40 * 1048576))  # 40 GB free
+    assert small.returncode == 1 and "needs 66 GB" in small.stderr
+    assert "NODE_MAX_DISK_GB 50" in small.stderr
+    assert not any(
+        c.startswith(("pct create", "pveam download"))
+        for c in (tmp_path / "calls").read_text().splitlines()
+    )

@@ -529,6 +529,16 @@ def test_one_setting_sizes_the_node(tmp_path):
         assert "at least 20" in refused.stderr and not refused.stdout
 
 
+def test_the_floor_is_the_same_in_the_installer_and_the_node():
+    floor = [
+        line.split("=")[1].split()[0]
+        for path in (WRAPPER, ROOT / "proxmox" / "install.sh")
+        for line in path.read_text().splitlines()
+        if line.startswith(("MIN=", "NODE_MIN_DISK="))
+    ]
+    assert floor == ["20", "20"]
+
+
 def test_compose_runs_the_lite_profile_without_an_index():
     import yaml
 
