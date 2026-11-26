@@ -9,7 +9,8 @@ than one sync's budget), and `complete` whether the address's first transaction 
 from . import chains
 from . import db as database
 
-LISTS = ("txlist", "txlistinternal", "tokentx")  # an EVM address's three histories
+# An EVM address's histories. The NFT lists are read for my addresses only, never in a snapshot.
+LISTS = ("txlist", "txlistinternal", "tokentx", *chains.NFT_LISTS)
 
 
 def sources(address):
@@ -106,8 +107,12 @@ def _convert(source, address, items, keep):
     if action in LISTS:
         symbol = chains.evm_chains()[chain]["symbol"]
         mine = [it for it in items if action == "txlist" and str(it.get("from")).lower() == address]
+        if action in chains.NFT_LISTS:
+            rows = chains.nft_transfers(chain, items)
+        else:
+            rows = chains.evm_transfers(chain, symbol, items, action == "tokentx")
         return {
-            "transfers": chains.evm_transfers(chain, symbol, items, action == "tokentx"),
+            "transfers": rows,
             "links": [], "coinjoins": [], "wide": [],
             "sent": [it.get("hash") for it in mine],  # claims too: see tokens.judge
         }  # fmt: skip

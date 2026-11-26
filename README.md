@@ -74,9 +74,9 @@ own menu and look.
 | Bitcoin, Litecoin | yes | Full: history, common-input and change heuristics, counterparties expanded. HD wallets on Bitcoin. |
 | Bitcoin Cash | yes | Same heuristics; the 100 newest transactions per address. |
 | Dogecoin | yes | Same heuristics; the 50 newest transactions. The free indexer allows about 100 lookups an hour: when that is used up the sync moves on, and the remaining addresses are read on a later sync. |
-| Ethereum, Avalanche C | yes | Native coin and ERC-20 transfers, every ERC-20 token held, counterparties expanded. |
+| Ethereum, Avalanche C | yes | Native coin and ERC-20 transfers, every ERC-20 token held, counterparties expanded. Your own wallets' NFT transfers too (ERC-721, ERC-1155): see [NFTs](#what-is-a-fact-and-what-is-a-guess). |
 | Base, Arbitrum, Optimism, Polygon | **needs `CT_BLOCKSCOUT_KEY`** | Same as Ethereum once the key is set. One free [Blockscout key](https://dev.blockscout.com) covers all four. Arbitrum and Polygon can also use a free `CT_ETHERSCAN_KEY`. |
-| BNB Chain | **needs `CT_NODEREAL_KEY`** | Read through [NodeReal](https://nodereal.io)'s MegaNode with a free key: BNB, internal and BEP-20 transfers, the balance and the tokens held. Addresses that are not yours: about the last day only. Etherscan's free plan no longer covers BNB Chain; a paid Etherscan key can be set instead in a `CT_CHAINS` file (`"bsc": {"url": "https://api.etherscan.io/v2/api", "params": {"chainid": "56"}, "apikey": "…", "symbol": "BNB", "llama": "bsc"}`). |
+| BNB Chain | **needs `CT_NODEREAL_KEY`** | Read through [NodeReal](https://nodereal.io)'s MegaNode with a free key: BNB, internal and BEP-20 transfers, the balance and the tokens held; no NFTs. Addresses that are not yours: about the last day only. Etherscan's free plan no longer covers BNB Chain; a paid Etherscan key can be set instead in a `CT_CHAINS` file (`"bsc": {"url": "https://api.etherscan.io/v2/api", "params": {"chainid": "56"}, "apikey": "…", "symbol": "BNB", "llama": "bsc"}`). |
 | Tron | yes | TRX and TRC-20 transfers, the 200 newest; energy and bandwidth delegations linked; counterparties not expanded automatically, except [shared ones](#shared-counterparties). |
 | Solana | yes | SOL and SPL tokens (Token-2022 too, e.g. xStocks), the 25 newest transactions, read as net balance changes; fee payers and co-signers linked; the rent of a closed token account counts as sent by its owner; counterparties not expanded automatically, except [shared ones](#shared-counterparties). |
 
@@ -626,6 +626,9 @@ as private as that indexer is discreet.
 Swaps: each of your addresses is also looked up at the THORChain and Maya Midgard APIs.
 `CT_SWAPS=off` turns that off.
 
+NFTs: the NFT transfers of your own EVM wallets are read from the indexer that already
+reads them, so it learns nothing new. Other addresses are never asked about theirs.
+
 Names: each of your EVM addresses is looked up once a day in ENS, at the indexer that
 already reads it (Routescan), and in Basenames at a public Base RPC
 (base-rpc.publicnode.com), which is a new party: it sees each of your EVM addresses it is
@@ -769,6 +772,15 @@ service's do, or such a label, make it a very active address.
 The rent of a closed token account is booked to the account's owner: a refund to another
 address is a transfer from the owner to it.
 
+An NFT (ERC-721 or ERC-1155) one of your wallets sent is a transfer too, read from your own
+wallets' histories: one moved between two of your wallets links them, as a payment does.
+Anybody can send an NFT to anybody, often from a made-up sender, so one that arrived from a
+stranger counts only once a wallet of yours has sent that same NFT on, as with tokens; it
+is trusted one NFT at a time, never a whole contract, since a shared contract (OpenSea's)
+lets anybody mint into it. A mint or a burn (from or to the zero address, or to 0x…dEaD) is
+no transfer. In the graph a collection's NFTs between two addresses are one arrow. An NFT is
+no money: never a balance, a funds origin, a bridged amount or an exchange flow.
+
 The findings of the [privacy scan](#privacy-scan-of-evm-solana-and-tron-addresses) are
 facts: a transfer read from the chain, with a counterparty that an open label set or you
 name, or a name record. A sanction or a freeze is published by OFAC or by the issuer's own
@@ -871,6 +883,9 @@ out on the server from the verdicts (`tracker/clusters.py`); nothing is fetched.
 - The notices about your own node are in English, like the tracker's other server messages.
 - Token balances come from the transfer history unless the indexer has a token-balance
   call (`"tokenlist": true`), so rebasing tokens are off.
+- An indexer of your own in `CT_CHAINS` must also answer the NFT lists (`tokennfttx`,
+  `token1155tx`), as Etherscan, Routescan and Blockscout do. One that does not leaves your
+  wallets' history on that chain filling in, with the error in the wallet's panel.
 - Address checksums are verified, except the mixed-case form of EVM addresses and
   Bitcoin Cash's cashaddr.
 - An unlabelled exchange wallet looks like a stranger until it is read; each sync reads

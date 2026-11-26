@@ -186,6 +186,8 @@ def indexers(request):
                 {**row, "to": B, "from": A, "value": "5"},
             ],
             "txlistinternal": [],
+            "tokennfttx": [],
+            "token1155tx": [],
             "tokentx": [
                 {**token, "value": "7000000", "tokenSymbol": "USDC", "contractAddress": C},
                 # an airdrop nobody vouches for, from a stranger
