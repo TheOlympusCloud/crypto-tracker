@@ -12,6 +12,9 @@ maximum. Events never change, so an address is read once from its first transact
 from where the last read stopped, in block windows the indexer can answer (Routescan times
 out beyond about a million blocks on Ethereum). Only my wallets are read, by the sync: a
 stranger's whole history would take a scan dozens of calls.
+
+Each chain is read on its own: the approvals of the chains read in full are listed, and a
+chain not read yet (its history still filling in, its indexer down) is named in the grade.
 """
 
 import json
@@ -26,19 +29,32 @@ from . import funder
 APPROVAL = "0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925"  # its topic0
 PERMIT2 = "0x000000000022d473030f116ddee9f6b43ac78ba3"  # Uniswap's, the same on every chain
 UNLIMITED = 2**96 - 1  # tokens with 96-bit balances (UNI, COMP) store "unlimited" as this
-ROWS = 1000  # logs per answer, Etherscan's most: a full answer may be cut
+ROWS = 1000  # logs per page, Etherscan's most
+PAGES = 10  # pages of one window: Etherscan answers at most 10,000 rows of a query
 WINDOW = 1_000_000  # blocks asked for at first; grown while the indexer answers
 SETTLE = 200  # blocks below the head left for next time: the indexer's logs may trail it
 PER_SYNC = 40  # calls a sync makes for approvals; the rest goes on at the next one
+PER_ADDRESS = 20  # of them for one address, so that one slow to read never starves the rest
 REFRESH = 86400  # seconds: a permit is signed off chain and submitted by others, so no
 # transaction of mine announces it
 EVIDENCE = 5
 ERRORS = (httpx.HTTPError, RuntimeError, ValueError, KeyError, TypeError, IndexError)
-windows, limits = {}, {}  # chain -> blocks per window that answered, and that did not
 
 
 class Spent(Exception):
     """The sync's calls for approvals are used up."""
+
+
+class Turn(Exception):
+    """One address's share of the sync's calls is used up."""
+
+
+class Narrower(Exception):
+    """Ask for fewer blocks: the indexer wants a narrower range, or (`crowded`) the range holds
+    more of this address's approvals than the indexer pages through."""
+
+    def __init__(self, crowded=False):
+        self.crowded = crowded
 
 
 def readable():
@@ -65,20 +81,26 @@ def _block(client, cfg, ts, spend):
 
 
 def _logs(client, cfg, owner, low, high, spend):
-    """The Approval events of `owner` in blocks low to high; None when the indexer asks for a
-    narrower range, or the answer is full and may be cut."""
+    """The Approval events of `owner` in blocks low to high, page after page; Narrower when the
+    indexer asks for a narrower range (Routescan: "Timeout reached, please use a narrower block
+    range"), or when more pages would be needed than it serves."""
     query = {"module": "logs", "action": "getLogs", "fromBlock": low, "toBlock": high}
     query |= {"topic0": APPROVAL, "topic1": "0x" + owner[2:].rjust(64, "0")}
-    query |= {"topic0_1_opr": "and", "page": 1, "offset": ROWS}
-    data = _ask(client, cfg, query, spend)
-    rows = data.get("result")
-    if isinstance(rows, list):  # empty when there are none
-        return rows if len(rows) < ROWS else None
-    if (
-        "range" in str(data.get("message")).lower()
-    ):  # "Timeout reached, please use a narrower block range"
-        return None
-    raise RuntimeError(f"getLogs: {str(data.get('message'))[:80]}")
+    query |= {"topic0_1_opr": "and", "offset": ROWS}
+    rows = []
+    for page in range(1, PAGES + 1):
+        data = _ask(client, cfg, {**query, "page": page}, spend)
+        got = data.get("result")
+        if not isinstance(got, list):  # a list, empty when there are none
+            if "range" in str(data.get("message")).lower():
+                raise Narrower
+            raise RuntimeError(f"getLogs: {str(data.get('message'))[:80]}")  # noqa: TRY004 - the API words an error as its result
+        if rows and got[:1] == rows[:1]:
+            raise Narrower(crowded=True)  # an indexer that ignores pages sends the first again
+        rows += got
+        if len(got) < ROWS:
+            return rows
+    raise Narrower(crowded=True)
 
 
 def _keep(db, owner, chain, rows):
@@ -105,47 +127,69 @@ def _keep(db, owner, chain, rows):
             )
 
 
-def _read(db, client, cfg, chain, address, heads, spend):
+def state(db, address, chain):
+    """Where the read of `address` on `chain` stands: {"next": the next block to read, or None
+    when it held nothing there; "done": read in full once}, or None before any read."""
+    row = db.execute("SELECT value FROM meta WHERE key = ?", (f"approvals:{address}:{chain}",))
+    row = row.fetchone()
+    return json.loads(row[0]) if row else None
+
+
+def _mark(db, address, chain, next, done):
+    db.execute(
+        "INSERT OR REPLACE INTO meta VALUES (?, ?)",
+        (f"approvals:{address}:{chain}", json.dumps({"next": next, "done": done})),
+    )
+    db.commit()
+
+
+def _read(db, client, cfg, chain, address, learnt, spend):
     """Read the address's new Approval events on `chain`, window by window; True once read up
-    to the settled head, False while its first transaction there is not known yet."""
-    key = f"approvals:{address}:{chain}"
-    mark = db.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
-    if not mark:
+    to the settled head, False while its first transaction there is not known yet. `learnt`
+    holds what this sync found out about the chain's indexer: its head, and its windows."""
+    known = state(db, address, chain)
+    first = None
+    if not known or known["next"] is None:
         if not funder.complete(db, address, chain):
             return False  # its history is still filling in: start from its first transaction
         first = db.execute(
             "SELECT MIN(ts) FROM transfer WHERE chain = ? AND ? IN (src, dst)", (chain, address)
         ).fetchone()[0]
         if first is None:
-            return True  # it never held anything there to approve
-    if chain not in heads:
-        heads[chain] = _block(client, cfg, time.time(), spend) - SETTLE
-    top = heads[chain]
-    low = int(mark[0]) if mark else _block(client, cfg, first, spend)
-    while low <= top:
-        size = windows.get(chain, WINDOW)
-        high = min(top, low + size - 1)
-        found = _logs(client, cfg, address, low, high, spend)
-        if found is None:
+            _mark(db, address, chain, None, True)  # it never held anything there to approve
+            return True
+    on = learnt.setdefault(chain, {"window": WINDOW})
+    if "top" not in on:
+        on["top"] = _block(client, cfg, time.time(), spend) - SETTLE
+    low = _block(client, cfg, first, spend) if first else known["next"]
+    done = bool(known and known["next"] is not None and known["done"])
+    size = on["window"]  # this read's: a crowded stretch narrows it for this address only
+    while low <= on["top"]:
+        high = min(on["top"], low + size - 1)
+        try:
+            found = _logs(client, cfg, address, low, high, spend)
+        except Narrower as e:
             if high == low:
-                raise RuntimeError("getLogs: too many approvals in one block")
-            refused = high - low + 1
-            limits[chain] = min(limits.get(chain, refused), refused)
-            windows[chain] = refused // 2
+                # shortcut: more than 10,000 approvals of the address in one block stop its
+                # read on this chain (it stays "not read yet"); skip the block if that happens.
+                raise RuntimeError(f"getLogs: too many approvals in block {low}") from None
+            refused, size = high - low + 1, (high - low + 1) // 2
+            if not e.crowded:  # the indexer's limit, for every address in this sync
+                on["limit"] = min(on.get("limit", refused), refused)
+                on["window"] = min(on["window"], size)
             continue
         _keep(db, address, chain, found)
         low = high + 1
-        db.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", (key, str(low)))
-        db.commit()
-        # Grow while the indexer answers, below the smallest window it refused.
-        windows[chain] = min(size * 2, limits[chain] // 2) if chain in limits else size * 2
-    db.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", (key, str(low)))
+        _mark(db, address, chain, low, done)
+        # Grow while the indexer answers, below the smallest window it refused in this sync.
+        size = min(size * 2, on.get("limit", 4 * size) // 2)
+    _mark(db, address, chain, low, True)
     return True
 
 
 def sync(db, client):
-    """Read the approvals of my EVM addresses that are due: never read in full, read more than
-    a day ago, or that sent a transaction since. Returns what did not answer."""
+    """Read the approvals of my EVM addresses that are due: not read in full on every chain,
+    read more than a day ago, or that sent a transaction since. Returns what did not answer."""
     cfgs = readable()
     at = {
         r["key"].removeprefix("approvals_at:"): json.loads(r["value"])
@@ -158,25 +202,35 @@ def sync(db, client):
         for a in mine
         if a not in at or time.time() - at[a]["at"] > REFRESH or at[a]["sent"] != sent.get(a, 0)
     ]
-    left = [PER_SYNC]
+    left = [PER_SYNC, PER_ADDRESS]  # the sync's calls, and the current address's
 
     def spend():
         if left[0] <= 0:
             raise Spent
+        if left[1] <= 0:
+            raise Turn
         left[0] -= 1
+        left[1] -= 1
 
-    heads, failed = {}, {}
+    learnt, down, failed = {}, set(), {}
     try:
         for address in sorted(due, key=lambda a: at.get(a, {"at": 0})["at"]):
-            done = True
+            done, left[1] = True, PER_ADDRESS
             for chain, cfg in cfgs.items():
-                if chain in failed:
+                if chain in down:
                     done = False  # its indexer did not answer: the rest waits for the next sync
                     continue
                 try:
-                    done &= _read(db, client, cfg, chain, address, heads, spend)
-                except ERRORS as e:
+                    done &= _read(db, client, cfg, chain, address, learnt, spend)
+                except Turn:
+                    done = False  # it goes on from its bookmarks at the next sync
+                    break
+                except (httpx.HTTPError, chains.RateLimited) as e:
+                    down.add(chain)
                     failed[chain] = chains.describe(e)
+                    done = False
+                except ERRORS as e:  # this address only: the chain goes on for the others
+                    failed.setdefault(chain, f"{address}: {chains.describe(e)}")
                     done = False
             if done:
                 seen = {"at": time.time(), "sent": sent.get(address, 0)}
@@ -191,37 +245,49 @@ def sync(db, client):
 
 
 def stored(db, address):
-    """The open unlimited approvals a sync keeps for an address of mine; None before its first
-    read in full. A token can emit an Approval naming anyone as owner, so only an approval the
-    address signed counts, or one of a token it moved itself."""
+    """(the open unlimited approvals of the chains read in full, the readable chains not read
+    in full yet) for an address of mine. A token can emit an Approval naming anyone as owner,
+    so only an approval the address signed counts, or one of a token it moved itself there."""
     # shortcut: a permit submitted by a dApp's relayer, for a token the wallet never moved in
     # a transaction of its own, is not listed; drop the condition if such ones go missing.
-    if not db.execute("SELECT 1 FROM meta WHERE key = ?", (f"approvals_at:{address}",)).fetchone():
-        return None
-    return db.execute(
-        "SELECT * FROM approval a WHERE address = ?1 AND (txid IN (SELECT txid FROM sent "
-        "WHERE address = ?1) OR token IN (SELECT t.token FROM transfer t JOIN sent s ON "
-        "s.address = t.src AND s.txid = t.txid WHERE t.src = ?1)) ORDER BY chain, rowid",
-        (address,),
-    ).fetchall()
+    read, unread = [], []
+    for chain in readable():
+        known = state(db, address, chain)
+        (read if known and known["done"] else unread).append(chain)
+    marks = ",".join("?" * len(read))
+    rows = db.execute(
+        f"SELECT * FROM approval a WHERE address = ?1 AND chain IN ({marks}) AND (txid IN "
+        "(SELECT txid FROM sent WHERE address = ?1) OR token IN (SELECT t.token FROM transfer "
+        "t JOIN sent s ON s.address = t.src AND s.txid = t.txid WHERE t.src = ?1 AND "
+        "t.chain = a.chain)) ORDER BY chain, rowid",
+        (address, *read),
+    )
+    return rows.fetchall(), unread
 
 
 def _named(db, address, chain=None):
-    """What the tracker calls a contract: a token's symbol (given its `chain`), else its label,
-    else its verified name."""
+    """What the tracker calls a contract: a token's symbol (given its `chain`), else its label.
+    A verified contract name is its deployer's choice, so the address goes with it."""
     row = db.execute(
         "SELECT COALESCE((SELECT asset FROM transfer WHERE chain = ?2 AND token = ?1 LIMIT 1), "
-        "(SELECT name FROM label WHERE address = ?1), "
-        "(SELECT NULLIF(name, '') FROM contract WHERE address = ?1))",
+        "(SELECT name FROM label WHERE address = ?1)), "
+        "(SELECT NULLIF(name, '') FROM contract WHERE address = ?1)",
         (address, chain),
-    ).fetchone()[0]
-    return row or ("Permit2" if address == PERMIT2 else address)
+    ).fetchone()
+    if row[0]:
+        return row[0]
+    if address == PERMIT2:
+        return "Permit2"
+    return f"{row[1]} {address[:6]}…{address[-4:]}" if row[1] else address
 
 
 def check(ctx):
-    """The finding of an address of mine, from its last read by a sync. One never read in full
-    yet has none, and its grade is not partial for it: it cannot change the score."""
-    found = stored(ctx.db, ctx.address) or []
+    """The finding of an address of mine, from the chains a sync read in full. A chain not read
+    yet is a gap: the grade cannot change for it (impact 0), but no list must read as "none"."""
+    mine = ctx.db.execute("SELECT 1 FROM node WHERE address = ? AND mine", (ctx.address,))
+    if not mine.fetchone():
+        return  # a stranger's are never read
+    found, unread = stored(ctx.db, ctx.address)
     if found:
         listed = [
             f"{_named(ctx.db, r['token'], r['chain'])} → {_named(ctx.db, r['spender'])} "
@@ -230,3 +296,5 @@ def check(ctx):
         ]
         evidence = [{"chain": r["chain"], "txid": r["txid"]} for r in found][:EVIDENCE]
         yield "x-open-approvals", {"count": len(found), "approvals": "; ".join(listed)}, evidence
+    if unread:
+        raise RuntimeError(f"not read yet on {', '.join(map(chains.name, unread))}")
