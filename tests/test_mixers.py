@@ -275,6 +275,20 @@ def test_a_mixer_link_is_a_finding_of_both_wallets(db, quiet):
     assert (f["scoreImpact"], f["confidence"]) == (-5, "low")
 
 
+def test_a_pool_without_a_label_ends_every_path(db):
+    """A token deposit goes straight to the pool, and an ETH withdrawal comes straight from it:
+    without a label, the pool would join the two wallets as a stranger they both paid."""
+    a, b = "0x" + "a" * 40, "0x" + "b" * 40
+    mine(db, a)
+    mine(db, b)
+    pool = "0x84443cfd09a48af6ef360c6976c5392ac5023a1f"  # 0.1 BNB, which no label set names
+    token = "0x" + "7" * 40
+    transfer(db, "bsc", "t1", a, pool, 0.1, asset="X", token=token)
+    transfer(db, "bsc", "t2", pool, b, 0.1, asset="X", token=token)
+    db.commit()
+    assert graph.trace(db) == []
+
+
 def test_an_indexer_that_fails_marks_the_verdict_partly_checked(db, quiet):
     legs(db, TWO)
 
