@@ -33,6 +33,7 @@
   "chains.read": "read",
   "chains.needs_key": "needs key",
   "alerts.title": "Alerts",
+  "alerts.grade": "{{name}}: privacy grade down from {{from}} to {{to}} ({{score}} of 100)",
   "alerts.label_one": "Alerts, {{count}} unread",
   "alerts.label_other": "Alerts, {{count}} unread"
 }

@@ -26,10 +26,13 @@ IMPACT = {
         ["passive_observer", "kyc_exchange"],
         "historical",
     ),
+    "x-address-reuse": ("medium", -10, "deterministic", ["passive_observer"], "historical"),
     "x-exchange-exposure": ("high", -15, "deterministic", ["kyc_exchange"], "historical"),
     "x-flagged-address": ("critical", -20, "deterministic", ["kyc_exchange"], "active_risk"),
+    "x-linked-public": ("critical", -70, "deterministic", ["passive_observer"], "historical"),
     "x-flagged-counterparty": ("high", -15, "deterministic", ["kyc_exchange"], "historical"),
-    "x-funder-exchange": ("medium", -5, "deterministic", ["kyc_exchange"], "historical"),
+    # The withdrawal is one of the exchange's transfers, which x-exchange-exposure counts.
+    "x-funder-exchange": ("low", 0, "deterministic", ["kyc_exchange"], "historical"),
     "x-funder-hub": ("low", 0, "deterministic", ["passive_observer"], "historical"),
     "x-funder-mine": ("medium", -10, "deterministic", ["passive_observer"], "historical"),
     "x-funder-shared": ("medium", -10, "deterministic", ["passive_observer"], "historical"),
@@ -38,12 +41,15 @@ IMPACT = {
     "x-name-addresses": ("medium", -5, "deterministic", ["passive_observer"], "active_risk"),
     "x-name-record": ("high", -15, "deterministic", ["passive_observer"], "active_risk"),
 }
-# Checks per chain family; "any" runs on every one.
+# "any": checks of the counterparties alone, which a wallet's grade runs once per chain over
+# all its addresses' (wallets.py). A check that reads the address itself goes in its families'.
 CHECKS = {
-    "any": [deposit.check, exchange.check, flagged.check, funder.check],
-    "evm": [multichain.check, names.check],
-    "solana": [names.check],
-    "tron": [],
+    "any": [exchange.check, flagged.check],
+    "evm": [deposit.check, funder.check, multichain.check, names.check],
+    "solana": [deposit.check, funder.check, names.check],
+    "tron": [deposit.check, funder.check],
+    # Not scanned here (am-i-exposed scans Bitcoin), but in a wallet's grade.
+    **{c: [deposit.check] for c in ("bitcoin", "litecoin", "bitcoincash")},
 }
 FAMILIES = ("evm", "solana", "tron")
 BUDGET = 60  # calls the checks of one scan may make beyond the address's own read
@@ -125,16 +131,10 @@ def finding(id, params, evidence):
     }
 
 
-def run(db, client, address, evm=()):
-    """Scan `address` (canonical, an account chain's) on the EVM chains `evm` (empty: all).
-    `gaps` say why a result is partial: an indexer error, a read cut to the newest
-    transactions, or a check that ran out of calls."""
-    view = lookup.view(db, client, address, evm, cached=True, listed=None)
-    ctx = Context(db, client, address, view)
-    found, gaps = [], [{"id": "error", "params": {"error": e}} for e in view["errors"]]
-    if view["truncated"]:
-        gaps.append({"id": "truncated"})
-    for check in CHECKS["any"] + CHECKS[ctx.chain]:
+def checked(ctx, checks, gaps):
+    """The findings of `checks` on `ctx`; a check that fails or runs out of calls adds a gap."""
+    found = []
+    for check in checks:
         # A check module's `check` goes by the module's name: "exchange", "flagged".
         name = check.__module__.rsplit(".", 1)[-1] if check.__name__ == "check" else check.__name__
         try:
@@ -144,6 +144,19 @@ def run(db, client, address, evm=()):
             gaps.append({"id": "skipped", "params": {"check": name}})
         except (httpx.HTTPError, RuntimeError, ValueError, KeyError, TypeError, IndexError) as e:
             gaps.append({"id": "error", "params": {"error": f"{name}: {chains.describe(e)}"}})
+    return found
+
+
+def run(db, client, address, evm=()):
+    """Scan `address` (canonical, an account chain's) on the EVM chains `evm` (empty: all).
+    `gaps` say why a result is partial: an indexer error, a read cut to the newest
+    transactions, or a check that ran out of calls."""
+    view = lookup.view(db, client, address, evm, cached=True, listed=None)
+    ctx = Context(db, client, address, view)
+    gaps = [{"id": "error", "params": {"error": e}} for e in view["errors"]]
+    if view["truncated"]:
+        gaps.append({"id": "truncated"})
+    found = checked(ctx, CHECKS["any"] + CHECKS[ctx.chain], gaps)
     return {
         "address": address,
         "chain": ctx.chain,

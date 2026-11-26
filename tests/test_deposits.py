@@ -12,6 +12,7 @@ from test_core import BINANCE, A, B, C, D, mine, transfer
 
 from tracker import (
     alerts,
+    busy,
     chains,
     deposits,
     detect,
@@ -366,6 +367,16 @@ def test_a_candidate_whose_read_failed_is_asked_again_after_the_unread_ones(db):
     assert deposits.candidates(db) == [fresh, DEP]
     db.execute("UPDATE node SET error = NULL WHERE address = ?", (DEP,))
     assert deposits.candidates(db) == [fresh]  # read without an error: done
+
+
+def test_a_tron_stranger_another_check_found_quiet_is_still_read_as_a_candidate(db, monkeypatch):
+    for w in (T1, T2):
+        db.execute("INSERT INTO node(address, mine, synced_at) VALUES (?, 1, 1)", (w,))
+        transfer(db, "tron", f"t{w}", w, TDEP, 1, asset="USDT")
+    # The first funder, a name or a bridge record asked about it first: one call, no sync.
+    monkeypatch.setattr(chains, "page_tron", lambda *a, **k: SimpleNamespace(items=[]))
+    assert busy.check(db, None, TDEP) is False
+    assert deposits.candidates(db) == [TDEP]  # only a sync shows where it sends
 
 
 def test_solana_candidates_take_one_call_each_and_dogecoin_none(db, monkeypatch):

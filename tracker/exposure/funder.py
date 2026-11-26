@@ -123,11 +123,15 @@ def name(ctx, src, evidence, mine):
     ).fetchall()
     if not others:
         return None
-    # Read it first: an unlabelled exchange hot wallet must not pass for one person who
-    # funded both. A busy one is stored as a hub, which ends every path through it.
-    evm = sum(not cfg.get("needs_key") for cfg in chains.evm_chains().values())
-    for _ in range(1 if ctx.chain in ("solana", "tron") else SYNC * evm):
-        ctx._spend()
-    id = "x-funder-hub" if busy.check(ctx.db, ctx.client, src) else "x-funder-shared"
+    # Read it first, once: an unlabelled exchange hot wallet must not pass for one person who
+    # funded both. A busy one is stored as a hub, which ends every path through it. Without
+    # calls (a wallet's grade) one not read yet is skipped, and the grade says so.
+    hub = busy.known(ctx.db, src)
+    if hub is None:
+        evm = sum(not cfg.get("needs_key") for cfg in chains.evm_chains().values())
+        for _ in range(1 if ctx.chain in ("solana", "tron") else SYNC * evm):
+            ctx._spend()
+        hub = busy.check(ctx.db, ctx.client, src)
+    id = "x-funder-hub" if hub else "x-funder-shared"
     wallets = ", ".join(r["name"] or r["address"] for r in others)
     return id, {"funder": src, "wallets": wallets, "chains": on}, evidence

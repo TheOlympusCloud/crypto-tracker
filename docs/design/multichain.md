@@ -299,15 +299,26 @@ lines of Python; one shared fixture of findings is scored by both versions in th
 It scores:
 
 - the wallet's own findings: linked to a public wallet (impact scaled by the link's
-  confidence), in a group with a public wallet (3.2), exchange exposure, deposit address
-  shared;
-- the server-side findings of each of its addresses, on every chain: the account-chain
-  checks, and for UTXO addresses their reuse, read from stored transfers;
+  confidence), exchange exposure, deposit address shared. A wallet in a group with a public
+  wallet (3.2) is always linked to it through the verdict's chained links, so that finding
+  already scores it, at the chained confidence; a second finding for the group would count
+  the same link twice;
+- the server-side findings of its addresses, on every chain, read from stored data: the
+  checks of the counterparties once per chain over all the wallet's addresses (an HD wallet
+  paid by one exchange from three addresses has one exchange finding, for three transfers),
+  what an address is itself (on a sanctions list, frozen) and a family's checks (first
+  funder, names, the same address on several chains) once per address,
+  and for UTXO addresses their reuse. An exchange that first funded an address costs
+  nothing more: its withdrawal is one of the transfers exchange exposure counts;
 - each finding id once, with its worst impact across the wallet's addresses: one exchange
   exposure is enough to be exposed. Reuse is the exception, counted per address: −10 for
   each reused address, at most −40, where am-i-exposed's single-address score gives −70 to
   −93 and would make a whole HD wallet F for one slip;
-- `partial` exactly when the verdict is not "full" (history filling in, a source down).
+- `partial` exactly when the verdict is not "full" (history filling in, a source down), or
+  a check needs a call the page does not make: names a sync has not looked up yet, or a
+  stranger who first funded two of my wallets and was never read. The address's own scan
+  reads that stranger, and its answer is kept (a busy one as a hub, a quiet one in
+  `quiet`), so the next grade is complete; the next syncs look the names up.
 
 am-i-exposed's deep scan of a Bitcoin or Litecoin address (its 30-odd heuristics, run in the
 browser) is not part of the wallet grade: the server cannot see it. It stays one click away,

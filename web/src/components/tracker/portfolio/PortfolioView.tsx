@@ -10,6 +10,7 @@ import type { GraphNode, Verdict } from "@/lib/tracker/types";
 import { Amount, Badge, Bar, CARD, fake, held, readFiat, Segment, TrustBadge, VerdictBox, Worth } from "../bits";
 import { ChainMark, Coin } from "../Glyph";
 import { useTracker } from "../TrackerProvider";
+import { GradeChip } from "./Grade";
 import { OriginBar } from "./Origins";
 import { assetTotals, type AssetTotal } from "./totals";
 import { judge } from "./verdict";
@@ -283,6 +284,7 @@ function WalletCard({ v }: { v: Verdict }) {
       </div>
       <div className="flex flex-wrap items-center gap-2">
         <Badge public={n.public} />
+        <GradeChip address={address} />
         {fiat && v.checked === "none" ? (
           <span className="font-mono text-sm text-muted" title={t("tracker-portfolio:card.unchecked")}>
             –

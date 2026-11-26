@@ -14,6 +14,7 @@ from starlette.routing import Mount
 
 from . import alerts, chains, exposure, graph, hd, lookup, node, prices, sync, uri
 from . import db as database
+from .exposure import wallets
 
 app = FastAPI(title="Crypto tracker", docs_url=None, redoc_url=None)
 CATEGORIES = {"cex", "dex", "bridge", "mixer", "flagged", "defi", "service", "other"}
@@ -131,10 +132,13 @@ def get_graph(spam: bool = False):
 
 
 @app.get("/analysis")
-def get_analysis(max_hops: int = 4):
+def get_analysis(max_hops: int = graph.HOPS):
     max_hops = max(1, min(max_hops, 6))
     db = database.connect()
     try:
+        verdicts = graph.verdicts(db, max_hops)
+        # The grades are always at the default hops: the ones alerts compare.
+        graded = verdicts if max_hops == graph.HOPS else graph.verdicts(db)
         return {
             "max_hops": max_hops,
             "hop_decay": graph.HOP_DECAY,
@@ -148,8 +152,9 @@ def get_analysis(max_hops: int = 4):
                     "LEFT JOIN label l USING (address) ORDER BY w.ts DESC"
                 )
             ],
-            "verdicts": graph.verdicts(db, max_hops),
+            "verdicts": verdicts,
             "origins": graph.origins(db, max_hops),
+            "exposure": wallets.scores(db, graded),  # by the wallet's first address
         }
     finally:
         db.close()

@@ -330,9 +330,23 @@ def lookup(client, address, spend=lambda: None):
     return out
 
 
+def stored(db, address):
+    """The names `sync` kept for an address of mine, as `lookup` gives them; None when it
+    never looked them up."""
+    if not db.execute("SELECT 1 FROM meta WHERE key = ?", (f"names_at:{address}",)).fetchone():
+        return None
+    rows = db.execute("SELECT * FROM name WHERE address = ? ORDER BY rowid", (address,))
+    return [
+        {"chain": r["chain"], "name": r["name"], "listed": json.loads(r["listed"])} for r in rows
+    ]
+
+
 def check(ctx):
-    """The scan's finding: the address's names, and the addresses they list."""
-    found = lookup(ctx.client, ctx.address, ctx._spend)
+    """The scan's finding: the address's names, and the addresses they list. An address of
+    mine is answered from its last lookup by a sync, without a call (a wallet's grade)."""
+    found = stored(ctx.db, ctx.address)
+    if found is None:
+        found = lookup(ctx.client, ctx.address, ctx._spend)
     if not found:
         return
     names = ", ".join(f["name"] for f in found)

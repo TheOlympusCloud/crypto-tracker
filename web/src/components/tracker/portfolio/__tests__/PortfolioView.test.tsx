@@ -68,6 +68,17 @@ describe("PortfolioView", () => {
     expect(tracker.openWallet).toHaveBeenCalledWith(COLD);
   });
 
+  it("shows each wallet's privacy grade on its card, none for a wallet never read", () => {
+    const exposure = { ...ANALYSIS.exposure, [COLD]: { ...ANALYSIS.exposure![COLD]!, partial: true }, vines1vzrYbzLMRdu58ou5XTby4qAqVRLmqo36NKPTg: null };
+    renderTracker(<PortfolioView />, { analysis: { ...ANALYSIS, exposure } });
+    const cold = within(card("Cold storage"));
+    expect(cold.getByText("D · 34")).toBeTruthy();
+    expect(cold.getByText("Privacy grade D, 34 of 100")).toBeTruthy();
+    expect(cold.getByTitle("Privacy grade D, 34 of 100. Partly checked")).toBeTruthy();
+    expect(within(card("Hot wallet")).getByText("C · 68")).toBeTruthy();
+    expect(within(card("Phone")).getByTitle("No grade yet: sync this wallet").textContent).toBe("–");
+  });
+
   it("marks an unchecked wallet's value unknown and a partly read one as at least", () => {
     const verdicts = ANALYSIS.verdicts.map((v) =>
       v.address === COLD ? { ...v, checked: "partial" as const } : v.name === "Phone" ? { ...v, checked: "none" as const } : v,

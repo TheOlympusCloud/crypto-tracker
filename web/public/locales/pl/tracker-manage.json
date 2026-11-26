@@ -35,6 +35,7 @@
   "chains.read": "odczytywana",
   "chains.needs_key": "wymaga klucza",
   "alerts.title": "Alerty",
+  "alerts.grade": "{{name}}: ocena prywatności spadła z {{from}} na {{to}} ({{score}} na 100)",
   "alerts.label_one": "Alerty, {{count}} nieprzeczytany",
   "alerts.label_few": "Alerty, {{count}} nieprzeczytane",
   "alerts.label_many": "Alerty, {{count}} nieprzeczytanych",

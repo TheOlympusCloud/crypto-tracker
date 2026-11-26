@@ -7,8 +7,6 @@ address. A deposit address belongs to one exchange account, so two wallets of mi
 it are one customer: a `deposit-address` link.
 """
 
-import time
-
 import httpx
 
 from . import busy, detect, graph, labels, sync
@@ -38,12 +36,18 @@ def candidates(db):
             WHERE other NOT IN (
                 SELECT address FROM node WHERE (synced_at AND error IS NULL) OR hub OR mine)
               AND other NOT IN (SELECT address FROM label WHERE {labels.STOPS})
-              AND other NOT IN (SELECT address FROM quiet)
             GROUP BY other HAVING COUNT(DISTINCT w) >= 2
             ORDER BY other IN (SELECT address FROM node WHERE error IS NOT NULL),
                      COUNT(*) DESC, other"""
     )
-    return [r["other"] for r in rows if database.chain_of(r["other"]) in CHAINS][:READS]
+    quiet = {r[0] for r in db.execute("SELECT address FROM quiet")}
+    # Quiet ends only a Solana read, which is that one call; elsewhere `read` syncs, and only
+    # a sync shows where an address sends. Other checks note quiet strangers on any chain.
+    return [
+        o
+        for o in (r["other"] for r in rows)
+        if database.chain_of(o) in CHAINS and not (database.chain_of(o) == "solana" and o in quiet)
+    ][:READS]
 
 
 def read(db, client):
@@ -55,10 +59,7 @@ def read(db, client):
             sync.sync_address(db, client, address)  # a failed read is tried again next sync
             continue
         try:
-            if not busy.check(db, client, address):
-                # shortcut: a quiet stranger is never asked again, even if it gets busy later
-                db.execute("INSERT OR IGNORE INTO quiet VALUES (?, ?)", (address, int(time.time())))
-                db.commit()
+            busy.check(db, client, address)  # a quiet one is noted in `quiet`, never asked again
         except (httpx.HTTPError, RuntimeError, ValueError, KeyError, TypeError):
             continue  # unread is not quiet: asked again on the next sync
 

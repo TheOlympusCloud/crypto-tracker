@@ -66,7 +66,7 @@ def test_an_exchange_funded_address_shows_the_exchange_with_evidence_links(db, c
     # The server sends ids and parameters, never sentences: the page words them.
     assert all("title" not in f and "description" not in f for f in r["findings"])
     assert (r["score"], r["grade"], r["partial"], r["gaps"]) == (
-        93 - 15 - 10 - 5 - 2,
+        93 - 15 - 10 - 2,  # the exchange's first-funder withdrawal is one of its transfers
         "C",
         False,
         [],
@@ -178,11 +178,14 @@ def test_a_busy_solana_stranger_is_stored_as_a_hub(db, quick):
     assert busy.check(db, http, SOL) is True and len(calls) == 1  # known by now
 
 
-def test_a_quiet_solana_stranger_stores_nothing(db, quick):
+def test_a_quiet_solana_stranger_is_read_once_and_stores_nothing_a_verdict_reads(db, quick):
     http, calls = rpc(10)
     before = stored(db)
+    assert busy.known(db, SOL) is None
     assert busy.check(db, http, SOL) is False and len(calls) == 1
     assert stored(db) == before
+    assert busy.known(db, SOL) is False
+    assert busy.check(db, http, SOL) is False and len(calls) == 1  # known by now
 
 
 def test_a_full_tron_page_or_a_label_makes_a_hub(db, quick):
