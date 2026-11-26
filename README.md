@@ -87,6 +87,9 @@ The same EVM address is read on every EVM chain. Chains that are read less deepl
 in each wallet's verdict, and chains waiting for a key are listed as such instead of
 failing.
 
+OFAC's sanctions lists flag addresses on every chain above; Tether's and Circle's stablecoin
+freezes are read on Ethereum and Tron (see [Who is on the other side](#who-is-on-the-other-side)).
+
 Bridges: when one of your wallets pays into Circle's CCTP, Across, Wormhole's Token Bridge,
 the OP Stack bridges into Base and Optimism or Arbitrum's gateway router, the bridge's own
 event in that transaction's receipt names who gets the money on the other chain: any chain
