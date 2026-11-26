@@ -20,9 +20,10 @@ ME = "SELECT address, COALESCE(wallet, address) w FROM node WHERE mine"
 def deposit_addresses(db):
     """address -> exchange, for each address that behaves like one exchange's deposit address:
     read in full without an error, not a hub, not mine, named by no source but this module
-    or a name-only set (an exchange's list of mostly deposit addresses), every payment it made going to that one exchange, and paid by no more than SENDERS
-    senders (two addresses of one wallet of mine are one sender). One that also pays anybody
-    else is more likely a wallet nobody registered, perhaps the user's own."""
+    or a name-only set (an exchange's list of mostly deposit addresses), every payment it
+    made going to that one exchange, and paid by no more than SENDERS senders (two addresses
+    of one wallet of mine are one sender). One that also pays anybody else is more likely a
+    wallet nobody registered, perhaps the user's own."""
     exchange = {
         r["address"]: r["name"].rstrip("0123456789 #:")  # "Binance 14" -> "Binance"
         for r in db.execute(

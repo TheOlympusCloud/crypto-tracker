@@ -736,6 +736,10 @@ or at the hop limit, and says which.
   later syncs, after the addresses never read. An address named only by OKX's list is read
   and judged the same way. On Solana the only exchange labels are OKX's own list, on Tron
   OKX's and GraphSense's: other exchanges' wallets there are strangers until you label them.
+- OKX's list names its deposit addresses as OKX, so an address that only ever paid one of
+  them counts as one of OKX's deposit addresses too. Two wallets that paid such an address
+  (perhaps a person's wallet that only tops up an OKX account) get the `deposit-address`
+  link at 85%, where a stranger in between would give 70%.
 - Stablecoin freezes are read on Ethereum and Tron only, where most USDT and USDC lives;
   Tether's and Circle's freezes on other chains are not flagged. Ethereum's are read from an
   Etherscan-style indexer: with one that has no `logs` module, that set is not downloaded.
