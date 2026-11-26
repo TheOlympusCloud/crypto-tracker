@@ -23,7 +23,10 @@ CHAINS = {"evm", "tron", "bitcoin", "litecoin", "bitcoincash", "solana"}
 
 
 def candidates(db):
-    """Unread, unlabelled addresses that two or more of my wallets dealt with, busiest first."""
+    """Unread, unlabelled addresses that two or more of my wallets dealt with, busiest first.
+    A read with an error counts as unread (one EVM chain of six failing leaves synced_at set
+    and rules the address out as a deposit address), but waits behind the never-read ones so
+    a few that keep failing cannot take every slot."""
     rows = db.execute(
         f"""WITH me AS ({detect.ME})
             SELECT other FROM (
@@ -31,10 +34,13 @@ def candidates(db):
               WHERE {TRUSTED} AND NOT {graph.FAKE}
               UNION ALL SELECT src, w FROM transfer JOIN me ON me.address = dst
               WHERE {TRUSTED} AND NOT {graph.FAKE})
-            WHERE other NOT IN (SELECT address FROM node WHERE synced_at OR hub OR mine)
+            WHERE other NOT IN (
+                SELECT address FROM node WHERE (synced_at AND error IS NULL) OR hub OR mine)
               AND other NOT IN (SELECT address FROM label)
               AND other NOT IN (SELECT address FROM quiet)
-            GROUP BY other HAVING COUNT(DISTINCT w) >= 2 ORDER BY COUNT(*) DESC, other"""
+            GROUP BY other HAVING COUNT(DISTINCT w) >= 2
+            ORDER BY other IN (SELECT address FROM node WHERE error IS NOT NULL),
+                     COUNT(*) DESC, other"""
     )
     return [r["other"] for r in rows if database.chain_of(r["other"]) in CHAINS][:READS]
 
