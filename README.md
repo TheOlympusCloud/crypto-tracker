@@ -371,9 +371,9 @@ published.
   goes through the whole set of unspent coins: minutes on mainnet. The tracker does it for
   your wallets, at most every 10 minutes while it syncs; for another address, `bitcoin-cli
   scantxoutset start '["addr(<address>)"]'` (with the cookie option below);
-- **its own mempool, fee estimates and broadcasting**, as any Bitcoin Core, e.g.
-  `docker compose exec bitcoind-lite bitcoin-cli -rpccookiefile=/home/bitcoin/rpc/.cookie
-  estimatesmartfee 6`, or `sendrawtransaction <hex>`.
+- **the privacy scanner's fee estimates, chain tip and broadcasts** ([below](#the-scanner-with-a-lite-node));
+  from a shell, as any Bitcoin Core, e.g. `docker compose exec bitcoind-lite bitcoin-cli
+  -rpccookiefile=/home/bitcoin/rpc/.cookie estimatesmartfee 6`, or `sendrawtransaction <hex>`.
 
 **What still goes to a public server:** the history of any address that is not yours, which a
 pruned node cannot read: counterparties a sync expands, addresses you look up. The tracker
@@ -384,11 +384,36 @@ it, run Tor with `HTTPTunnelPort 0.0.0.0:9080` on your network and set
 `HTTPS_PROXY=http://<tor host>:9080` in `.env`: every request the server sends out goes through
 it, other chains' included. The node itself is asked over plain HTTP and stays direct.
 
-The privacy scanner (am-i-exposed) keeps using mempool.space, or the instance set in its
-settings, as with no node: its scans read address histories, which the lite node does not
-have, and its "Local" badge promises that every query stays on your network. Its badge shows
-where it reads from. Nor is there a mempool site: mempool needs the transaction index, which
-a pruned node cannot keep.
+Nor is there a mempool site: mempool needs the transaction index, which a pruned node cannot
+keep.
+
+#### The scanner with a lite node
+
+The privacy scanner (am-i-exposed) takes its fee estimates, the chain tip and broadcasts from
+the lite node, through this server (`/api/tracker/node/`, behind the app's password: the
+browser never talks to the node's RPC). Its address and transaction scans still go to
+mempool.space, or to the instance set in its settings, as with no node: they read address
+histories, which the lite node does not have. Its badge at the top right says **Lite node**, in
+orange, and explains: "Fees and broadcasts use your own Bitcoin node. Address and transaction
+scans go to mempool.space, which sees them." It is not the full node's **Local**, which turns
+the scanner's third-party warnings off: here they all stay.
+
+- **Broadcast.** The Broadcast window names your node, has it check the transaction first
+  (`testmempoolaccept`), then has it send it (`sendrawtransaction`). Once it is sent, the
+  transaction's scan does not open by itself as it does elsewhere: it would ask mempool.space
+  for it seconds after your node sent it. "Scan it on mempool.space" opens it when you choose.
+- **While the node syncs or does not answer**, the window says so before you send ("Your node
+  would reject it: Bitcoin: your own node is still syncing; ..."), nothing is sent, the fee
+  hints are left out and the badge adds why. It never falls back to mempool.space: broadcast
+  from your wallet meanwhile.
+- **Mainnet only**: on testnet4 or signet the scanner keeps its own server for everything.
+
+To check it: in the developer tools (F12), tab **Network**, paste a signed transaction or PSBT
+in the scanner, open Broadcast and send it. Filter `node/`: the fee estimates, the check and the
+broadcast go to the app's own address (`/api/tracker/node/v1/fees/recommended`, `/txs/test`,
+`/tx`). Filter `mempool.space`: nothing. The one request to mempool's `.onion` address is the
+scanner checking whether you use Tor, as with no node: it carries nothing, and fails outside
+Tor.
 
 #### The cap
 
@@ -1054,9 +1079,11 @@ out on the server from the verdicts (`tracker/clusters.py`); nothing is fetched.
   the 10 newest transactions of an address: am-i-exposed pages by 25, which such a mempool does
   not. The tracker reads them all.
 - The notices about your own node are in English, like the tracker's other server messages.
-- With the [lite node](#a-lite-node), the scanner does not use it, a wallet added once it has
-  pruned is read back only as far as its blocks go, and the first balance scan of a sync takes
-  minutes.
+- With the [lite node](#a-lite-node), the scanner's address and transaction scans still go to
+  its public server, a wallet added once it has pruned is read back only as far as its blocks
+  go, and the first balance scan of a sync takes minutes. After a broadcast of unknown outcome,
+  "Check status" finds the transaction only while it is in the node's mempool: once mined it
+  reads "probably not sent", and sending it again only gets the node's refusal.
 - Token balances come from the transfer history unless the indexer has a token-balance
   call (`"tokenlist": true`), so rebasing tokens are off.
 - An indexer of your own in `CT_CHAINS` must also answer the NFT lists (`tokennfttx`,
@@ -1138,7 +1165,9 @@ its look, its two themes and its six languages.
   `three` and `cytoscape` packages, `torProxy` in `/api/local-info`: a host with its own
   mempool but no Tor sidecar (this server) is used like Umbrel for mempool, while the services
   Umbrel sends through its sidecar keep the public site's routes (`useLocalApi`,
-  `NetworkContext`, and the hooks and panels of those services), and EVM, Solana and Tron
+  `NetworkContext`, and the hooks and panels of those services), the [lite node](#the-scanner-with-a-lite-node)
+  for fees, the chain tip and broadcasts (`useLocalApi`, `NetworkContext`, `ConnectionBadge`,
+  `BeforeYouSend`, `BroadcastDialog`, `Results`, `useChainTip`, with `web/src/lib/tracker/node.ts`), and EVM, Solana and Tron
   addresses let through the input boxes (`AddressInput.tsx`, `InlineSearchBar.tsx`) and sent
   on to the tracker's scan where upstream would call them invalid (`useAnalysis.ts`).
   Litecoin, Dogecoin and Bitcoin Cash in the scanner thread a chain profile through the
