@@ -93,7 +93,7 @@ def vet(db, client, links):
     when it came), or joins one of mine to a stranger `check` finds quiet; each stranger is
     read at most once here. Links of other kinds pass as they are."""
     mine = {r["address"] for r in db.execute("SELECT address FROM node WHERE mine")}
-    quiet, kept, errors = {}, [], []
+    quiet, kept, errors, limited, waiting = {}, [], [], False, 0
     for k in links:
         a, b, kind, _, evidence = k
         if (
@@ -110,11 +110,17 @@ def vet(db, client, links):
             continue  # two strangers: no wallet of mine to link
         other = b if a in mine else a
         if other not in quiet:
-            try:
-                quiet[other] = not check(db, client, other)
-            except (httpx.HTTPError, RuntimeError, ValueError, KeyError, TypeError) as e:
-                quiet[other] = False  # an unread address is not a quiet one
-                errors.append(f"{other} not read ({chains.describe(e)}): no {kind} link to it")
+            quiet[other] = False  # an unread address is not a quiet one
+            if limited:  # the RPC asked to slow down: the other strangers wait for a later sync
+                waiting += 1
+            else:
+                try:
+                    quiet[other] = not check(db, client, other)
+                except (httpx.HTTPError, RuntimeError, ValueError, KeyError, TypeError) as e:
+                    limited = isinstance(e, chains.RateLimited)
+                    errors.append(f"{other} not read ({chains.describe(e)}): no {kind} link to it")
         if quiet[other]:
             kept.append(k)
+    if waiting:
+        errors.append(f"{waiting} more not read after that: no link to them")
     return kept, errors
