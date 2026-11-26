@@ -8,6 +8,7 @@ import { ChartErrorBoundary } from "./ui/ChartErrorBoundary";
 import type { MempoolTransaction, MempoolOutspend } from "@/lib/api/types";
 import type { TraceLayer } from "@/lib/analysis/chain/recursive-trace";
 import type { BoltzmannWorkerResult } from "@/lib/analysis/boltzmann-pool";
+import { chain, scanConfig } from "@/lib/bitcoin/chain-profile";
 
 const GraphExplorer = lazy(() => import("./viz/GraphExplorer").then(m => ({ default: m.GraphExplorer })));
 
@@ -36,7 +37,9 @@ export function GraphExplorerPanel({ tx, onTxClick, backwardLayers, forwardLayer
   // No AbortController signal: the graph is long-lived and expansion requests
   // don't need abort-on-unmount. The previous useMemo+effect-cleanup pattern
   // broke under React Strict Mode (double-mount aborts the signal permanently).
-  const fetcher = useMemo(() => createApiClient(config), [config]);
+  // crypto-tracker: expansions go to the scanned chain's backend
+  const chainId = chain().id;
+  const fetcher = useMemo(() => createApiClient(scanConfig(config, chainId)), [config, chainId]);
 
   const graph = useGraphExpansion(fetcher);
   const { setRoot, setRootWithLayers } = graph;
