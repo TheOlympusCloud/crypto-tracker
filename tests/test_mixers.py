@@ -8,13 +8,14 @@ later withdrawals from that pool with 2, 4 and 44 deposits in between.
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
 from test_core import mine, transfer
 
-from tracker import chains, detect, graph, labels, mixers, prices, swaps, sync, tokens
-from tracker.exposure import names
+from tracker import chains, detect, exposure, graph, labels, mixers, prices, swaps, sync, tokens
+from tracker.exposure import names, wallets
 from tracker.heuristics import pair
 
 FIXTURES = Path(__file__).parent / "fixtures" / "mixers"
@@ -184,6 +185,27 @@ def test_a_withdrawal_before_the_deposit_or_by_the_same_wallet_links_nothing(db)
             ("w2", POOL, c, "withdrawal", 50)]  # fmt: skip  # before the deposit
     db.executemany("INSERT INTO mixer_leg VALUES ('ethereum', ?, ?, ?, ?, ?)", rows)
     assert mixers.pairs(db) == []
+
+
+def test_a_mixer_link_is_a_finding_of_both_wallets(db, quiet):
+    legs(db, ("withdrawal-2", TWO), ("withdrawal-4", FOUR))
+    db.execute("UPDATE node SET name = 'Savings' WHERE address = ?", (DEPOSITOR,))
+    run(db, Routescan())
+    scan = lambda address: list(exposure.mixer.check(SimpleNamespace(db=db, address=address)))
+
+    ((found, params, evidence),) = scan(FOUR)
+    assert found == "x-mixer-linked"
+    assert params == {"pool": "100 ETH", "count": 4, "confidence": 20, "wallets": "Savings"}
+    assert evidence == [{"chain": "ethereum", "txid": TX["deposit"]},
+                        {"chain": "ethereum", "txid": TX["withdrawal-4"]}]  # fmt: skip
+    ((found, params, _),) = scan(DEPOSITOR)  # the strongest of its two links
+    assert params == {"pool": "100 ETH", "count": 2, "confidence": 30,
+                      "wallets": f"{TWO}, {FOUR}"}  # fmt: skip
+
+    db.execute("UPDATE node SET synced_at = 1")
+    got = wallets.scores(db, graph.verdicts(db))[FOUR]
+    (f,) = [f for f in got["by_chain"]["evm"] if f["id"] == "x-mixer-linked"]
+    assert (f["scoreImpact"], f["confidence"]) == (-5, "low")
 
 
 def test_an_indexer_that_fails_marks_the_verdict_partly_checked(db, quiet):
