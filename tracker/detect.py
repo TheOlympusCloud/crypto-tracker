@@ -19,8 +19,8 @@ ME = "SELECT address, COALESCE(wallet, address) w FROM node WHERE mine"
 
 def deposit_addresses(db):
     """address -> exchange, for each address that behaves like one exchange's deposit address:
-    read in full without an error, not a hub, not mine, named by no source but this module,
-    every payment it made going to that one exchange, and paid by no more than SENDERS
+    read in full without an error, not a hub, not mine, named by no source but this module
+    or a name-only set (an exchange's list of mostly deposit addresses), every payment it made going to that one exchange, and paid by no more than SENDERS
     senders (two addresses of one wallet of mine are one sender). One that also pays anybody
     else is more likely a wallet nobody registered, perhaps the user's own."""
     exchange = {
@@ -30,9 +30,9 @@ def deposit_addresses(db):
             "AND address IN (SELECT dst FROM transfer)"
         )
     }
-    read = """SELECT address FROM node WHERE synced_at AND NOT hub AND NOT mine
-              AND error IS NULL
-              AND address NOT IN (SELECT address FROM label WHERE source != 'heuristic')"""
+    read = f"""SELECT address FROM node WHERE synced_at AND NOT hub AND NOT mine
+              AND error IS NULL AND address NOT IN (
+                SELECT address FROM label WHERE source != 'heuristic' AND {labels.STOPS})"""
     paid = {}  # address -> the exchanges it paid; None for anybody else
     for r in db.execute(
         f"SELECT src, dst FROM transfer WHERE src IN ({read}) AND NOT {graph.FAKE}"
