@@ -87,6 +87,9 @@ The same EVM address is read on every EVM chain. Chains that are read less deepl
 in each wallet's verdict, and chains waiting for a key are listed as such instead of
 failing.
 
+OFAC's sanctions lists flag addresses on every chain above; Tether's and Circle's stablecoin
+freezes are read on Ethereum and Tron (see [Who is on the other side](#who-is-on-the-other-side)).
+
 Bridges: when one of your wallets pays into Circle's CCTP, Across, Wormhole's Token Bridge,
 the OP Stack bridges into Base and Optimism or Arbitrum's gateway router, the bridge's own
 event in that transaction's receipt names who gets the money on the other chain: any chain
@@ -326,7 +329,7 @@ only the proxy reaches the app.
 | `CT_SWAPS` | `on` | `off` never asks THORChain or Maya about your addresses. `CT_THORCHAIN` and `CT_MAYA` set their Midgard URLs. Bridge records come from your indexers and stay on. |
 | `CT_CURRENCY` | `USD` | Currency of the values, e.g. `EUR` (ECB reference rate). |
 | `CT_PRICES` | `on` | `off` never asks for prices. |
-| `CT_LABELS` | `on` | `off` never downloads label sets, asks an explorer for contract names or looks up names (ENS, Basenames, SNS). |
+| `CT_LABELS` | `on` | `off` never downloads label sets (sanctions lists and stablecoin freezes included), asks an explorer for contract names or looks up names (ENS, Basenames, SNS). |
 | `CT_BTC_PAGES`, `CT_EVM_ROWS` | `8`, `1000` | History loaded per address (pages of 25 / rows per list). |
 
 ## Android
@@ -387,7 +390,8 @@ The view opens on a summary for whoever is about to send money there: **risky to
 to**, **check before sending**, **not fully checked** or **no red flags found**, with the
 reason, then what it rests on: the chain, how old and how active the address is, its
 label, your wallets it dealt with, and the red flags looked for. Those are a label that
-flags it (scam, hack or sanctions, from the open label sets or set by you), a mixer, direct
+flags it (scam, hack, on OFAC's sanctions lists or frozen by Tether or Circle, from the open
+label sets or set by you), a mixer, direct
 dealings with either, an address that was never used, a new one, and an address that
 starts and ends like one of your wallets or an address you paid: the trap of address
 poisoning. It never says safe, and says "not fully checked" until the open label sets are
@@ -450,8 +454,9 @@ scanned yet.
 
 | Finding | Impact | What it rests on |
 |---|---|---|
+| This address is flagged | -20, critical | The address itself is labelled as a scam or a hack, is on OFAC's sanctions lists, or Tether or Circle froze its USDT or USDC. |
 | Dealt directly with an exchange | -15, high | Transfers to or from an address an open label set or you label as an exchange. |
-| Dealt with a flagged address | -15, high | Transfers with an address labelled as a scam, a hack or under sanctions. |
+| Dealt with a flagged address | -15, high | Transfers with an address labelled as a scam, a hack, under sanctions or frozen by Tether or Circle. |
 | Dealt with a mixer | -10, medium | Transfers with a labelled mixer. |
 | The same address on several chains | -2, low | Transfers of the same EVM address on two or more of the chains read. |
 | First funded by your wallet | -10, medium | One of your wallets sent the address its first coins on a chain (on Tron: the TRX that activated it). |
@@ -535,15 +540,19 @@ read from the Solana RPC that reads your Solana wallets (`CT_SOLANA`). Neither l
 anything new, so `CT_SWAPS` does not apply. A recipient that is not yours is read once,
 like a counterparty, to tell a stranger from a service.
 
+Labels: the label sets and OFAC's sanctions lists are downloaded whole from GitHub, and OKX's
+list of its own addresses from OKX's site, so none of them learns which addresses you look
+up. Tether's
+and Circle's freezes are read as the stablecoin contracts' events, from Ethereum's indexer
+(Routescan, or yours through `CT_CHAINS`) and from TronGrid: the question names only the
+contract, never an address of yours. `CT_LABELS=off` turns all of it off.
+
 Prices: only asset identifiers (coin names, token contracts) go to the price API, never
 addresses or amounts.
 
 Token checks: Uniswap's token list is downloaded whole, so it learns nothing. The Solana
 mints a looked-up address holds go to Jupiter's token API, like token contracts to the
 price API; `CT_PRICES=off` spares it too.
-
-Labels: the label sets are downloaded whole, from GitHub and from OKX's site, so neither
-learns which addresses you look up. `CT_LABELS=off` skips them.
 
 ## Data sources
 
@@ -573,19 +582,29 @@ shown wherever the address appears, together with where the name comes from:
 |---|---|---|
 | you | A label set by hand in the app. | Always wins. |
 | the protocol | THORChain and Maya vaults, from the protocols' own swap records. | Fact. |
+| sanctions and freezes | [OFAC's sanctions lists](https://github.com/0xB10C/ofac-sanctioned-digital-currency-addresses) per currency, as extracted by 0xB10C (MIT), for every chain the tracker reads; the addresses Tether (USDT) and Circle (USDC) froze and did not unfreeze, from their contracts' events on Ethereum and Tron. | Fact; outranks the open label sets. |
 | an open label set | [etherscan-labels](https://github.com/brianleect/etherscan-labels) for Ethereum, BNB Chain, Polygon, Arbitrum, Optimism, Avalanche and Fantom (a 2023 snapshot), [GraphSense TagPacks](https://github.com/graphsense/graphsense-tagpacks) for Bitcoin, Ethereum, Litecoin and Tron, the program names of the [Solana explorer](https://github.com/solana-labs/explorer) (all MIT), and OKX's [proof-of-reserves](https://www.okx.com/proof-of-reserves) list: every address OKX signs as its own ("I am an OKX address") on Bitcoin, Litecoin, Dogecoin, the EVM chains, Tron and Solana, about 570,000, mostly deposit addresses. | Fact. |
 | the explorer | The verified contract name of an EVM address ("UniswapV2Router02"). The name is a fact; the type read from it is a guess. | Guess, 80%. |
 | behaviour | An address that forwards everything to an exchange (a deposit address); one that takes one asset from you and returns another in the same transaction (a pool or router); one with too much history to read (some service). | Guess, 60%. |
 
 The label sets are downloaded whole (about 1.1 million labels; OKX's list alone is a
-110 MB file, published anew each month) on the first sync and again every 30 days, and looked up locally, so naming an address tells nobody which addresses
-you care about. Contract names are asked from the explorer that already served your
+110 MB file, published anew each month, and each copy replaces the last) on the first sync
+and again every 30 days, and looked up locally, so naming an address tells nobody which
+addresses you care about. Contract names are asked from the explorer that already served your
 wallets' histories, 15 addresses per sync, each only once. `CT_LABELS=off` turns both off.
 
 Phishing, hack, scam and sanctions labels in those sets get the type "scam, hack or
 sanctions" and the **flagged** category: the check before sending calls such an address
 risky. A database labelled before that keeps them as plain labels until the sets are
 downloaded again.
+
+Sanctioned and frozen addresses are flagged too, as "Sanctioned by OFAC" or "Frozen by Tether
+(USDT)", and that label wins over an open set's: Garantex is an exchange, and sanctioned.
+Only a label you set wins over it. They refresh with the label sets, every 30 days, each read
+whole and replacing its old copy, so a delisted or unfrozen address loses the label; a list
+that cannot be read keeps its old copy and is named in the sync's notes. Reading the freezes
+takes a few minutes (about 3,600 frozen addresses on Ethereum and 8,900 on Tron in November
+2026; TronGrid without a key is read slowly so that it does not suspend the app).
 
 A known service ends a trace: two people using Binance are not linked. A guessed one
 does not end it, it weakens it by how sure the guess is, because a wrong guess must not
@@ -614,8 +633,9 @@ Several transactions supporting the same guess combine as `1 - (1-c1)(1-c2)...`.
 
 The findings of the [privacy scan](#privacy-scan-of-evm-solana-and-tron-addresses) are
 facts: a transfer read from the chain, with a counterparty that an open label set or you
-name, or a name record. They add no line to the graph; the addresses a name of your own
-wallet lists do (name, above). A first funder is such a transfer, already a solid arrow; the
+name, or a name record. A sanction or a freeze is published by OFAC or by the issuer's own
+contract, so it is a fact too. They add no line to the graph; the addresses a name of your
+own wallet lists do (name, above). A first funder is such a transfer, already a solid arrow; the
 finding only names it. A stranger who first funded one of your wallets and also funded
 another joins them through a stranger (0.7), as any shared counterparty does. The scan of
 such a wallet reads that stranger first: a busy one is stored as a very active address, which
@@ -684,6 +704,9 @@ or at the hop limit, and says which.
   label it in the UI and the link disappears. On Solana the only exchange labels are
   OKX's own list, on Tron OKX's and GraphSense's: other exchanges' wallets there are
   strangers until you label them.
+- Stablecoin freezes are read on Ethereum and Tron only, where most USDT and USDC lives;
+  Tether's and Circle's freezes on other chains are not flagged. Ethereum's are read from an
+  Etherscan-style indexer: with one that has no `logs` module, that set is not downloaded.
 
 ## Built on am-i-exposed
 
