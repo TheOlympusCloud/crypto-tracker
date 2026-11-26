@@ -32,6 +32,7 @@ ACROSS_SENDER = "0x3b385bcbc4b40a992a927a81e8a63b015f4dd0e9"
 ACROSS_RECIPIENT = "0x0f7ae28de1c8532170ad4ee566b5801485c13a0e"
 USDC = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
 USDT = "0xdac17f958d2ee523a2206206994597c13d831ec7"
+A_EVM = "0x" + "a" * 40
 
 
 def fixture(name):
@@ -444,3 +445,71 @@ def test_blockscout_logs_are_read_page_by_page(monkeypatch):
         pytest.raises(RuntimeError, match="more than 20 pages"),
     ):
         bridges.fetch(client, cfg, txid)
+
+
+def test_a_wallet_funded_through_wormhole_traces_back_to_the_exchange_behind_the_sender(db, quiet):
+    """docs/design/multichain.md, 3.3: a SOL wallet funded through Wormhole from an ETH wallet
+    funded by an exchange has that exchange as origin, the bridge as one hop of its path. On
+    Solana the bridge mints the tokens, which no transfer shows: the record is the inbound."""
+    kraken, stranger, token = "0x" + "6" * 40, "0x" + "8" * 40, "0x" + "7" * 40
+    mine(db, WORMHOLE_SENDER)
+    mine(db, WORMHOLE_OWNER)
+    db.execute("INSERT INTO label VALUES (?, 'Kraken 4', 'cex', 'user', '')", (kraken,))
+    transfer(db, "ethereum", "0x01", kraken, WORMHOLE_SENDER, 1500, asset="X", token=token)
+    transfer(db, "ethereum", "0x02", stranger, WORMHOLE_SENDER, 500, asset="X", token=token)
+    transfer(db, "ethereum", "0x03", stranger, WORMHOLE_SENDER, 2)  # ETH: another asset
+    wormhole = fixture("wormhole-solana")["result"]["transactionHash"]
+    transfer(db, "ethereum", wormhole, WORMHOLE_SENDER, "0x3ee18b2214aff97000d974cf647e7c347e8fa585",
+             1852.06, asset="X", token=token)  # fmt: skip
+    db.commit()
+    assert run(db, Chain({WORMHOLE_TOKEN_ACCOUNT: "solana-account-wormhole"})) == []
+
+    (bridged,) = graph.origins(db)[WORMHOLE_OWNER]
+    assert {k: bridged[k] for k in ("chain", "asset", "token", "bridged_from", "received")} == {
+        "chain": "solana", "asset": "X", "token": token, "bridged_from": "ethereum",
+        "received": 1852.06,
+    }  # fmt: skip
+    got = {s["address"]: (s["kind"], s["share"], s["path"], s["via"]) for s in bridged["sources"]}
+    assert got == {
+        kraken: ("cex", 0.75, [WORMHOLE_OWNER, WORMHOLE_SENDER, kraken], ["Wormhole"]),
+        stranger: ("unknown", 0.25, [WORMHOLE_OWNER, WORMHOLE_SENDER, stranger], ["Wormhole"]),
+    }
+    # The hop is drawn: the record's own link joins the two ends of it.
+    drawn = {(k["a"], k["b"], k["kind"]) for k in graph.build(db)["links"]}
+    assert (*sorted((WORMHOLE_SENDER, WORMHOLE_OWNER)), "bridge-record") in drawn
+
+    # The bridge counts as one hop: with one allowed, the walk ends at the sender.
+    (bridged,) = graph.origins(db, max_hops=1)[WORMHOLE_OWNER]
+    assert [(s["address"], s["kind"], s["path"], s["via"]) for s in bridged["sources"]] == [
+        (WORMHOLE_SENDER, "own", [WORMHOLE_OWNER, WORMHOLE_SENDER], ["Wormhole"])
+    ]
+    # The sender's own origins are unchanged by its deposit.
+    assert [a["bridged_from"] for a in graph.origins(db)[WORMHOLE_SENDER]] == ["", ""]
+
+
+def test_a_bridge_to_the_same_address_follows_its_money_and_a_closed_account_gives_none(db):
+    """An EVM address bridging to itself on another chain is one wallet, but the bridged money
+    is still followed on the source chain; a record to a token account closed since names no
+    wallet, so it is no inbound of anybody's."""
+    binance, token = "0x" + "1" * 40, "0x" + "7" * 40
+    mine(db, A_EVM)
+    mine(db, CCTP_TOKEN_ACCOUNT)  # even declared, a closed account's record brings nothing in
+    db.execute("INSERT INTO label VALUES (?, 'Binance 14', 'cex', 'user', '')", (binance,))
+    transfer(db, "ethereum", "0x01", binance, A_EVM, 100, asset="USDC", token=token)
+    transfer(db, "ethereum", "0xbb", A_EVM, bridges.CCTP_V2_MINTER, 60, asset="USDC", token=token)
+    transfer(db, "ethereum", "0xcc", A_EVM, bridges.CCTP_V2_MINTER, 40, asset="USDC", token=token)
+    db.executemany(
+        "INSERT INTO swap VALUES ('Circle CCTP', ?, ?, ?, '', ?, ?)",
+        [(A_EVM, A_EVM, "0xbb", "arbitrum", ""), (A_EVM, CCTP_TOKEN_ACCOUNT, "0xcc", "solana",
+                                                  "closed")],
+    )  # fmt: skip
+
+    usdc, bridged = graph.origins(db)[A_EVM]
+    assert (usdc["chain"], usdc["bridged_from"], usdc["received"]) == ("ethereum", "", 100)
+    assert (bridged["chain"], bridged["bridged_from"], bridged["received"]) == (
+        "arbitrum", "ethereum", 60,
+    )  # fmt: skip
+    assert [(s["address"], s["path"], s["via"]) for s in bridged["sources"]] == [
+        (binance, [A_EVM, binance], ["Circle CCTP"])
+    ]
+    assert graph.origins(db)[CCTP_TOKEN_ACCOUNT] == []
