@@ -14,11 +14,13 @@ import httpx
 
 from .. import chains, lookup
 from .. import db as database
-from . import deposit, exchange, flagged, funder, mixer, multichain, names
+from . import approvals, deposit, exchange, flagged, funder, hours, mixer, multichain, names
 
 # id -> (severity, scoreImpact, confidence, adversaryTiers, temporality). A first proposal, to
 # be tuned on real wallets (docs/design/multichain.md, 6.1).
 IMPACT = {
+    # An estimate about one wallet, never a link (2.8): little weight.
+    "x-activity-hours": ("low", -2, "low", ["passive_observer"], "ongoing_pattern"),
     "x-deposit-address-shared": (
         "high",
         -10,
@@ -42,16 +44,27 @@ IMPACT = {
     "x-multi-chain": ("low", -2, "deterministic", ["passive_observer"], "ongoing_pattern"),
     "x-name-addresses": ("medium", -5, "deterministic", ["passive_observer"], "active_risk"),
     "x-name-record": ("high", -15, "deterministic", ["passive_observer"], "active_risk"),
+    # Security rather than privacy: shown, never scored (2.3 #7).
+    "x-open-approvals": ("low", 0, "deterministic", ["passive_observer"], "active_risk"),
 }
 # "any": checks of the counterparties alone, which a wallet's grade runs once per chain over
 # all its addresses' (wallets.py). A check that reads the address itself goes in its families'.
 CHECKS = {
     "any": [exchange.check, flagged.check],
-    "evm": [deposit.check, funder.check, mixer.check, multichain.check, names.check],
-    "solana": [deposit.check, funder.check, names.check],
-    "tron": [deposit.check, funder.check],
+    "evm": [
+        approvals.check,
+        deposit.check,
+        funder.check,
+        hours.check,
+        mixer.check,
+        multichain.check,
+        names.check,
+    ],
+    "solana": [deposit.check, funder.check, hours.check, names.check],
+    "tron": [deposit.check, funder.check, hours.check],
     # Not scanned here (am-i-exposed scans Bitcoin), but in a wallet's grade.
-    **{c: [deposit.check] for c in ("bitcoin", "litecoin", "bitcoincash")},
+    **{c: [deposit.check, hours.check] for c in ("bitcoin", "litecoin", "bitcoincash")},
+    "dogecoin": [hours.check],
 }
 FAMILIES = ("evm", "solana", "tron")
 BUDGET = 60  # calls the checks of one scan may make beyond the address's own read

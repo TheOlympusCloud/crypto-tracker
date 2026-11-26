@@ -12,6 +12,8 @@ import { useTracker } from "../TrackerProvider";
 
 /** Chains whose addresses am-i-exposed deep-scans in the browser, apart from the wallet's grade. */
 const UTXO = new Set(["bitcoin", "litecoin", "dogecoin", "bitcoincash"]);
+/** Findings of little or no weight in the grade, shown apart: open approvals (security) and activity hours (an estimate). */
+const HABITS = new Set(["x-open-approvals", "x-activity-hours"]);
 
 /** The privacy score of the wallet whose first address is `address`: null when never read, undefined from a server without scores. */
 export function useWalletExposure(address: string): WalletExposure | null | undefined {
@@ -49,8 +51,14 @@ export function WalletGrade({ address, chain }: { address: string; chain: string
   const e = useWalletExposure(address);
   if (e === undefined) return null;
   if (!e) return <p className="text-sm text-muted">{t("tracker-exposure:wallet.unchecked")}</p>;
-  // The wallet's own findings first, then each chain's.
-  const groups = Object.entries(e.by_chain).sort(([a], [b]) => (a ? 1 : 0) - (b ? 1 : 0) || a.localeCompare(b));
+  // The wallet's own findings first, then each chain's; security and habits last, apart.
+  const groups = Object.entries(e.by_chain)
+    .map(([on, found]) => [on, found.filter((f) => !HABITS.has(f.id))] as const)
+    .filter(([, found]) => found.length)
+    .sort(([a], [b]) => (a ? 1 : 0) - (b ? 1 : 0) || a.localeCompare(b));
+  const habits = Object.values(e.by_chain)
+    .flat()
+    .filter((f) => HABITS.has(f.id));
   return (
     <div>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -85,7 +93,17 @@ export function WalletGrade({ address, chain }: { address: string; chain: string
           </section>
         ))
       ) : (
-        <p className="mt-2 text-sm text-muted">{t("tracker-exposure:wallet.none")}</p>
+        !habits.length && <p className="mt-2 text-sm text-muted">{t("tracker-exposure:wallet.none")}</p>
+      )}
+      {habits.length > 0 && (
+        <section className="mt-3">
+          <h4 className="text-xs font-semibold uppercase tracking-wide text-muted">{t("tracker-exposure:wallet.habits")}</h4>
+          <ul className="mt-1 space-y-1">
+            {habits.map((f) => (
+              <FindingRow key={f.id} f={f} />
+            ))}
+          </ul>
+        </section>
       )}
     </div>
   );

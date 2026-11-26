@@ -63,6 +63,8 @@ CREATE TABLE IF NOT EXISTS mixer_leg(chain TEXT, txid TEXT, pool TEXT, address T
   block INT, PRIMARY KEY(chain, txid, pool, address, side));
 CREATE TABLE IF NOT EXISTS mixer_scan(chain TEXT, pool TEXT, low INT, high INT, deposits INT,
   page INT, PRIMARY KEY(chain, pool, low, high));
+CREATE TABLE IF NOT EXISTS approval(address TEXT, chain TEXT, token TEXT, spender TEXT, txid TEXT,
+  PRIMARY KEY(address, chain, token, spender));
 """
 
 EVM_RE = re.compile(r"0x[0-9a-fA-F]{40}")

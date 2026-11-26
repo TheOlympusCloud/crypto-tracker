@@ -10,7 +10,7 @@ from test_core import BINANCE, A, B, C, D, mine, transfer
 
 from tracker import alerts, exposure, graph, history
 from tracker import db as database
-from tracker.exposure import wallets
+from tracker.exposure import approvals, wallets
 
 BTC1, BTC2 = "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2", "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
 BTC3, BTC4, BTC5 = (
@@ -23,8 +23,14 @@ BTC3, BTC4, BTC5 = (
 def synced(db, *addresses):
     for a in addresses:
         db.execute("UPDATE node SET synced_at = 1 WHERE address = ?", (a,))
-        # A sync also looks up the names of my EVM and Solana addresses (names.sync).
+        # A sync also looks up the names of my EVM and Solana addresses (names.sync), and
+        # reads the approvals of my EVM ones (approvals.sync).
         db.execute("INSERT OR REPLACE INTO meta VALUES (?, '1')", (f"names_at:{a}",))
+        for chain in approvals.readable() if a.startswith("0x") else ():
+            db.execute(
+                "INSERT OR REPLACE INTO meta VALUES (?, ?)",
+                (f"approvals:{a}:{chain}", '{"next": null, "done": true}'),
+            )
     db.commit()
 
 
