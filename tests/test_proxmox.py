@@ -153,12 +153,11 @@ def test_a_lite_node_gets_its_cap_and_stays_on(tmp_path):
 
 
 def test_a_lite_node_below_its_floor_is_refused_before_anything_is_made(tmp_path):
+    whole = "NODE_MAX_DISK_GB must be a whole number of GB, at least 20"
     for given, said in (
-        ({"NODE_MAX_DISK_GB": "19"}, "NODE_MAX_DISK_GB must be a whole number of GB, at least 20"),
-        (
-            {"NODE_MAX_DISK_GB": "30GB"},
-            "NODE_MAX_DISK_GB must be a whole number of GB, at least 20",
-        ),
+        ({"NODE_MAX_DISK_GB": "19"}, whole),
+        ({"NODE_MAX_DISK_GB": "30GB"}, whole),
+        ({"NODE_MAX_DISK_GB": "050"}, whole),  # shell arithmetic would read it as octal
         ({"NODE": "half"}, "NODE must be none, full or lite"),
     ):
         refused = run(tmp_path, **{"NODE": "lite", **given})

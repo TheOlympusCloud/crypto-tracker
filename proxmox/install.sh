@@ -50,7 +50,7 @@ if [ "$NODE" = full ]; then
         die "MEMPOOL_DISK must be at least $MEMPOOL_MIN_DISK (GB): bitcoind with its transaction index and Fulcrum's address index take about 950 GB, and grow about 90 GB a year"
     disk=$((LXC_DISK + MEMPOOL_DISK)) added="MEMPOOL_DISK $MEMPOOL_DISK"
 elif [ "$NODE" = lite ]; then
-    case $NODE_MAX_DISK_GB in '' | *[!0-9]*) cap=0 ;; *) cap=$NODE_MAX_DISK_GB ;; esac
+    case $NODE_MAX_DISK_GB in '' | 0* | *[!0-9]*) cap=0 ;; *) cap=$NODE_MAX_DISK_GB ;; esac
     [ "$cap" -ge "$NODE_MIN_DISK" ] ||
         die "NODE_MAX_DISK_GB must be a whole number of GB, at least $NODE_MIN_DISK: a pruned node's chain state alone takes about 15 (README, \"A lite node\")"
     disk=$((LXC_DISK + cap)) added="NODE_MAX_DISK_GB $cap"

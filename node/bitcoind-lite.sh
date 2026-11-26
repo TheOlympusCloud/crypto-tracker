@@ -16,7 +16,7 @@ MIN=20 # RESERVE and 2 GiB of blocks, about a week: Core keeps the newest 288 (~
 
 cap=${NODE_MAX_DISK_GB:-}
 case $cap in
-'' | *[!0-9]*) cap=0 ;;
+'' | 0* | *[!0-9]*) cap=0 ;;
 esac
 if [ "$cap" -lt "$MIN" ]; then
     echo "bitcoind-lite: NODE_MAX_DISK_GB must be a whole number of GB, at least $MIN (got '${NODE_MAX_DISK_GB:-}'): the chain state alone takes about 15" >&2
