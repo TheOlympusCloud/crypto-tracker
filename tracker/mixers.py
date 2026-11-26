@@ -1,21 +1,26 @@
-"""Mixer links: a Tornado Cash deposit by one wallet of mine and a withdrawal to another, from
+"""Mixer links: Tornado Cash deposits by one wallet of mine and a withdrawal to another, from
 the same pool (docs/design/multichain.md, 2.3 #5 and 3.5).
 
 A Tornado pool hides which deposit a withdrawal spends among the deposits it could be. The
-deposits made between mine and the withdrawal are an upper bound on how well that works: with
-n of them, the withdrawal is mine with odds of at most 1 / (1 + n). That is a `mixer` link,
-capped at 0.3 so that it never raises an alert on its own (the real crowd is every unspent
-earlier deposit, which this does not count). From 20 deposits between, the bound is under 5%
-and the pair is hidden in the crowd: no link.
+deposits made between mine and the withdrawal bound how well that works: with n of them,
+the withdrawal is mine with odds of at most 1 / (1 + n). A wallet that deposited several
+times could be behind any of its deposits, so each one opens a window up to the withdrawal,
+k of whose deposits are the wallet's, with odds of at most k / window; the strongest window
+wins. That is a `mixer` link, capped at 0.3 so that it never raises an alert on its own (the
+real crowd is every unspent earlier deposit, which this does not count). With 20 deposits
+or more per deposit of the wallet, the bound is under 5% and the pair is hidden in the
+crowd: no link.
 
 Each receipt of a transaction in which my wallet paid a pool (or Tornado's router) or a pool
 paid my wallet is read once, from the indexer that already reads the wallet; the pool's
-Deposit and Withdrawal events give the pool and the block. The deposits between two blocks
-are counted from the pool's own logs (one page of the indexer's `logs` module) and kept by
+Deposit and Withdrawal events give the pool and the block. The deposits in a window are
+counted from the pool's own logs (one page of the indexer's `logs` module) and kept by
 block range, since they never change.
 """
 
 import time
+from collections import defaultdict
+from itertools import groupby
 
 import httpx
 
@@ -23,7 +28,8 @@ from . import bridges, chains
 from .heuristics import pair
 
 CAP = 0.3  # a bound, never a fact: kept below the alert threshold on its own
-CROWD = 20  # deposits between from which the pair is hidden: a bound under 5%, no link
+CROWD = 20  # deposits per deposit of the wallet from which the pair is hidden (under 5%)
+LOG_ROWS = 1000  # logs per answer, Etherscan's most
 SOURCE = "Mixer pools"  # its row in the failure table, which the verdicts read
 DEPOSIT = "0xa945e51eec50ab98c161376f0db4cf2aeba3ec92755fe2fcd388bdbbb80ff196"  # Deposit
 WITHDRAWAL = "0xe9e508bad6d4c3227e881ca19068f099da81b5164dd6d62b2eaf1e8bc6c34931"  # Withdrawal
@@ -96,6 +102,9 @@ ROUTERS = {
 }
 
 
+CONTRACTS = {a for c in POOLS for a in {*POOLS[c], *ROUTERS[c]}}
+
+
 def _readable(cfgs):
     """The chains whose indexer answers logs: an Etherscan-style one. shortcut: NodeReal (BNB
     Chain's free reader) has no logs module, so its pools are not read; read them through
@@ -110,7 +119,7 @@ def _readable(cfgs):
 def _pending(db, cfgs):
     """(chain, txid) -> (my address, "deposit" or "withdrawal") for the receipts not read yet:
     my transfers into a pool or a router, and a pool's transfers to me."""
-    every = sorted({a for c in POOLS for a in {*POOLS[c], *ROUTERS[c]}})
+    every = sorted(CONTRACTS)
     marks = ",".join("?" * len(every))
     rows = db.execute(
         f"""SELECT chain, txid, src, dst FROM transfer
@@ -151,55 +160,91 @@ def _read(db, client, cfg, chain, txid, me, side):
             "WHERE address = ? AND mine",
             (chain, txid, pool, side, receipt["block"], leg),
         )
+    # shortcut: a receipt is read once, so a pool added to POOLS later is not found in the
+    # receipts already read; delete their `receipt` rows when the table grows.
     db.execute("INSERT OR IGNORE INTO receipt VALUES (?, ?)", (chain, txid))
     db.commit()
 
 
+def _counted(db, chain, pool, low, high, page):
+    """The deposits kept for a block range: exact below the page they were read with, else at
+    least that page. None when they still have to be read with a page this big."""
+    if low > high:
+        return 0  # back to back: nothing between, nothing to ask
+    row = db.execute(
+        "SELECT deposits, page FROM mixer_scan WHERE chain = ? AND pool = ? AND low = ? "
+        "AND high = ?",
+        (chain, pool, low, high),
+    ).fetchone()
+    return (
+        row["deposits"] if row and (row["deposits"] < row["page"] or row["page"] >= page) else None
+    )
+
+
 def pairs(db):
-    """Each withdrawal to a wallet of mine, with the latest earlier deposit into the same pool
-    by each other wallet of mine: the deposits between them in `deposits`, None until
-    counted. The latest deposit has the fewest after it, so it gives the strongest bound."""
+    """For each withdrawal to a wallet of mine, and each other wallet of mine that deposited
+    into the same pool before it: one window per block of that wallet's deposits, latest
+    first. A window holds the wallet's deposits in that block and every deposit made after it,
+    up to the withdrawal's block: `own` of them are the wallet's, `deposits` came after its
+    block (None until counted, at least `page` when the page came back full). The withdrawal
+    can spend any of them, so it is that wallet's with odds of at most own / window. Strangers'
+    deposits in either end block are left out, which only raises the odds."""
     legs = db.execute(
         """SELECT l.*, COALESCE(n.wallet, n.address) owner FROM mixer_leg l
            JOIN node n ON n.address = l.address AND n.mine ORDER BY l.block"""
     ).fetchall()
     out = []
     for w in (leg for leg in legs if leg["side"] == "withdrawal"):
-        latest = {}
+        by_owner = defaultdict(list)
         for d in legs:
             same = (d["chain"], d["pool"]) == (w["chain"], w["pool"])
-            if (
-                d["side"] == "deposit"
-                and same
-                and d["owner"] != w["owner"]
-                and d["block"] < w["block"]
-            ):
-                latest[d["address"]] = d  # ordered by block: the last one stays
-        for d in latest.values():
-            low, high = d["block"] + 1, w["block"]
-            row = db.execute(
-                "SELECT deposits FROM mixer_scan WHERE chain = ? AND pool = ? AND low = ? "
-                "AND high = ?",
-                (w["chain"], w["pool"], low, high),
-            ).fetchone()
-            out.append({
-                "chain": w["chain"], "pool": w["pool"], "low": low, "high": high,
-                "deposit": d["address"], "withdrawal": w["address"],
-                "deposit_tx": d["txid"], "withdrawal_tx": w["txid"],
-                "deposits": row and row[0],
-            })  # fmt: skip
+            if d["side"] == "deposit" and same and d["block"] < w["block"]:
+                by_owner[d["owner"]].append(d)
+        by_owner.pop(w["owner"], None)  # a wallet's own withdrawal ties nothing
+        for owner, deps in by_owner.items():
+            # One page, as big for every window of the pair, settles the older windows too.
+            page = min(LOG_ROWS, CROWD * len(deps))
+            for block in sorted({d["block"] for d in deps}, reverse=True):
+                at = [d for d in deps if d["block"] == block]
+                low, high = block + 1, w["block"] - 1
+                out.append({
+                    "chain": w["chain"], "pool": w["pool"], "low": low, "high": high,
+                    "page": page, "owner": owner, "before": len(deps),
+                    "own": sum(d["block"] >= block for d in deps), "own_at": len(at),
+                    "deposit": at[0]["address"], "deposit_tx": at[0]["txid"],
+                    "withdrawal": w["address"], "withdrawal_tx": w["txid"],
+                    "deposits": _counted(db, w["chain"], w["pool"], low, high, page),
+                })  # fmt: skip
     return out
 
 
-def bound(deposits):
-    """The link of a pair with `deposits` between; None when the crowd hides it."""
-    return None if deposits >= CROWD else min(CAP, round(1 / (1 + deposits), 3))
+def odds(p):
+    return p["own"] / (p["own_at"] + p["deposits"])
+
+
+def bound(p):
+    """The link of a counted window, at most CAP; None when not counted yet, or when the crowd
+    hides it (CROWD deposits or more per deposit of the wallet: under 5%)."""
+    if p["deposits"] is None or p["own"] * CROWD < p["own_at"] + p["deposits"]:
+        return None
+    return min(CAP, round(odds(p), 3))
+
+
+def strongest(db):
+    """The strongest counted window of each withdrawal and other wallet of mine: what ties
+    them. No call."""
+    best = {}
+    for p in pairs(db):
+        key = (p["chain"], p["withdrawal_tx"], p["owner"])
+        if bound(p) is not None and (key not in best or odds(p) > odds(best[key])):
+            best[key] = p
+    return list(best.values())
 
 
 def count(db, client, cfg, p):
-    """The pool's deposits between the pair's blocks, at most a page of CROWD, kept."""
+    """The pool's deposits in the window's block range, at most a page, kept."""
     query = {"module": "logs", "action": "getLogs", "address": p["pool"], "topic0": DEPOSIT}
-    query |= {"fromBlock": p["low"], "toBlock": p["high"], "page": 1, "offset": CROWD}
+    query |= {"fromBlock": p["low"], "toBlock": p["high"], "page": 1, "offset": p["page"]}
     key = {"apikey": cfg["apikey"]} if cfg.get("apikey") else {}
     data = chains.get(client, cfg["url"], {**cfg.get("params", {}), **key, **query}).json()
     rows = data.get("result")
@@ -207,25 +252,25 @@ def count(db, client, cfg, p):
         # An error the API words as its result.
         raise RuntimeError(f"getLogs: {data.get('message')} {str(rows)[:80]}")  # noqa: TRY004
     # Each row counts, even one an indexer garbled (Routescan has served an empty `data`).
+    deposits = min(len(rows), p["page"])
     db.execute(
-        "INSERT OR REPLACE INTO mixer_scan VALUES (?, ?, ?, ?, ?)",
-        (p["chain"], p["pool"], p["low"], p["high"], min(len(rows), CROWD)),
+        "INSERT OR REPLACE INTO mixer_scan VALUES (?, ?, ?, ?, ?, ?)",
+        (p["chain"], p["pool"], p["low"], p["high"], deposits, p["page"]),
     )
     db.commit()
+    return deposits
 
 
 def link(db):
-    """Rebuild the `mixer` links from the counted pairs: no call."""
+    """Rebuild the `mixer` links from the counted windows: no call."""
     db.execute("DELETE FROM link WHERE kind = 'mixer'")
-    for p in pairs(db):
-        if p["deposits"] is None or (confidence := bound(p["deposits"])) is None:
-            continue
-        name = POOLS[p["chain"]][p["pool"]]
-        evidence = f"Tornado Cash {name}: {p['deposits']} deposits between "
+    for p in strongest(db):
+        name, window = POOLS[p["chain"]][p["pool"]], p["own_at"] + p["deposits"]
+        evidence = f"Tornado Cash {name}: {p['own']} of the last {window} deposits "
         evidence += f"({p['deposit_tx'][:18]} > {p['withdrawal_tx'][:18]})"
         db.execute(
             "INSERT OR REPLACE INTO link VALUES (?, ?, 'mixer', ?, ?)",
-            (*pair(p["deposit"], p["withdrawal"]), confidence, evidence),
+            (*pair(p["deposit"], p["withdrawal"]), bound(p), evidence),
         )
     db.commit()
 
@@ -238,21 +283,28 @@ def sync(db, client):
 
     def attempt(chain, job, *args):
         if chain in down:
-            return  # its indexer is down: the rest waits for the next sync
+            return None  # its indexer is down: the rest waits for the next sync
         try:
-            job(db, client, cfgs[chain], *args)
+            return job(db, client, cfgs[chain], *args)
         except (httpx.HTTPError, chains.RateLimited) as e:
             down.add(chain)
             failed[chain] = chains.describe(e)
         except (RuntimeError, ValueError, KeyError, TypeError, IndexError) as e:
             failed.setdefault(chain, chains.describe(e))  # this one only: tried again next sync
+        return None
 
     for (chain, txid), (me, side) in _pending(db, cfgs).items():
         attempt(chain, _read, chain, txid, me, side)
     readable = _readable(cfgs)
-    for p in pairs(db):
-        if p["deposits"] is None and p["chain"] in readable:
-            attempt(p["chain"], count, p)
+    pending = groupby(pairs(db), key=lambda p: (p["chain"], p["withdrawal_tx"], p["owner"]))
+    for (chain, _, _), windows in pending:
+        for p in windows:  # latest first
+            if p["deposits"] is None and chain in readable:
+                p["deposits"] = attempt(chain, count, p)
+            if p["deposits"] is None:
+                break  # not read: the older windows wait for the next sync
+            if p["before"] * CROWD < 1 + p["own_at"] + p["deposits"]:
+                break  # an older window holds all these and one deposit more: under 5%
     link(db)
     reason = "; ".join(f"{where}: {why}" for where, why in failed.items())
     if failed:  # stored: until it is read, a link may be missing from every verdict
