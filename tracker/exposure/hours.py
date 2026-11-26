@@ -4,8 +4,8 @@ hours of the day show where the night falls, give or take a couple of hours. An 
 about one wallet, never a link: millions of people share a time zone (2.8).
 
 It rests on the transactions the wallet sent, by their block time: at least 20 of them, and
-only when one stretch of eight hours holds at most a tenth (a bot, or people in several time
-zones, show no night). A wallet of mine is read from what syncs stored, over all its
+only when one stretch of eight hours holds at most a tenth and no other apart is as quiet (a
+bot, or people in several time zones, show no night). A wallet of mine is read from what syncs stored, over all its
 addresses; any other address from the scan's own read. On EVM chains only transactions the
 address signed count, so a token pulled from it by someone else's transaction does not.
 """
@@ -27,8 +27,12 @@ def estimate(times):
     low = min(nights)
     if len(times) < ENOUGH or low > QUIET * len(times):
         return None
-    # A short day leaves several equally quiet nights in a row: take the middle one.
-    first = next(h for h in range(24) if nights[h] == low and nights[h - 1] != low)
+    # A short day leaves several equally quiet nights in a row: take the middle one. Two such
+    # stretches apart (busy at noon and at midnight) leave nothing to tell which is the night.
+    starts = [h for h in range(24) if nights[h] == low and nights[h - 1] != low]
+    if len(starts) > 1:
+        return None
+    first = starts[0]
     run = next(n for n in range(1, 24) if nights[(first + n) % 24] != low)
     start = (first + run // 2) % 24
     offset = -start % 24  # a night from midnight local starts at -offset UTC

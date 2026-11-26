@@ -38,6 +38,9 @@ def test_the_quiet_hours_point_to_the_time_zone():
 def test_no_night_shows_no_time_zone():
     assert hours.estimate(at(*range(24))) is None  # a bot, or people in several time zones
     assert hours.estimate(at(0, 8, 16)) is None  # every eight hours: a third of it at night
+    # Busy around noon and around midnight: two quiet stretches, nothing tells which is night.
+    assert hours.estimate(at(0, 1, 12, 13)) is None
+    assert hours.estimate(at(5, 6, 17, 18)) is None
 
 
 def sends(db, src, times, chain="bitcoin", asset="BTC"):
