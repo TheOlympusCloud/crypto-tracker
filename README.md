@@ -605,7 +605,7 @@ in `tracker/heuristics.py` and `tracker/graph.py`.
 | exchange-flow | 0.09 to 0.8 | Money leaves one wallet into an exchange and the same asset, 0 to 2% less, comes out of an exchange into another wallet within 48 hours. Starts at 0.5 (same exchange), 0.3 (two exchanges) or 0.15 (the deposit went to an address that was never expanded); +0.15 within 0.5%, +0.1 within an hour; x0.6 for round amounts; divided by the number of equally plausible matches. Repeated matches between the same two wallets are not independent proof: they lift the best single match at most halfway to 0.8, never past it. |
 | swap | 0.95 | THORChain or Maya Protocol recorded a swap from one address to the other (for example ETH in, BTC out). The record is public and names the destination, so this is close to a fact. Several swaps between the same two addresses stay at 0.95. |
 | name | 0.8 | The primary name of one of your EVM addresses (ENS, Basenames), checked forward, lists the other address (a Bitcoin, Solana... address, ENSIP-9). The name's owner published it, but anybody can type any address into their records. A stranger it lists is read first: a busy one, or a labelled service, links nobody. Several names listing the same address stay at 0.8. |
-| bridge-record | 0.95 | A bridge's own event, in the receipt of a transaction in which your wallet paid it, names the recipient on the other chain: Circle CCTP (`DepositForBurn`), Across (`FundsDeposited`), Wormhole's Token Bridge (a plain transfer), the OP Stack bridges into Base and Optimism (`ETHDepositInitiated`, `ERC20DepositInitiated`), Arbitrum's gateway router (`TransferRouted`). On Solana the token account it names is replaced by the account's owner; a token account closed since links nobody, and the verdict says so. A recipient that is not yours is read first: a busy address or a service links nobody, a quiet one is listed in the wallet's verdict. Several deposits to the same address stay at 0.95. |
+| bridge-record | 0.95 | A bridge's own event, in the receipt of a transaction in which your wallet paid it, names the recipient on the other chain: Circle CCTP (`DepositForBurn`), Across (`FundsDeposited`), Wormhole's Token Bridge (a plain transfer), the OP Stack bridges into Base and Optimism (`ETHDepositInitiated`, `ERC20DepositInitiated`), Arbitrum's gateway router (`TransferRouted`). On Solana the token account it names is replaced by the account's owner; a token account closed since links nobody, and the verdict says so. A recipient that is not yours is read first: a busy address or a service links nobody, a quiet one is listed in the wallet's verdict. Declare it yours later and the next sync links it, without reading the receipt again. Several deposits to the same address stay at 0.95. |
 
 Several transactions supporting the same guess combine as `1 - (1-c1)(1-c2)...`.
 
@@ -664,7 +664,9 @@ or at the hop limit, and says which.
   and amounts for those transactions are lower than on a block explorer.
 - If THORChain or Maya does not answer during a sync, every wallet reads "Partly checked"
   until it answers again (or until `CT_SWAPS=off`): a swap may have gone unseen. The same
-  holds while an indexer does not answer for a bridge receipt, until a later sync reads it.
+  holds while a bridge receipt cannot be read: until its indexer answers again, or for good
+  for a transaction of more than 1,000 logs on a Blockscout chain. The other receipts are
+  read meanwhile.
 - Alerts are raised for links of 50% confidence or more; weaker guesses are listed in
   the verdict only.
 - On a mempool with an Electrum server (the `mempool` profile's, Umbrel's), the scanner reads
