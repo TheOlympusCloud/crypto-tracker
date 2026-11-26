@@ -1,5 +1,8 @@
 """One privacy score per wallet of mine, across its chains (docs/design/multichain.md, 3.4)."""
 
+import subprocess
+import sys
+
 import httpx
 import pytest
 from fastapi.testclient import TestClient
@@ -125,6 +128,19 @@ def test_a_bitcoin_hd_wallet_pays_10_per_reused_address_not_an_f(db):
     assert got["by_chain"] == {"bitcoin": [f]}
 
 
+def test_an_hd_wallet_lists_a_dealing_once_per_chain_counted_over_its_addresses(db):
+    hd_wallet(db, BTC1, BTC2, BTC3)
+    label(db, BTC4, "Kraken", "cex")
+    for i, a in enumerate((BTC1, BTC2, BTC3)):
+        transfer(db, "bitcoin", f"k{i}", BTC4, a, 0.1, asset="BTC")
+
+    (got,) = scores(db).values()
+
+    (f,) = got["by_chain"]["bitcoin"]
+    assert (f["id"], f["params"]["count"]) == ("x-exchange-exposure", 3)
+    assert got["findings"] == [f]
+
+
 def test_reuse_costs_at_most_40(db):
     every = (BTC1, BTC2, BTC3, BTC4, BTC5)
     hd_wallet(db, *every)
@@ -179,6 +195,65 @@ def test_dealings_are_scored_once_and_shown_by_chain(db):
     assert got["score"] == 93 - 15 - 10 - 2
 
 
+def account(db, address, name=""):
+    """A wallet of mine on an account chain, synced and read back to its first transaction."""
+    mine(db, address)
+    db.execute("UPDATE node SET name = ? WHERE address = ?", (name, address))
+    for source in history.sources(address):
+        history.put(db, address, source, complete=1)
+    synced(db, address)
+
+
+def test_a_synced_evm_wallet_read_in_full_is_fully_checked_and_names_its_first_funder(db):
+    account(db, A)
+    account(db, D, "Main")
+    transfer(db, "ethereum", "1", D, A, 1, ts=5)
+    transfer(db, "ethereum", "2", A, B, 1, ts=9)
+
+    got = scores(db)[A]
+
+    assert (got["partial"], got["gaps"]) == (False, [])
+    (f,) = got["by_chain"]["evm"]
+    assert (f["id"], f["params"]) == ("x-funder-mine", {"funder": "Main", "chains": "Ethereum"})
+    assert got["score"] == 93 - 10
+
+
+def test_an_exchange_that_first_funded_a_wallet_counts_once(db):
+    account(db, A)
+    label(db, BINANCE, "Binance 14", "cex")
+    transfer(db, "ethereum", "1", BINANCE, A, 1, ts=5)
+
+    got = scores(db)[A]
+
+    ids = {f["id"]: f["scoreImpact"] for f in got["findings"]}
+    assert ids == {"x-exchange-exposure": -15, "x-funder-exchange": 0}  # the same withdrawal
+    assert got["score"] == 93 - 15
+
+
+def test_a_stranger_who_funded_two_wallets_is_named_as_last_read_and_unread_is_partial(db):
+    account(db, A)
+    account(db, C, "Savings")
+    transfer(db, "ethereum", "1", D, A, 1, ts=5)
+    transfer(db, "ethereum", "2", D, C, 1, ts=6)
+
+    got = scores(db)[A]  # never read: whether it is a service is not known, and no call is made
+    assert got["partial"] is True
+    assert got["gaps"] == [{"id": "unread", "params": {"check": "funder"}}]
+
+    db.execute("INSERT INTO quiet VALUES (?)", (D,))  # a scan read it, and it was quiet
+    got = scores(db)[A]
+    assert (got["partial"], got["gaps"]) == (False, [])
+    assert [f["id"] for f in got["by_chain"]["evm"]] == ["x-funder-shared"]
+
+    db.execute("INSERT INTO node(address, hub) VALUES (?, 1)", (D,))  # a busy one
+    assert [f["id"] for f in scores(db)[A]["by_chain"]["evm"]] == ["x-funder-hub"]
+
+
+@pytest.mark.parametrize("module", ["tracker.exposure", "tracker.exposure.wallets"])
+def test_the_scan_imports_on_its_own(module):
+    subprocess.run([sys.executable, "-c", f"import {module}"], check=True)
+
+
 def test_a_check_that_would_need_a_call_is_skipped_and_partly_checked(db, monkeypatch):
     def greedy(ctx):
         ctx.get("http://eth/api", {"module": "account"})
@@ -189,7 +264,7 @@ def test_a_check_that_would_need_a_call_is_skipped_and_partly_checked(db, monkey
     synced(db, A)
     got = scores(db)[A]
     assert got["findings"] == [] and got["partial"] is True
-    assert got["gaps"] == [{"id": "skipped", "params": {"check": "greedy"}}]
+    assert got["gaps"] == [{"id": "unread", "params": {"check": "greedy"}}]
 
 
 def test_opening_the_page_makes_no_api_call(db, offline):

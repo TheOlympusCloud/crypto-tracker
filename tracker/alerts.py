@@ -5,7 +5,6 @@ import json
 import time
 
 from . import graph
-from .exposure import GRADES, wallets
 from .heuristics import pair
 
 BASELINE = ("baseline", "")  # marker row: a comparison point exists
@@ -51,19 +50,20 @@ def check(db):
     db.commit()
 
 
-ORDER = [g for _, g in GRADES] + ["F"]  # best first
-
-
 def _grades(db, verdicts):
     """An alert when a wallet's grade drops, naming the grade its page shows: both come from
     exposure.wallets on the same verdicts. A wallet seen for the first time sets its baseline.
     The page words the alert (`kind` and `params`), as it words the findings."""
+    # Imported here: the scan's first-funder check syncs a stranger, and a sync ends here.
+    from .exposure import GRADES, wallets
+
+    order = [g for _, g in GRADES] + ["F"]  # best first
     known = {r["wallet"]: r["grade"] for r in db.execute("SELECT * FROM known_grade")}
     scores = wallets.scores(db, verdicts)
     grades = {v["wallet"]: scores[v["address"]] for v in verdicts if scores[v["address"]]}
     for wallet, s in grades.items():
         before = known.get(wallet)
-        if before and ORDER.index(s["grade"]) > ORDER.index(before):
+        if before and order.index(s["grade"]) > order.index(before):
             params = {"from": before, "to": s["grade"], "score": s["score"]}
             db.execute(
                 "INSERT INTO alert(ts, wallet, text, kind, params) VALUES (?, ?, '', 'grade', ?)",

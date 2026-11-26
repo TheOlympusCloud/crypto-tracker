@@ -31,7 +31,8 @@ IMPACT = {
     "x-flagged-address": ("critical", -20, "deterministic", ["kyc_exchange"], "active_risk"),
     "x-linked-public": ("critical", -70, "deterministic", ["passive_observer"], "historical"),
     "x-flagged-counterparty": ("high", -15, "deterministic", ["kyc_exchange"], "historical"),
-    "x-funder-exchange": ("medium", -5, "deterministic", ["kyc_exchange"], "historical"),
+    # The withdrawal is one of the exchange's transfers, which x-exchange-exposure counts.
+    "x-funder-exchange": ("low", 0, "deterministic", ["kyc_exchange"], "historical"),
     "x-funder-hub": ("low", 0, "deterministic", ["passive_observer"], "historical"),
     "x-funder-mine": ("medium", -10, "deterministic", ["passive_observer"], "historical"),
     "x-funder-shared": ("medium", -10, "deterministic", ["passive_observer"], "historical"),
@@ -40,12 +41,15 @@ IMPACT = {
     "x-name-addresses": ("medium", -5, "deterministic", ["passive_observer"], "active_risk"),
     "x-name-record": ("high", -15, "deterministic", ["passive_observer"], "active_risk"),
 }
-# Checks per chain family; "any" runs on every one.
+# "any": checks of the counterparties alone, which a wallet's grade runs once per chain over
+# all its addresses' (wallets.py). A check that reads the address itself goes in its families'.
 CHECKS = {
-    "any": [deposit.check, exchange.check, flagged.check, funder.check],
-    "evm": [multichain.check, names.check],
-    "solana": [names.check],
-    "tron": [],
+    "any": [exchange.check, flagged.check],
+    "evm": [deposit.check, funder.check, multichain.check, names.check],
+    "solana": [deposit.check, funder.check, names.check],
+    "tron": [deposit.check, funder.check],
+    # Not scanned here (am-i-exposed scans Bitcoin), but in a wallet's grade.
+    **{c: [deposit.check] for c in ("bitcoin", "litecoin", "bitcoincash")},
 }
 FAMILIES = ("evm", "solana", "tron")
 BUDGET = 60  # calls the checks of one scan may make beyond the address's own read

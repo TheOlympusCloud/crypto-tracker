@@ -218,6 +218,9 @@ def test_an_evm_stranger_who_funded_two_wallets_of_mine_is_read_by_a_sync(
     assert found == [(id, params, [{"chain": "ethereum", "txid": "h1"}])]
     assert ctx.left == exposure.BUDGET - funder.SYNC * 2  # a sync of two readable chains
     assert db.execute("SELECT hub FROM node WHERE address = ?", (D,)).fetchone()["hub"] == hub
+    # It is read once: the next scan knows the answer and spends nothing on it.
+    again = exposure.Context(db, None, A, view)
+    assert [f[0] for f in funder.check(again)] == [id] and again.left == exposure.BUDGET
 
 
 def test_the_tron_activator_is_one_ascending_call(db):
@@ -301,7 +304,9 @@ def test_a_stranger_is_read_only_when_it_funded_two_wallets_of_mine(db, case):
 
 
 def test_the_check_is_registered_for_every_account_chain():
-    assert funder.check in exposure.CHECKS["any"]  # EVM, Solana and Tron
+    # It reads the address itself: a wallet's grade runs it once per address, not per chain.
+    assert all(funder.check in exposure.CHECKS[f] for f in exposure.FAMILIES)
+    assert funder.check not in exposure.CHECKS["any"]
     assert {"x-funder-mine", "x-funder-exchange", "x-funder-shared", "x-funder-hub"} <= set(
         exposure.IMPACT
     )

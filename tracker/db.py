@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS alert(
   kind TEXT NOT NULL DEFAULT 'link', params TEXT);
 CREATE TABLE IF NOT EXISTS known_link(a TEXT, b TEXT, confidence REAL, PRIMARY KEY(a, b));
 CREATE TABLE IF NOT EXISTS known_grade(wallet TEXT PRIMARY KEY, grade TEXT);
+CREATE TABLE IF NOT EXISTS quiet(address TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS transfer(
   chain TEXT, txid TEXT, src TEXT, dst TEXT, asset TEXT, token TEXT, amount REAL, ts INT,
   PRIMARY KEY(chain, txid, src, dst, token));

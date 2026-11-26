@@ -5,7 +5,8 @@ same on every device and is the one an alert names. It is made from what syncs s
 opening the page costs no call, and a check that would need one is skipped and says so.
 
 A wallet's score holds its own findings (tied to a public wallet; reused UTXO addresses)
-and the scan's checks run over the stored transfers of each of its addresses, per chain.
+and the scan's checks: those of the counterparties over the stored transfers of all its
+addresses, once per chain, and those of an address's family once per address.
 Each finding counts once, at its worst; reuse counts per address, so one slip in an HD
 wallet is not the F that am-i-exposed gives a single reused address. am-i-exposed's deep
 scan of a Bitcoin address runs in the browser and is not part of it.
@@ -25,10 +26,10 @@ EVIDENCE = 5
 MINE = "(SELECT address FROM node WHERE mine)"
 
 
-def _parties(db):
-    """My address -> chain -> counterparty -> what lookup.view lists for it, from the stored
-    transfers (the trusted ones, as the verdict reads them); and my address -> the
-    transactions that paid it."""
+def _parties(db, owner):
+    """Wallet -> chain -> counterparty -> what lookup.view lists for it, from the stored
+    transfers of all the wallet's addresses (`owner`: address -> wallet; the trusted
+    transfers, as the verdict reads them); and my address -> the transactions that paid it."""
     known = {r["address"] for r in db.execute("SELECT address FROM node WHERE mine")}
     parties = defaultdict(lambda: defaultdict(dict))
     paid = defaultdict(dict)
@@ -38,9 +39,9 @@ def _parties(db):
     ):
         paid[r["dst"]].setdefault(r["txid"], r["chain"])
         for me, other, way in ((r["src"], r["dst"], "sent"), (r["dst"], r["src"], "received")):
-            if me not in known:
+            if me not in owner:
                 continue
-            p = parties[me][r["chain"]].setdefault(
+            p = parties[owner[me]][r["chain"]].setdefault(
                 other,
                 {"address": other, "count": 0, "sent": {}, "received": {}, "evidence": []},
             )  # fmt: skip
@@ -64,6 +65,13 @@ def _parties(db):
     return parties, paid
 
 
+def _context(db, address, view):
+    """A scan's context over stored data: no client, and no call to make."""
+    ctx = Context(db, None, address, {"truncated": False, "errors": [], **view})
+    ctx.left = 0  # opening the page makes no call
+    return ctx
+
+
 def _level(confidence):
     """am-i-exposed's confidence level of a link's confidence."""
     if confidence >= 1:
@@ -75,7 +83,7 @@ def scores(db, verdicts):
     """The wallet's first address -> its ScoringResult, the findings by chain ("" for the
     wallet's own, across its chains) and gaps; None for a wallet never read. `verdicts` are
     graph.verdicts at the default hops, so the grade is always the one alerts compare."""
-    parties, paid = _parties(db)
+    parties, paid = _parties(db, {a: v["wallet"] for v in verdicts for a in v["addresses"]})
     names = {v["wallet"]: v["name"] or v["address"][:12] for v in verdicts}
     out = {}
     for v in verdicts:
@@ -95,16 +103,14 @@ def scores(db, verdicts):
             if c < EVEN:
                 f["severity"] = "medium"
             found.append(("", f))
-        for address in v["addresses"]:
-            ctx = Context(db, None, address, None)
-            ctx.left = 0  # opening the page makes no call
-            by = parties[address]
-            for chain in sorted(by):
-                ctx.view = {"connections": list(by[chain].values())}
-                found += [(chain, f) for f in checked(ctx, CHECKS["any"], gaps)]
-            if CHECKS.get(ctx.chain):  # the family's checks see every chain of the address
-                ctx.view = {"connections": [p for rows in by.values() for p in rows.values()]}
-                found += [(ctx.chain, f) for f in checked(ctx, CHECKS[ctx.chain], gaps)]
+        by = parties[v["wallet"]]
+        everything = [p for rows in by.values() for p in rows.values()]
+        for chain in sorted(by):  # one finding per chain, counted over all the wallet's addresses
+            ctx = _context(db, v["address"], {"connections": list(by[chain].values())})
+            found += [(chain, f) for f in checked(ctx, CHECKS["any"], gaps)]
+        for address in v["addresses"]:  # its family's checks read the address on all its chains
+            ctx = _context(db, address, {"chains": sorted(by), "connections": everything})
+            found += [(ctx.chain, f) for f in checked(ctx, CHECKS.get(ctx.chain, []), gaps)]
         reused = [
             a for a in v["addresses"] if database.chain_of(a) in chains.UTXO and len(paid[a]) > 1
         ]
@@ -119,6 +125,8 @@ def scores(db, verdicts):
             if f["scoreImpact"] < worst.get(f["id"], {"scoreImpact": 1})["scoreImpact"]:
                 worst[f["id"]] = f  # one exchange is enough to be exposed
         partial = v["checked"] != "full" or bool(gaps)
+        # A check skipped here needed a call: the address's own scan makes it, once.
+        gaps = [{**g, "id": "unread"} if g["id"] == "skipped" else g for g in gaps]
         out[v["address"]] = {
             **score(list(worst.values()), partial),
             "by_chain": dict(by_chain),
