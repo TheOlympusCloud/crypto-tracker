@@ -804,7 +804,12 @@ or at the hop limit, and says which.
   payments of a token you hold (common with USDT on Tron) are enough to lose its link.
 - A Solana fee payer or co-signer that cannot be read when its transaction is first read
   gets no link; the sync's error names it. The 25 newest transactions are read again on
-  each sync, older ones are not.
+  each sync, older ones are not. Once the RPC answers "too many requests", the other
+  strangers of that sync wait for a later one.
+- A database from before the Solana signer links reads each Solana wallet's history once
+  more, from the newest, so older transactions get their links too; until it is done the
+  wallet reads "Partly checked". A rent refund stored before keeps its old row, from the
+  token account, next to the new one from the owner: a few thousandths of a SOL counted twice.
 - A lookup reads no stranger, so it lists a Solana address's fee payers and co-signers as
   guesses even when one of them is a relayer.
 
