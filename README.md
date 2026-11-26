@@ -802,7 +802,10 @@ A sender that was never read ends the walk, as any address that was not expanded
   its chain, because the bridge's payout transaction is not known. On an EVM chain that
   payout is also a transfer (a mint from the zero address, a relayer's), listed under the
   asset received, so the same money shows twice there, once with its real origin. A bridge
-  record is followed for the wallet that received it, not for a stranger it passes through.
+  record is followed only for the wallet that received it: further up a path (a stranger, or
+  another wallet of yours whose money came back over a bridge) the walk ends at that address.
+  A THORChain or Maya swap whose two ends are the same address (ETH to USDC, or from one EVM
+  chain to another) is stored as no record, so its origin still ends at the protocol's vault.
 - A bridge or exchange flow is only matched by amount and time when both ends are wallets
   you declared. Bridge records also find a recipient you did not declare, but only for a
   deposit your wallet makes straight into the bridge, or through a contract a label set
