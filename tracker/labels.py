@@ -9,19 +9,25 @@ Labels come from four places, and the stronger one wins:
     heuristic     behaviour seen in the synced data (detect.py); a guess, never a fact
 
 The datasets are downloaded in full, so looking an address up in them tells nobody which
-addresses are of interest. All are MIT-licensed: brianleect/etherscan-labels,
-graphsense/graphsense-tagpacks and the program names of solana-labs/explorer.
+addresses are of interest. brianleect/etherscan-labels, graphsense/graphsense-tagpacks and
+the program names of solana-labs/explorer are MIT-licensed; OKX publishes its
+proof-of-reserves list, every address signed "I am an OKX address", for anyone to check.
 """
 
+import csv
 import io
 import json
 import os
 import re
 import tarfile
+import tempfile
 import time
+import zipfile
 
 import httpx
 import yaml
+
+from . import db as database
 
 EXPLORER_DUMPS = (
     "https://raw.githubusercontent.com/brianleect/etherscan-labels/main/data/{}/combined/"
@@ -32,6 +38,13 @@ TAGPACKS = "https://codeload.github.com/graphsense/graphsense-tagpacks/tar.gz/re
 SOLANA_PROGRAMS = (
     "https://raw.githubusercontent.com/solana-labs/explorer/master/app/utils/programs.ts"
 )
+OKX_POR = "https://www.okx.com/proof-of-reserves/download"
+# A new list each month; the download page links every one of them.
+OKX_LISTS = re.compile(r"https://static\.okx\.com/cdn/okx/por/chain/por_csv_\d+_V\d+\.zip")
+# The networks of OKX's list that are read here. Bitcoin Cash is left out: its addresses are
+# listed in the legacy form, which reads as Bitcoin.
+OKX_NETWORKS = {"BTC", "LTC", "DOGE", "TRON", "SOL", "ETH", "ARBITRUM", "AVAXC", "BASE",
+                "OPTIMISM", "POLYGON"}  # fmt: skip
 REFRESH = 30 * 86400  # the sets are downloaded again when the copy is older than this
 
 LOADER = getattr(yaml, "CBaseLoader", yaml.BaseLoader)  # libyaml is ~10x faster
@@ -174,6 +187,17 @@ def parse_solana_programs(text):
         yield program, name[:80], category, kind, "solana-programs"
 
 
+def parse_okx(lines):
+    """OKX's proof-of-reserves CSV: totals per coin, then one row per address and coin
+    (coin, Type, Network, Snapshot Height, address, ...). Mostly deposit addresses."""
+    for row in csv.reader(lines):
+        if len(row) > 4 and row[2] in OKX_NETWORKS:
+            try:
+                yield database.norm(row[4]), "OKX", "cex", "exchange", "okx-por"
+            except ValueError:
+                continue  # the keys of Ethereum validators, listed for staked ETH
+
+
 def store(db, rows):
     """Insert (address, name, category, type, source) rows. A label only replaces one from
     an equal or weaker source: a dataset never overwrites the user, a guess never a dataset."""
@@ -187,7 +211,9 @@ def store(db, rows):
     db.commit()
 
 
-SETS = [f"{explorer}-labels" for explorer in EXPLORERS] + ["graphsense-tagpacks", "solana-programs"]
+SETS = [f"{explorer}-labels" for explorer in EXPLORERS] + [
+    "graphsense-tagpacks", "solana-programs", "okx-por"
+]  # fmt: skip
 
 
 def stale(db):
@@ -245,6 +271,20 @@ def import_open(db, client, everything=False):
             done.append("solana-programs")
         except httpx.HTTPError:
             failed.append("solana-programs")
+    if "okx-por" in wanted:
+        try:
+            page = client.get(OKX_POR, follow_redirects=True).raise_for_status().text
+            with tempfile.TemporaryFile() as file:  # about 110 MB, so not kept in memory
+                with client.stream("GET", max(OKX_LISTS.findall(page))) as reply:
+                    for chunk in reply.raise_for_status().iter_bytes():
+                        file.write(chunk)
+                with zipfile.ZipFile(file) as archive:
+                    for name in archive.namelist():
+                        with archive.open(name) as text:
+                            rows += parse_okx(io.TextIOWrapper(text, "utf-8", errors="replace"))
+            done.append("okx-por")
+        except (httpx.HTTPError, ValueError, zipfile.BadZipFile, csv.Error, OSError):
+            failed.append("okx-por")  # ValueError: no list linked on the page
     store(db, rows)
     now = str(time.time())
     db.executemany(
