@@ -478,7 +478,7 @@ scanned yet.
 | The same address on several chains | -2, low | Transfers of the same EVM address on two or more of the chains read. |
 | First funded by your wallet | -10, medium | One of your wallets sent the address its first coins on a chain (on Tron: the TRX that activated it). |
 | First funded by the same address as your other wallets | -10, medium | A stranger sent the address, one of your wallets, its first coins and also sent coins to another of your wallets; it was read and is not busy. |
-| First funded by an exchange | -5, medium | An address an open label set or you label as an exchange sent it its first coins. Comes on top of "Dealt directly with an exchange": the withdrawal is the address's first transaction. |
+| First funded by an exchange | 0, low | An address an open label set or you label as an exchange sent it its first coins. It costs nothing more: the withdrawal is one of the transfers "Dealt directly with an exchange" counts. |
 | First funded by a busy address | 0, low | As two rows up, but the stranger turned out busy or a known service, so it is stored as a very active address and links nobody. |
 | Has a public name | -15, high | The address's primary name: ENS, Basenames or SNS (.sol). Counted only when the name points back at the address, since anybody can point their own reverse record at any name. |
 | Its name lists addresses on other chains | -5, medium | The addresses of Bitcoin, Litecoin, Dogecoin, Tron, Solana or other EVM chains that the name publishes (ENSIP-9). |
@@ -513,7 +513,7 @@ minutes (200 reads at most), so a scan right after a lookup of the same address 
 nothing; a lookup always reads anew. The one exception is the scan of a wallet of yours whose
 first funder is a stranger who also funded another of your wallets: that stranger is read
 first (one call on Solana and Tron, a sync elsewhere), and stored as a very active address
-when it is one.
+when it is one; a quiet one is noted as such, so it is read once.
 
 ### Privacy grade of your wallets
 
@@ -527,14 +527,16 @@ score (93 plus the impacts, the same grades) over:
 |---|---|---|
 | Tied to your public wallet | -70 x the link's confidence (-49 at 70%); critical from 50% | The strongest link of the wallet's verdict to a wallet you marked public (`tracker/exposure/wallets.py`). A public wallet does not get it: it is tied to you anyway. |
 | Reused addresses | -10 per address, at most -40; medium | A Bitcoin, Litecoin, Dogecoin or Bitcoin Cash address of the wallet paid in two or more transactions. |
-| The scan's findings | as above | Exchanges, flagged addresses and mixers, per chain, from the stored transfers of each address of the wallet (the trusted ones, as the verdict reads them); the same address on several EVM chains. |
+| The scan's findings | as above | Exchanges, flagged addresses and mixers, once per chain, from the stored transfers of all the wallet's addresses (the trusted ones, as the verdict reads them); the same address on several EVM chains; the first funder of an EVM, Solana or Tron address, from its stored history. |
 
 Each finding counts once, at its worst over the wallet's addresses and chains: one
 exchange is enough to be exposed. Reuse is the exception, counted per address, so one slip
 in an HD wallet costs 10 points instead of the F am-i-exposed gives that one address. The
 panel lists the findings by chain, the wallet's own first. A wallet never read has no
 grade, and one whose verdict says "Partly checked" (history still filling in, a source
-that failed) is graded "Partly checked" too.
+that failed) is graded "Partly checked" too. So is a wallet first funded by a stranger who
+also funded another of your wallets, until that stranger has been read: the page makes no
+call, so its panel says so, and **Privacy score** reads it once. The answer is kept.
 
 am-i-exposed's deep scan of a Bitcoin address (its 30-odd heuristics, run in the browser) is
 not part of the grade: the server cannot see it. A Bitcoin wallet's grade therefore says
