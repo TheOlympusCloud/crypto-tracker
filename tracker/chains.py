@@ -327,45 +327,93 @@ def _esplora(client, url, address):
     return txs, stats["funded_txo_sum"] - stats["spent_txo_sum"], stats["tx_count"]
 
 
-def _coin(address, value, kind):
-    return {"scriptpubkey_address": address, "value": value or 0, "scriptpubkey_type": kind}
+def _coin(address, value, kind, script=""):
+    return {
+        "scriptpubkey_address": address,
+        "value": value or 0,
+        "scriptpubkey_type": kind,
+        "scriptpubkey": script,
+    }
 
 
+def script_type(script):
+    """Esplora's name for the type of an output script, from its bytes (hex)."""
+    s, n = script or "", len(script or "")
+    if n == 50 and s.startswith("76a914") and s.endswith("88ac"):
+        return "p2pkh"
+    if n == 46 and s.startswith("a914") and s.endswith("87"):
+        return "p2sh"
+    if n == 44 and s.startswith("0014"):
+        return "v0_p2wpkh"
+    if n == 68 and s[:4] in ("0020", "5120"):
+        return "v0_p2wsh" if s.startswith("0020") else "v1_p2tr"
+    if s.startswith("6a"):
+        return "op_return"
+    if n in (70, 134) and s.endswith("ac"):
+        return "p2pk"
+    return "multisig" if s.endswith("ae") else "unknown"
+
+
+# BlockCypher's script types in Esplora's names.
+CYPHER = {
+    "pay-to-pubkey-hash": "p2pkh",
+    "pay-to-script-hash": "p2sh",
+    "pay-to-pubkey": "p2pk",
+    "pay-to-multi-pubkey-hash": "multisig",
+    "null-data": "op_return",
+}
 COOLDOWN = {}  # indexer URL -> time until which its quota is spent
+WAITING = "the indexer's hourly limit is used up; the rest follows on a later sync"
+
+
+def cypher(client, url, path, params=None):
+    """A BlockCypher read. About 100 lookups an hour without a key: once the quota is spent,
+    nothing is asked for an hour. What was fetched stays, and the rest waits."""
+    if COOLDOWN.get(url, 0) > time.time():
+        raise RateLimited(WAITING)
+    try:
+        return get(client, f"{url}{path}", params, patient=False).json()
+    except RateLimited:
+        COOLDOWN[url] = time.time() + 3600
+        raise RateLimited(WAITING) from None
 
 
 def _blockcypher(client, url, address):
-    # About 100 lookups an hour without a key. Once the quota is spent, stop asking for an
-    # hour: what was fetched stays, and the remaining addresses follow on a later sync.
-    waiting = "the indexer's hourly limit is used up; the rest follows on a later sync"
-    if COOLDOWN.get(url, 0) > time.time():
-        raise RateLimited(waiting)
-    try:
-        data = get(client, f"{url}/addrs/{address}/full", {"limit": 50}, patient=False).json()
-    except RateLimited:
-        COOLDOWN[url] = time.time() + 3600
-        raise RateLimited(waiting) from None
+    data = cypher(client, url, f"/addrs/{address}/full", {"limit": 50})
     txs = [_cypher_tx(t) for t in data.get("txs", [])]
     return txs, data["final_balance"], data["n_tx"]
 
 
 def _cypher_tx(t):
-    """A BlockCypher transaction in Esplora's shape."""
+    """A BlockCypher transaction in Esplora's shape (no witness: Dogecoin has no segwit)."""
+
+    def coin(c, value, script=""):
+        kind = CYPHER.get(c.get("script_type"), "unknown")
+        return _coin((c.get("addresses") or [None])[0], value, kind, script)
+
+    def vin(i):
+        first = i.get("output_index") == -1  # a coinbase input spends nothing
+        return {
+            "txid": i.get("prev_hash", "0" * 64),
+            "vout": 0xFFFFFFFF if first else i.get("output_index", 0),
+            # The spent output's own script is not given, only its type and address.
+            "prevout": None if first else coin(i, i.get("output_value")),
+            "scriptsig": i.get("script", ""),
+            "is_coinbase": first,
+            "sequence": i.get("sequence", 0xFFFFFFFF),
+        }
+
     return {
         "txid": t["hash"],
-        "vin": [
-            {
-                "prevout": _coin(
-                    (i.get("addresses") or [None])[0], i.get("output_value"), i.get("script_type")
-                )
-            }
-            for i in t["inputs"]
-        ],
-        "vout": [
-            _coin((o.get("addresses") or [None])[0], o.get("value"), o.get("script_type"))
-            for o in t["outputs"]
-        ],
+        "version": t.get("ver", 1),
+        "locktime": t.get("lock_time", 0),
+        "size": t.get("size", 0),
+        "weight": 4 * t.get("size", 0),
+        "fee": t.get("fees", 0),
+        "vin": [vin(i) for i in t["inputs"]],
+        "vout": [coin(o, o.get("value"), o.get("script", "")) for o in t["outputs"]],
         "status": {
+            "confirmed": (t.get("block_height") or 0) > 0,
             "block_time": int(datetime.fromisoformat(t["confirmed"]).timestamp())
             if t.get("confirmed")
             else 0,
@@ -385,14 +433,31 @@ def _haskoin(client, url, address):
 def _haskoin_tx(t):
     """A Haskoin transaction in Esplora's shape."""
 
-    def kind(coin):  # the first script bytes are enough to tell address types apart
-        return (coin.get("pkscript") or "")[:4]
+    def coin(c):
+        script = c.get("pkscript") or ""
+        return _coin(c.get("address"), c.get("value"), script_type(script), script)
+
+    def vin(i):
+        return {
+            "txid": i.get("txid"),
+            "vout": i.get("output"),
+            "prevout": None if i.get("coinbase") else coin(i),
+            "scriptsig": i.get("sigscript") or "",
+            "is_coinbase": bool(i.get("coinbase")),
+            "sequence": i.get("sequence"),
+        }
 
     return {
         "txid": t["txid"],
-        "vin": [{"prevout": _coin(i.get("address"), i.get("value"), kind(i))} for i in t["inputs"]],
-        "vout": [_coin(o.get("address"), o.get("value"), kind(o)) for o in t["outputs"]],
+        "version": t.get("version", 1),
+        "locktime": t.get("locktime", 0),
+        "size": t.get("size", 0),
+        "weight": t.get("weight") or 4 * t.get("size", 0),
+        "fee": t.get("fee", 0),
+        "vin": [vin(i) for i in t["inputs"]],
+        "vout": [coin(o) for o in t["outputs"]],
         "status": {
+            "confirmed": "height" in (t.get("block") or {}),
             "block_time": t.get("time") or 0,
             "block_height": (t.get("block") or {}).get("height") or 0,
         },
@@ -442,14 +507,8 @@ def page_utxo(client, chain, address, cursor=None):
         ]
         nxt, last = str(offset + len(txs)), len(txs) < 100
     else:  # blockcypher: by block height, and within the hourly quota
-        if COOLDOWN.get(url, 0) > time.time():
-            raise RateLimited("the indexer's hourly limit is used up; the rest follows later")
         params = {"limit": 50, **({"before": cursor} if cursor else {})}
-        try:
-            data = get(client, f"{url}/addrs/{address}/full", params, patient=False).json()
-        except RateLimited:
-            COOLDOWN[url] = time.time() + 3600
-            raise
+        data = cypher(client, url, f"/addrs/{address}/full", params)
         txs = [_cypher_tx(t) for t in data.get("txs", [])]
         # A pending transaction (height -1) has no block to read on from.
         low = min((h for t in txs if (h := t["status"]["block_height"]) > 0), default=None)
