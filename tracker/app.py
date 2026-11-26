@@ -12,7 +12,7 @@ from pydantic import BaseModel, field_validator
 from starlette.concurrency import run_in_threadpool
 from starlette.routing import Mount
 
-from . import alerts, chains, exposure, graph, hd, lookup, node, prices, sync, uri
+from . import alerts, chains, exposure, graph, hd, lookup, node, prices, sync, uri, utxo
 from . import db as database
 from .exposure import wallets
 
@@ -288,6 +288,29 @@ def get_exposure(raw: str, only: str = Query("", alias="chains")):
     if database.chain_of(one) not in exposure.FAMILIES:
         raise HTTPException(422, "only EVM, Solana and Tron addresses are scanned here")
     return live(exposure.run, one, readable(only))
+
+
+@app.get("/utxo/{chain}/{path:path}")
+def get_utxo(chain: str, path: str):
+    """am-i-exposed's Esplora calls for a Litecoin, Dogecoin or Bitcoin Cash scan, answered from
+    the tracker's indexers (tracker/utxo.py). Like a lookup it stores nothing."""
+    try:
+        read = utxo.route(chain, path)
+    except LookupError:
+        raise HTTPException(404) from None
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from None
+    try:
+        with httpx.Client(timeout=30, headers={"User-Agent": "crypto-tracker"}) as client:
+            return read(client)
+    except chains.RateLimited as e:  # Dogecoin's hourly quota: the scan says partly checked
+        raise HTTPException(429, str(e)) from None
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            raise HTTPException(404, "not found at the indexer") from None
+        raise HTTPException(502, f"the indexer did not answer: {chains.describe(e)}") from None
+    except (httpx.HTTPError, RuntimeError, ValueError, KeyError, TypeError) as e:
+        raise HTTPException(502, f"the indexer did not answer: {chains.describe(e)}") from None
 
 
 @app.post("/watch")
