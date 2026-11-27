@@ -5,7 +5,11 @@ import type { LocalTx } from "@/lib/input/local-tx";
 import type { MempoolTransaction } from "@/lib/api/types";
 import type { ScoringResult } from "@/lib/types";
 
-const m = vi.hoisted(() => ({ getRecommendedFees: vi.fn() }));
+const m = vi.hoisted(() => ({
+  getRecommendedFees: vi.fn(),
+  bases: [] as string[],
+  network: { config: { mempoolBaseUrl: "https://mempool.space/api" }, liteNode: null as { api: string; state: string } | null },
+}));
 vi.mock("react-i18next", async () => {
   const en = (await import("../../../../public/locales/en/common.json")).default as Record<string, string>;
   // English plurals: the _other form for any count but 1
@@ -14,12 +18,14 @@ vi.mock("react-i18next", async () => {
       .replace(/\{\{(\w+)\}\}/g, (raw, name: string) => (name in o ? String(o[name]) : raw));
   return { useTranslation: () => ({ t, i18n: { language: "en" } }) };
 });
-vi.mock("@/context/NetworkContext", () => ({ useNetwork: () => ({ config: { mempoolBaseUrl: "https://mempool.space/api" } }) }));
-vi.mock("@/lib/api/mempool", () => ({ createMempoolClient: () => ({ getRecommendedFees: m.getRecommendedFees }) }));
+vi.mock("@/context/NetworkContext", () => ({ useNetwork: () => m.network }));
+vi.mock("@/lib/api/mempool", () => ({
+  createMempoolClient: (base: string) => { m.bases.push(base); return { getRecommendedFees: m.getRecommendedFees }; },
+}));
 
 import { BeforeYouSend } from "../BeforeYouSend";
 
-afterEach(() => { cleanup(); m.getRecommendedFees.mockReset(); });
+afterEach(() => { cleanup(); m.getRecommendedFees.mockReset(); m.bases.length = 0; m.network.liteNode = null; });
 
 const out = (value: number, addr: string) => ({ value, scriptpubkey: "", scriptpubkey_asm: "", scriptpubkey_type: "v0_p2wpkh", scriptpubkey_address: addr });
 const tx = (prevout: boolean): MempoolTransaction => ({
@@ -31,6 +37,14 @@ const local = (prevout: boolean): LocalTx => ({ source: "psbt", status: "unsigne
 const result = { score: 80, grade: "B", findings: [] } as unknown as ScoringResult;
 
 describe("BeforeYouSend", () => {
+  it("takes its fee estimates from crypto-tracker's lite node when there is one", async () => {
+    m.getRecommendedFees.mockResolvedValue({ fastestFee: 20, halfHourFee: 10, hourFee: 5, economyFee: 2, minimumFee: 1 });
+    m.network.liteNode = { api: "/api/tracker/node", state: "ready" };
+    render(<BeforeYouSend local={local(true)} txData={null} result={result} lookup={null} outputTxCounts={null} onLookup={() => {}} endpoint="mempool.space" />);
+    await act(async () => {});
+    expect(m.bases).toEqual(["/api/tracker/node"]);
+  });
+
   it("asks consent for the lookup, names the host and disables the button while running", () => {
     m.getRecommendedFees.mockReturnValue(new Promise(() => {}));
     const onLookup = vi.fn();

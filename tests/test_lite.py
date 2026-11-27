@@ -4,6 +4,7 @@ from the public server, and every view says so."""
 
 import copy
 import functools
+import hashlib
 import json
 import os
 import subprocess
@@ -14,9 +15,11 @@ from pathlib import Path
 import httpx
 import pytest
 from embit.script import address_to_scriptpubkey
+from fastapi.testclient import TestClient
 from test_core import BIP84, SATOSHI, ZPUB, mine
 
 from tracker import chains, detect, hd, history, labels, node, prices, swaps, sync, tokens
+from tracker.app import NOT_READY, app
 
 ROOT = Path(__file__).parent.parent
 RPC = "http://bitcoind-lite:8332"
@@ -73,6 +76,10 @@ class Core:
         self.on_disk = False  # the wallet survives a restart of bitcoind
         self.asked = []  # (method, params)
         self.refuse = None  # descriptors containing this are refused
+        self.minfee = 0.000001  # BTC/kvB: 0.1 sat/vB, Core's default floor
+        self.estimates = {1: 0.0002, 3: 0.00012, 6: 0.0001, 144: 0.00002}  # BTC/kvB by target
+        self.mempool = set()  # txids
+        self.refuse_tx = None  # (code, message) sendrawtransaction answers
         for _ in range(3):
             self.connect([])
 
@@ -243,6 +250,34 @@ class Core:
         ]  # fmt: skip
         return {"success": True, "height": self.tip()["height"], "unspents": unspents,
                 "total_amount": sum(u["amount"] for u in unspents)}  # fmt: skip
+
+    # -- what the privacy scanner asks: fee estimates and broadcasting
+    def getmempoolinfo(self):
+        return {"loaded": True, "size": len(self.mempool), "mempoolminfee": self.minfee,
+                "minrelaytxfee": 0.000001}  # fmt: skip
+
+    def estimatesmartfee(self, conf_target):
+        if conf_target not in self.estimates:
+            return {"errors": ["Insufficient data or no feerate found"], "blocks": 0}
+        return {"feerate": self.estimates[conf_target], "blocks": max(conf_target, 2)}
+
+    @staticmethod
+    def txid_of(raw):
+        return hashlib.sha256(hashlib.sha256(bytes.fromhex(raw)).digest()).digest()[::-1].hex()
+
+    def sendrawtransaction(self, hexstring):
+        if self.refuse_tx:
+            raise Fault(*self.refuse_tx)
+        self.mempool.add(self.txid_of(hexstring))
+        return self.txid_of(hexstring)
+
+    def testmempoolaccept(self, rawtxs):
+        return [{"txid": self.txid_of(r), "allowed": True, "vsize": 141} for r in rawtxs]
+
+    def getmempoolentry(self, txid):
+        if txid not in self.mempool:
+            raise Fault(-5, "Transaction not in mempool")
+        return {"vsize": 141, "fees": {"base": 0.00001}}
 
 
 class Fault(Exception):
@@ -595,3 +630,124 @@ def test_compose_runs_the_lite_profile_without_an_index():
     assert "bitcoind-rpc:/rpc:ro" in spec["services"]["crypto-tracker"]["volumes"]
     # the full profile is untouched
     assert "-txindex=1" in spec["services"]["bitcoind"]["command"]
+
+
+# ---- The privacy scanner's fees and broadcasts, through the lite node
+
+SIGNED = "02000000000101" + "ab" * 60  # a signed transaction, as far as the fake node cares
+
+
+@pytest.fixture
+def web(lite):
+    return TestClient(app, base_url="http://localhost")
+
+
+def test_the_scanner_takes_its_fee_estimates_from_the_node(web, lite):
+    assert web.get("/api/tracker/node").json() == {"state": "ready"}
+    lite.minfee = 0.00003  # a full mempool: nothing below 3 sat/vB gets in
+    fees = web.get("/api/tracker/node/v1/fees/recommended").json()
+    # mempool's shape, in sat/vB: what am-i-exposed's own client reads
+    assert fees == {"fastestFee": 20.0, "halfHourFee": 12.0, "hourFee": 10.0, "economyFee": 3.0,
+                    "minimumFee": 3.0}  # fmt: skip
+    assert ("estimatesmartfee", [6]) in lite.asked
+    assert web.get("/api/tracker/node/blocks/tip/height").text == str(lite.tip()["height"])
+
+    del lite.estimates[144]  # a node just synced has no long estimates yet
+    r = web.get("/api/tracker/node/v1/fees/recommended")
+    assert r.status_code == 503 and r.json()["detail"] == node.NO_FEES
+    assert not lite.public.asked  # nothing went to a public server
+
+
+def test_the_scanner_broadcasts_through_the_node(web, lite, monkeypatch):
+    plain = {"content-type": "text/plain", "sec-fetch-site": "same-origin"}
+    txid = lite.txid_of(SIGNED)
+    dry = web.post("/api/tracker/node/txs/test", content=f'["{SIGNED}"]', headers=plain)
+    assert dry.json() == [{"txid": txid, "allowed": True, "vsize": 141}]
+    status = f"/api/tracker/node/tx/{txid}/status"
+    assert web.get(status).status_code == 404  # "probably not sent"
+
+    sent = web.post("/api/tracker/node/tx", content=SIGNED, headers=plain)
+    assert sent.status_code == 200 and sent.text == txid
+    assert ("sendrawtransaction", [SIGNED]) in lite.asked
+    assert web.get(status).json() == {"confirmed": False}
+    assert not lite.public.asked
+
+    # Refused: the node's own code and words, as mempool passes them on.
+    lite.refuse_tx = (-26, "min relay fee not met, 100 < 141")
+    r = web.post("/api/tracker/node/tx", content=SIGNED, headers=plain)
+    assert r.status_code == 400 and r.json()["code"] == -26
+    assert r.json()["message"] == "your Bitcoin node: min relay fee not met, 100 < 141"
+    asked = len(lite.asked)
+    r = web.post("/api/tracker/node/tx", content="not hex", headers=plain)
+    assert r.status_code == 400 and r.json()["code"] == -22
+    assert not [m for m, _ in lite.asked[asked:] if m == "sendrawtransaction"]
+    bad = web.post("/api/tracker/node/txs/test", content="[12]", headers=plain)
+    assert bad.status_code == 400
+    # The node's own refusal of the dry run shows before sending, as one of its answers.
+    monkeypatch.setattr(lite, "testmempoolaccept", lambda raws: (_ for _ in ()).throw(
+        Fault(-22, "TX decode failed")))  # fmt: skip
+    dry = web.post("/api/tracker/node/txs/test", content=f'["{SIGNED}"]', headers=plain).json()
+    assert dry == [{"allowed": False, "reject-reason": "your Bitcoin node: TX decode failed"}]
+
+
+def test_a_node_that_is_not_ready_says_so_and_sends_nothing(web, lite, monkeypatch):
+    lite.ibd = True
+    r = web.post("/api/tracker/node/tx", content=SIGNED)
+    # A code, so the scanner reads a refusal; without one a 5xx would read "maybe sent".
+    assert r.status_code == 503 and r.json()["code"] == NOT_READY
+    assert "still syncing" in r.json()["message"]
+    dry = web.post("/api/tracker/node/txs/test", content=f'["{SIGNED}"]').json()
+    assert not dry[0]["allowed"] and "still syncing" in dry[0]["reject-reason"]
+    assert web.get("/api/tracker/node/v1/fees/recommended").status_code == 503
+    assert web.get("/api/tracker/node/blocks/tip/height").status_code == 503
+    assert web.get("/api/tracker/node").json() == {"state": "syncing"}
+
+    lite.up = False
+    r = web.post("/api/tracker/node/tx", content=SIGNED)
+    assert r.json()["code"] == NOT_READY and "does not answer" in r.json()["message"]
+    # Down between the check and the send: never reached it, so a refusal too.
+    monkeypatch.setattr(node, "unready", lambda: "")
+    r = web.post("/api/tracker/node/tx", content=SIGNED)
+    assert r.json()["code"] == NOT_READY and "does not answer" in r.json()["message"]
+    assert not [m for m, _ in lite.asked if m == "sendrawtransaction"]
+
+    # A connection never made is a refusal too.
+    lite.up = True
+    monkeypatch.setattr(lite, "sendrawtransaction", lambda h: (_ for _ in ()).throw(
+        httpx.ConnectTimeout("no connection")))  # fmt: skip
+    r = web.post("/api/tracker/node/tx", content=SIGNED)
+    assert r.json()["code"] == NOT_READY and "does not answer" in r.json()["message"]
+
+    # Lost on the way back: it may have gone out. No code, so the scanner offers to check.
+    monkeypatch.setattr(lite, "sendrawtransaction", lambda h: (_ for _ in ()).throw(
+        httpx.ReadTimeout("timed out")))  # fmt: skip
+    r = web.post("/api/tracker/node/tx", content=SIGNED)
+    assert r.status_code == 502 and "code" not in r.text
+
+
+def test_broadcasts_take_the_password_and_this_app_s_own_pages(web, lite, monkeypatch):
+    other_site = {"content-type": "text/plain", "sec-fetch-site": "cross-site"}
+    assert web.post("/api/tracker/node/tx", content=SIGNED, headers=other_site).status_code == 403
+    # Over plain http on a LAN address browsers send no Sec-Fetch-Site: the Origin then counts.
+    for origin in ("http://evil.example", "http://localhost:8000", "null"):
+        r = web.post("/api/tracker/node/tx", content=SIGNED, headers={"origin": origin})
+        assert r.status_code == 403, origin
+    dry = web.post("/api/tracker/node/txs/test", content=f'["{SIGNED}"]', headers=other_site)
+    assert dry.status_code == 403
+    monkeypatch.setenv("CT_PASSWORD", "s3cret")
+    for path in ("/api/tracker/node", "/api/tracker/node/v1/fees/recommended"):
+        assert web.get(path).status_code == 401
+    assert web.post("/api/tracker/node/tx", content=SIGNED).status_code == 401
+    assert not [m for m, _ in lite.asked if m in ("sendrawtransaction", "estimatesmartfee")]
+    signed_in = web.post("/api/tracker/node/tx", content=SIGNED, auth=("", "s3cret"))
+    assert signed_in.text == lite.txid_of(SIGNED)
+    own_page = {"origin": "http://localhost"}
+    r = web.post("/api/tracker/node/tx", content=SIGNED, auth=("", "s3cret"), headers=own_page)
+    assert r.text == lite.txid_of(SIGNED)
+
+
+def test_without_a_lite_node_the_scanner_keeps_its_own_servers(web, monkeypatch):
+    monkeypatch.setattr(node, "BITCOIND", "")  # no node, or the full mempool profile
+    assert web.get("/api/tracker/node").status_code == 404
+    assert web.get("/api/tracker/node/v1/fees/recommended").status_code == 404
+    assert web.post("/api/tracker/node/tx", content=SIGNED).status_code == 404

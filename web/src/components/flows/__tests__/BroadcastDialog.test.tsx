@@ -9,8 +9,9 @@ const m = vi.hoisted(() => ({ broadcastTx: vi.fn(), testMempoolAccept: vi.fn(), 
 vi.mock("@/lib/api/broadcast", () => m);
 vi.mock("react-i18next", async () => {
   const en = (await import("../../../../public/locales/en/common.json")).default as Record<string, string>;
+  const ns = (await import("../../../../public/locales/en/tracker-exposure.json")).default as Record<string, string>;
   const t = (k: string, o: Record<string, unknown> = {}) =>
-    (en[k] ?? (typeof o.defaultValue === "string" ? o.defaultValue : k))
+    (en[k] ?? ns[k.replace(/^tracker-exposure:/, "")] ?? (typeof o.defaultValue === "string" ? o.defaultValue : k))
       .replace(/\{\{(\w+)\}\}/g, (raw, name: string) => (name in o ? String(o[name]) : raw));
   return { useTranslation: () => ({ t, i18n: { language: "en" } }) };
 });
@@ -42,6 +43,33 @@ const renderDialog = (over: Partial<Parameters<typeof BroadcastDialog>[0]> = {})
 };
 
 describe("BroadcastDialog", () => {
+  it("through crypto-tracker's lite node: sent, then the scan that asks the public server waits for the user", async () => {
+    m.broadcastTx.mockResolvedValue({ kind: "sent", txid: TX.txid, mismatch: false });
+    const { onSuccess } = renderDialog({ baseUrl: "/api/tracker/node", cls: "self-hosted", scanHost: "mempool.space" });
+    expect(screen.getByText(/\/api\/tracker\/node\/tx/)).toBeTruthy();
+    expect(screen.getByText(/Your own node relays it/)).toBeTruthy();
+    expect(m.testMempoolAccept).toHaveBeenCalledWith("/api/tracker/node", "0200beef");
+    fireEvent.click(screen.getByTestId("broadcast-confirm"));
+    const sent = await screen.findByTestId("broadcast-sent");
+    expect(sent.textContent).toContain(TX.txid);
+    expect(sent.textContent).toContain("asks mempool.space");
+    expect(m.broadcastTx).toHaveBeenCalledWith("/api/tracker/node", "0200beef", TX.txid);
+    expect(onSuccess).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId("broadcast-scan-sent"));
+    expect(onSuccess).toHaveBeenCalledWith(TX.txid);
+  });
+
+  it("through the lite node, an unknown outcome found in its mempool waits for the user too", async () => {
+    m.getTxStatus.mockResolvedValue("mempool");
+    const onUnknownChange = vi.fn();
+    const { onSuccess } = renderDialog({ baseUrl: "/api/tracker/node", cls: "self-hosted", scanHost: "mempool.space", unknownSent: true, onUnknownChange });
+    fireEvent.click(screen.getByTestId("broadcast-check-status"));
+    await screen.findByTestId("broadcast-sent");
+    expect(m.getTxStatus).toHaveBeenCalledWith("/api/tracker/node", TX.txid);
+    expect(onSuccess).not.toHaveBeenCalled();
+    expect(onUnknownChange).toHaveBeenCalledWith(false);
+  });
+
   it("names the endpoint and the clearnet privacy cost", () => {
     renderDialog();
     expect(screen.getByText(/https:\/\/mempool\.space\/api\/tx/)).toBeTruthy();

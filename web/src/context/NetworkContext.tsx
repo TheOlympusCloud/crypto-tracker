@@ -20,6 +20,7 @@ import { useUrlState } from "@/hooks/useUrlState";
 import { useCustomApi } from "@/hooks/useCustomApi";
 import { useTorDetection, canUseOnionEndpoint, type TorStatus } from "@/hooks/useTorDetection";
 import { useLocalApi, type LocalApiStatus } from "@/hooks/useLocalApi";
+import { NODE_API, type LiteNodeState } from "@/lib/tracker/node";
 import {
   detectBackendChain,
   isSupportedChain,
@@ -98,6 +99,11 @@ interface NetworkContextValue {
   /** Services go through the host's Tor sidecar: Umbrel and StartOS, not a host without one. */
   torProxy: boolean;
   /**
+   * crypto-tracker's lite node, on mainnet: fee estimates, the chain tip and broadcasts go to
+   * `api`; address and transaction scans stay on `config`. null: none, or another network.
+   */
+  liteNode: { api: string; state: LiteNodeState } | null;
+  /**
    * The backend is a self-hosted mempool (a user-set custom URL, or Umbrel's),
    * not mempool.space. The Tor onion endpoint is mempool.space, so it is not custom.
    */
@@ -138,6 +144,7 @@ const NetworkContext = createContext<NetworkContextValue>({
   localApiStatus: "checking",
   isUmbrel: false,
   torProxy: false,
+  liteNode: null,
   isCustomApi: false,
   apiReady: false,
   routeReady: false,
@@ -264,6 +271,7 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
       localApiStatus,
       isUmbrel,
       torProxy: isUmbrel && localApi.torProxy,
+      liteNode: localApi.liteNode && !isUmbrel && network === "mainnet" ? { api: NODE_API, state: localApi.liteNode } : null,
       isCustomApi: !!customUrl || isUmbrel,
       // On Umbrel the node's chain is known once its probe settles; a custom URL waits for its re-check
       apiReady: localApiStatus !== "checking" && torStatus !== "checking" && (isUmbrel || custom.verified),
@@ -273,7 +281,7 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
       unsupportedChain,
       networkUnverified,
     }),
-    [network, setNetwork, config, configFor, customUrl, setCustomUrl, torStatus, localApiStatus, isUmbrel, localApi.torProxy, pinned, backendChain, unsupportedChain, networkUnverified, custom.verified],
+    [network, setNetwork, config, configFor, customUrl, setCustomUrl, torStatus, localApiStatus, isUmbrel, localApi.torProxy, localApi.liteNode, pinned, backendChain, unsupportedChain, networkUnverified, custom.verified],
   );
 
   return (

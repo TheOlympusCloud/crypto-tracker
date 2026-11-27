@@ -148,11 +148,12 @@ def _mempool_status():
     return found
 
 
-def notice(found):
-    """What to tell the user about a node that is not ready."""
+def notice(found, waits=True):
+    """What to tell the user about a node that is not ready (`waits`: and that Bitcoin waits)."""
     date = datetime.fromtimestamp(found["time"] or 0, UTC).strftime("%d %b %Y")
-    said, waits = (LITE_NOTICES, LITE_WAITS) if BITCOIND else (NOTICES, WAITS)
-    return said[found["state"]].format(date=date, height=found["height"] or 0) + " " + waits
+    said, then = (LITE_NOTICES, LITE_WAITS) if BITCOIND else (NOTICES, WAITS)
+    text = said[found["state"]].format(date=date, height=found["height"] or 0)
+    return f"{text} {then}" if waits else text
 
 
 def notes():
@@ -405,3 +406,34 @@ def watch():
             time.sleep(WATCH_EVERY)
 
     threading.Thread(target=loop, daemon=True).start()
+
+
+# ---- What the privacy scanner (am-i-exposed) asks of the lite node: fee estimates, the chain
+# tip and broadcasting, in the shapes of mempool's API, so that its own code calls them
+# unchanged (app.py, /api/tracker/node/). Its address and transaction scans have no index
+# here: they stay on its public server, and its badge says so.
+
+FEE_TARGETS = {"fastestFee": 1, "halfHourFee": 3, "hourFee": 6, "economyFee": 144}  # blocks
+NO_FEES = (
+    "Bitcoin: your own node has no fee estimates yet: it makes them from the blocks it sees, "
+    "within hours of being synced."
+)
+
+
+def unready():
+    """Why the lite node cannot estimate fees or broadcast now, or "" when it can."""
+    found = status()
+    return "" if found["state"] == "ready" else notice(found, waits=False)
+
+
+def fees():
+    """mempool's /v1/fees/recommended from estimatesmartfee, in sat/vB and never below what the
+    node's mempool takes; None while the node has no estimate for one of the targets."""
+    floor = rpc("getmempoolinfo")["mempoolminfee"] * 1e5  # BTC/kvB -> sat/vB
+    rates = {}
+    for name, blocks in FEE_TARGETS.items():
+        found = rpc("estimatesmartfee", blocks)
+        if "feerate" not in found:  # "Insufficient data or no feerate found"
+            return None
+        rates[name] = round(max(found["feerate"] * 1e5, floor), 1)
+    return rates | {"minimumFee": round(floor, 1)}
