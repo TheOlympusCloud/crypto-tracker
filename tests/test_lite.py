@@ -632,6 +632,17 @@ def test_compose_runs_the_lite_profile_without_an_index():
     assert "-txindex=1" in spec["services"]["bitcoind"]["command"]
 
 
+def test_capped_logs_name_their_driver():
+    # Debian's Docker defaults to journald, which refuses max-size and max-file at start
+    import yaml
+
+    services = yaml.safe_load((ROOT / "compose.yaml").read_text())["services"]
+    capped = {n: s["logging"] for n, s in services.items() if s.get("logging", {}).get("options")}
+    assert {"bitcoind", "fulcrum", "bitcoind-lite"} <= capped.keys()
+    # json-file keeps the README's cap: 3 files of 10 MB, uncompressed
+    assert {n: log.get("driver") for n, log in capped.items()} == dict.fromkeys(capped, "json-file")
+
+
 # ---- The privacy scanner's fees and broadcasts, through the lite node
 
 SIGNED = "02000000000101" + "ab" * 60  # a signed transaction, as far as the fake node cares

@@ -38,6 +38,7 @@ services:
     <<: &node
       restart: unless-stopped
       logging:
+        driver: json-file # Debian's default, journald, refuses the options below
         options: { max-size: 10m, max-file: "3" } # a node logs every block, for years
     command:
       - -server=1

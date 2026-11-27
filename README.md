@@ -428,10 +428,10 @@ to blocks (Bitcoin Core's `-prune` target, set from it). Those 18 GB, against Bi
 | Block index, `mempool.dat` (`-maxmempool=300`), wallet, peers, fee estimates | 1 GB |
 | Blocks fetched ahead while it syncs (1,024), which cannot be pruned yet | 2 GB |
 
-Logs go to Docker's log only, capped at 30 MB, never to a file in the volume. Bitcoin Core
-keeps the 288 newest blocks whatever the target (about 0.5 GB) and deletes whole block files of
-128 MB; the floor of 20 GB leaves blocks 2 GB, about a week of them. `bitcoind-lite` refuses
-less, and says so in `docker compose logs bitcoind-lite`. The chain
+Logs go to Docker's log only (`json-file`, 3 files of 10 MB), never to a file in the volume.
+Bitcoin Core keeps the 288 newest blocks whatever the target (about 0.5 GB) and deletes whole
+block files of 128 MB; the floor of 20 GB leaves blocks 2 GB, about a week of them.
+`bitcoind-lite` refuses less, and says so in `docker compose logs bitcoind-lite`. The chain
 state grows slowly; when an update of Bitcoin Core raises its estimate, the 18 GB are raised
 with it.
 
