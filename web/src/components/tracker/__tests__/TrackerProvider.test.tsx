@@ -102,6 +102,23 @@ describe("TrackerProvider", () => {
     expect(vi.mocked(api).mock.calls.filter(([path]) => path === "sync").length).toBe(asked);
   });
 
+  it("reads the data again once when a sync ends while the node has something to say", async () => {
+    vi.useFakeTimers();
+    const node = { ...IDLE, total: 3, node: true, notes: ["Bitcoin: block 1000 of 935,000"] };
+    const answers = [{ ...node, running: true, done: 1 }];
+    serve(async () => answers.shift() ?? node);
+    const asked = (what: string) => vi.mocked(api).mock.calls.filter(([path]) => String(path).startsWith(what)).length;
+    render(<TrackerProvider><Probe /></TrackerProvider>);
+    await flush();
+    const before = asked("graph");
+    await act(() => vi.advanceTimersByTimeAsync(1500)); // the sync is over: its data is read
+    expect(asked("graph")).toBe(before + 1);
+    const polls = asked("sync");
+    await act(() => vi.advanceTimersByTimeAsync(90000));
+    expect(asked("graph")).toBe(before + 1); // once, not at every look at the node
+    expect(asked("sync")).toBe(polls + 3); // and the node is still followed, every 30 s
+  });
+
   it("folds for this visit even where the browser keeps nothing", async () => {
     serve(async () => IDLE);
     vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
