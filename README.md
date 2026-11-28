@@ -541,7 +541,10 @@ is all that is trusted; the app adds no check of its own, and sets no default so
    would stop and drop the snapshot.
 
 The app registers your wallets with the node only once the snapshot is loaded: a wallet made
-before could keep Bitcoin Core from starting again until step 4 is over.
+before could keep Bitcoin Core from starting again until step 4 is over. Until then the node
+cannot tell your addresses from others': the ones the tracker knows as yours wait, and an
+address of yours it has not met yet (an HD wallet's address past those it found, say), looked
+up meanwhile, goes to the public server as a stranger's does. A sync never sends one.
 
 **What it costs: your wallets' older history.** The node's wallet sees the blocks from the
 snapshot's on: Bitcoin Core never shows a wallet the blocks it checks behind, and the node
@@ -571,9 +574,13 @@ synced, or begun to, without it, the app leaves the node as it is and the status
 [A wallet added later](#a-wallet-added-later), with `NODE_SNAPSHOT` set.
 
 **When it does not load**, e.g. a snapshot of a block Bitcoin Core 31.3 has no hash for, or a
-URL that answers 404, the status line says why, in Bitcoin Core's own words where they are;
-your Bitcoin wallets wait, and the file stays. Fix or remove the setting, then
-`docker compose up -d`.
+URL that answers 404, the status line says why, in Bitcoin Core's own words where they are,
+and your Bitcoin wallets wait. A file the app downloaded is deleted then; one you put in
+`snapshot/` stays. Fix the setting, then `docker compose up -d`: another URL is downloaded
+afresh. Meanwhile the node goes on syncing from the genesis block without your wallets,
+deleting old blocks as it goes: remove the setting instead, and your wallets are read from
+the block where the node's blocks then start, as [a wallet added later](#a-wallet-added-later)
+is; resync it to read all of it.
 
 ### HTTPS
 
