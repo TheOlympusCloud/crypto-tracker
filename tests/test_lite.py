@@ -827,9 +827,9 @@ def test_the_floor_is_the_same_in_the_installer_and_the_node():
         line.split("=")[1].split()[0]
         for path in (WRAPPER, ROOT / "proxmox" / "install.sh")
         for line in path.read_text().splitlines()
-        if line.startswith(("MIN=", "NODE_MIN_DISK="))
+        if line.startswith(("MIN=", "NODE_MIN_DISK=", "SECOND=", "NODE_SNAPSHOT_DISK="))
     ]
-    assert floor == ["20", "20"]
+    assert floor == ["20", "17", "20", "17"]
 
 
 def test_compose_runs_the_lite_profile_without_an_index():
