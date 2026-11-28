@@ -390,8 +390,10 @@ def post_sync(req: Sync):
 
 @app.get("/sync")
 def get_sync():
-    # A node of your own that is not ready yet is said with the sync's notes, on every view.
-    return {**sync.status, "notes": sync.status["notes"] + node.notes()}
+    # A node of your own that is not ready yet is said with the sync's notes, on every view;
+    # `node`: it has something to say, which changes as it syncs: the page asks again.
+    said = node.notes()
+    return {**sync.status, "notes": sync.status["notes"] + said, "node": bool(said)}
 
 
 @app.get("/mempool/{kind}/{ref}")
