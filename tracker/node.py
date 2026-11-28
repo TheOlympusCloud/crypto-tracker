@@ -8,6 +8,8 @@ With the lite node that holds for my own addresses. Any other has no index to be
 there: it goes to the public server, and every view says so (chains.LITE).
 """
 
+import glob
+import hashlib
 import json
 import os
 import re
@@ -469,8 +471,7 @@ def snapshot():
     until its background check is done (Core: "Wallet requires blocks to be downloaded")."""
     if not SNAPSHOT or _snap["done"] or _snap["failed"]:
         return
-    url = SNAPSHOT.startswith(("http://", "https://"))
-    path = os.path.join(SNAPSHOTS, "utxo.dat" if url else os.path.basename(SNAPSHOT))
+    path, url = _file()
     found = rpc("getchainstates")
     if base := found["chainstates"][-1].get("snapshot_blockhash"):  # loaded, now or before
         return _loaded(path, base)
@@ -494,8 +495,19 @@ def snapshot():
             _snap["said"] = SNAP["headers"].format(headers=found["headers"])
         else:
             _snap["failed"] = SNAP["refused"].format(error=e.message)
+            if url:
+                os.remove(path)  # downloaded, of no use: 9 GB, and in the way of a fixed URL
         return
     _loaded(path, loaded["tip_hash"])
+
+
+def _file():
+    """Where the snapshot is, as the node reads it, and whether the app downloads it there:
+    then under a name of its URL's, so that another URL never takes up its file or part."""
+    if not SNAPSHOT.startswith(("http://", "https://")):
+        return os.path.join(SNAPSHOTS, os.path.basename(SNAPSHOT)), False
+    name = f"download-{hashlib.sha256(SNAPSHOT.encode()).hexdigest()[:16]}.dat"
+    return os.path.join(SNAPSHOTS, name), True
 
 
 def _loaded(path, base):
@@ -510,14 +522,20 @@ def _loaded(path, base):
 def _download(path):
     """NODE_SNAPSHOT into `path`, on from where an interrupted download stopped."""
     part = f"{path}.part"
+    for old in glob.glob(os.path.join(SNAPSHOTS, "download-*")):  # another URL's: never resumed
+        if not old.startswith(path):
+            os.remove(old)
     have = os.path.getsize(part) if os.path.exists(part) else 0
     try:
         with (
             httpx.Client(timeout=60, follow_redirects=True) as client,
             client.stream("GET", SNAPSHOT, headers={"Range": f"bytes={have}-"}) as r,
         ):
-            if r.status_code == 416:  # what it has is whole already, or another file: again
-                os.remove(part)
+            if r.status_code == 416:  # nothing past what it has: whole if it is the file's size
+                if r.headers.get("content-range", "").rpartition("/")[2] == str(have):
+                    os.replace(part, path)  # the app stopped between its last byte and this
+                else:
+                    os.remove(part)
                 return
             r.raise_for_status()
             if r.status_code != 206:

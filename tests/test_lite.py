@@ -401,7 +401,7 @@ def serve(files, request):
     data = files[request.url.path]
     start = int(request.headers.get("range", "bytes=0-")[6:].split("-")[0])
     if start >= len(data):
-        return httpx.Response(416)
+        return httpx.Response(416, headers={"content-range": f"bytes */{len(data)}"})
     if not start:
         return httpx.Response(200, content=data)
     return httpx.Response(206, content=data[start:])
@@ -693,13 +693,49 @@ def test_a_snapshot_from_a_url_is_downloaded_first_and_carries_on_where_it_stopp
     monkeypatch.setattr(node, "SNAPSHOT", "https://snapshots.example/mainnet-5-utxos.dat")
     whole = b"5" + b" " * 2_000_000  # the fake Core reads the height and ignores the rest
     lite.files["/mainnet-5-utxos.dat"] = whole
-    part = Path(node.SNAPSHOTS) / "utxo.dat.part"
+    part = Path(f"{node._file()[0]}.part")
     part.write_bytes(whole[:1_500_000])  # the app stopped half way
     node.snapshot()
     assert lite.base == 5
     assert not list(Path(node.SNAPSHOTS).iterdir())  # downloaded, loaded, deleted
     node.refresh()
     assert lite.wallet is not None
+
+
+def test_a_whole_download_the_app_stopped_before_naming_is_not_downloaded_again(
+    db, lite, monkeypatch
+):
+    for _ in range(3):
+        lite.connect([])
+    monkeypatch.setattr(node, "SNAPSHOT", "https://snapshots.example/mainnet-5-utxos.dat")
+    lite.files["/mainnet-5-utxos.dat"] = whole = b"5" + b" " * 1000
+    Path(f"{node._file()[0]}.part").write_bytes(whole)  # every byte, then the app stopped
+    node.snapshot()  # the server has nothing past its end (416): it is whole
+    assert lite.base == 5 and not list(Path(node.SNAPSHOTS).iterdir())
+
+
+def test_a_refused_download_gives_way_to_a_new_url_and_another_url_s_part_is_never_resumed(
+    db, lite, monkeypatch
+):
+    for _ in range(3):
+        lite.connect([])
+    lite.files["/mainnet-4-utxos.dat"] = b"4" + b" " * 1000
+    lite.files["/mainnet-5-utxos.dat"] = b"5" + b" " * 1000
+    kept = Path(node.SNAPSHOTS) / "mine.dat"
+    kept.write_text("5")  # a file I put there myself: never the app's to delete
+    monkeypatch.setattr(node, "SNAPSHOT", "https://snapshots.example/mainnet-4-utxos.dat")
+    node.snapshot()
+    assert "not recognized" in node.notes()[0] and lite.base is None
+    assert list(Path(node.SNAPSHOTS).iterdir()) == [kept]  # the download, of no use: gone
+
+    # Another URL whose download stopped half way, then the one that fits; the app restarted
+    monkeypatch.setattr(node, "SNAPSHOT", "https://snapshots.example/other-5-utxos.dat")
+    Path(f"{node._file()[0]}.part").write_bytes(b"4" + b" " * 500)
+    monkeypatch.setattr(node, "_snap", {"done": False, "said": "", "failed": ""})
+    monkeypatch.setattr(node, "SNAPSHOT", "https://snapshots.example/mainnet-5-utxos.dat")
+    node.snapshot()
+    assert lite.base == 5  # downloaded whole from the new URL, not resumed from the old part
+    assert list(Path(node.SNAPSHOTS).iterdir()) == [kept]
 
 
 def test_a_snapshot_that_cannot_be_had_or_is_refused_holds_my_wallets_and_says_why(
