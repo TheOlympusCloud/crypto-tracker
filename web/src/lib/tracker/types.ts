@@ -253,6 +253,8 @@ export interface SyncStatus {
   notes: string[];
   /** The address whose older history is being read between syncs. */
   filling: string;
+  /** A node of your own has something to say among the notes (syncing, its snapshot): ask again. */
+  node?: boolean;
 }
 
 /** What a pasted line or a scanned code names (POST resolve). */

@@ -12,7 +12,7 @@ import { TrackerProvider, useTracker } from "../TrackerProvider";
 import { useLookup } from "../lookup/useLookup";
 import { ANALYSIS, GRAPH } from "./harness";
 
-const IDLE: SyncStatus = { running: false, done: 0, total: 0, current: "", error: "", notes: [], filling: "" };
+const IDLE: SyncStatus = { running: false, done: 0, total: 0, current: "", error: "", notes: [], filling: "", node: false };
 const FOUND = { address: "addr", icon: "bitcoin", graph: { nodes: [], edges: [], links: [] } } as unknown as LookupResult;
 
 /** The server: answers for the page's data, and `sync` / `lookup` as each test says. */
@@ -83,6 +83,40 @@ describe("TrackerProvider", () => {
     expect(text("status")).toBe("error|server down"); // not "Syncing" any more
     await act(() => vi.advanceTimersByTimeAsync(5000));
     expect(text("status")).toBe("|"); // it answers again: the error is gone
+  });
+
+  it("follows a node of my own while it has something to say, then stops asking", async () => {
+    vi.useFakeTimers();
+    const said = (n: number) => ({ ...IDLE, node: true, notes: [`Bitcoin: block ${n} of 935,000`] });
+    const answers = [said(1000), said(2000), IDLE];
+    serve(async () => answers.shift() ?? IDLE);
+    render(<TrackerProvider><Probe /></TrackerProvider>);
+    await flush();
+    expect(text("status")).toBe("|Bitcoin: block 1000 of 935,000");
+    await act(() => vi.advanceTimersByTimeAsync(30000));
+    expect(text("status")).toBe("|Bitcoin: block 2000 of 935,000");
+    await act(() => vi.advanceTimersByTimeAsync(30000));
+    expect(text("status")).toBe("|");
+    const asked = vi.mocked(api).mock.calls.filter(([path]) => path === "sync").length;
+    await act(() => vi.advanceTimersByTimeAsync(60000));
+    expect(vi.mocked(api).mock.calls.filter(([path]) => path === "sync").length).toBe(asked);
+  });
+
+  it("reads the data again once when a sync ends while the node has something to say", async () => {
+    vi.useFakeTimers();
+    const node = { ...IDLE, total: 3, node: true, notes: ["Bitcoin: block 1000 of 935,000"] };
+    const answers = [{ ...node, running: true, done: 1 }];
+    serve(async () => answers.shift() ?? node);
+    const asked = (what: string) => vi.mocked(api).mock.calls.filter(([path]) => String(path).startsWith(what)).length;
+    render(<TrackerProvider><Probe /></TrackerProvider>);
+    await flush();
+    const before = asked("graph");
+    await act(() => vi.advanceTimersByTimeAsync(1500)); // the sync is over: its data is read
+    expect(asked("graph")).toBe(before + 1);
+    const polls = asked("sync");
+    await act(() => vi.advanceTimersByTimeAsync(90000));
+    expect(asked("graph")).toBe(before + 1); // once, not at every look at the node
+    expect(asked("sync")).toBe(polls + 3); // and the node is still followed, every 30 s
   });
 
   it("folds for this visit even where the browser keeps nothing", async () => {

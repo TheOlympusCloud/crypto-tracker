@@ -11,6 +11,7 @@ proxmox
 *.db-*
 .env
 chains.json
+snapshot
 # web/: what its own .dockerignore leaves out, and what the build downloads or makes
 web/node_modules
 web/.next

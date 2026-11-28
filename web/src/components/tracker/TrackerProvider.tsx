@@ -183,6 +183,7 @@ export function TrackerProvider({ children }: { children: ReactNode }) {
     const wait = (ms: number) => new Promise((done) => setTimeout(done, ms));
     void (async () => {
       let failed = false;
+      let read = false; // the data was read again since the last sync or fill-in
       while (!stop) {
         let s: SyncStatus;
         try {
@@ -203,9 +204,12 @@ export function TrackerProvider({ children }: { children: ReactNode }) {
         if (s.running) await wait(1500);
         else if (s.filling) await wait(10000);
         else {
-          if (s.total || filled) await refresh();
-          return;
+          if (!read && (s.total || filled)) await refresh();
+          if (!s.node) return;
+          read = true;
+          await wait(30000); // a node of my own has something to say: its progress, as it goes
         }
+        if (s.running || s.filling) read = false;
         filled = Boolean(s.filling);
       }
     })().catch(fail);

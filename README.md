@@ -205,7 +205,8 @@ LXC_IP=192.168.1.50/24,gw=192.168.1.1 bash -c "$(curl -fsSL https://raw.githubus
 | `LXC_DISK`, `LXC_MEMORY`, `LXC_CORES` | `16` GB, `4096` MB (at least `3072`), `2` (at least `2`); with a full node: `8192` MB, `4`; with a lite node: `6144` MB, `4` |
 | `NODE` | `none`; `full`: [a Bitcoin node of your own](#a-bitcoin-node-of-your-own) (`MEMPOOL=1` says the same); `lite`: [a lite node](#a-lite-node) |
 | `MEMPOOL_DISK` | `1200` GB on top of `LXC_DISK` for a full node (at least `1100`) |
-| `NODE_MAX_DISK_GB` | `50` GB on top of `LXC_DISK` for a lite node, the most it takes (at least `20`) |
+| `NODE_MAX_DISK_GB` | `50` GB on top of `LXC_DISK` for a lite node, the most it takes (at least `20`; `37` with a snapshot) |
+| `NODE_SNAPSHOT` | unset; for a lite node, a [snapshot](#from-a-snapshot) to start from: a file on this host, copied into the container, or an `https://` URL |
 | `REPO_URL`, `REPO_REF` | this repository, `main` (a branch or a tag) |
 
 With a [Bitcoin node of its own](#a-bitcoin-node-of-your-own) too:
@@ -229,6 +230,15 @@ NODE=lite NODE_MAX_DISK_GB=50 bash -c "$(curl -fsSL https://raw.githubuserconten
 That adds `NODE_MAX_DISK_GB` to the container's disk, gives it 6 GB and 4 cores, and puts
 `COMPOSE_PROFILES=node-lite` and the cap in its `.env`. It refuses a cap under 20 GB, or
 storage with less free space than the whole disk, before making anything.
+
+The same, [from a snapshot](#from-a-snapshot), in sync within hours: a file on the Proxmox host,
+which it copies into the container, or a URL the app downloads it from:
+
+```sh
+NODE=lite NODE_SNAPSHOT=/root/utxo-935000.dat bash -c "$(curl -fsSL https://raw.githubusercontent.com/TheOlympusCloud/crypto-tracker/main/proxmox/install.sh)"
+```
+
+It then refuses a cap under 37 GB, or a file that is not there.
 
 Back the container up with Proxmox's own backups (`vzdump`): the volume is inside it. With a
 Bitcoin node, leave its volumes out or back up only the app's: the node can sync again.
@@ -433,7 +443,7 @@ Bitcoin Core keeps the 288 newest blocks whatever the target (about 0.5 GB) and 
 block files of 128 MB; the floor of 20 GB leaves blocks 2 GB, about a week of them.
 `bitcoind-lite` refuses less, and says so in `docker compose logs bitcoind-lite`. The chain
 state grows slowly; when an update of Bitcoin Core raises its estimate, the 18 GB are raised
-with it.
+with it. [From a snapshot](#from-a-snapshot), 17 GB more go to what is not blocks for a while.
 
 What more buys: blocks further back, at about 250 MB a day, which is how far back a wallet you
 add later is read.
@@ -455,7 +465,8 @@ takes: `docker compose exec bitcoind-lite du -sh /home/bitcoin/.bitcoin`.
 A wallet you add once the node has pruned is read back as far as its blocks go; the older part
 of its history is not on the node. Its balance is still right. The wallet says so: "read from
 your own node from block 925,000 on". To read all of it, resync the node, which takes as long
-as the first sync; your wallets are registered with it before it starts:
+as the first sync (without `NODE_SNAPSHOT`: a [snapshot](#from-a-snapshot) leaves the older
+blocks out); your wallets are registered with it before it starts:
 
 ```sh
 docker compose rm -sf bitcoind-lite
@@ -478,6 +489,98 @@ wallet added during the sync, whose read-back holds up the looks; a larger cap m
 Use one node or the other, never both. To switch, `docker compose down` (the volumes stay),
 change `COMPOSE_PROFILES`, then `docker compose up -d`. The full node's volumes (`bitcoind`,
 `fulcrum`, `mempool-db`) keep their terabyte until you remove them with `docker volume rm`.
+
+#### From a snapshot
+
+A new lite node can skip most of its first sync with Bitcoin Core's
+[assumeutxo](https://github.com/bitcoin/bitcoin/blob/master/doc/assumeutxo.md): it loads the
+set of unspent coins at a recent block from a file, a *snapshot*, and is at the tip within
+hours instead of a day or more. In `.env`, on a new node only (below):
+
+```sh
+COMPOSE_PROFILES=node-lite
+NODE_MAX_DISK_GB=50                  # at least 37 with a snapshot
+NODE_SNAPSHOT=utxo-935000.dat        # its name, in snapshot/ next to compose.yaml
+# or NODE_SNAPSHOT=https://<a server>/utxo-935000.dat, downloaded into snapshot/ first
+```
+
+then `docker compose up -d`. A file you put there must be readable by others
+(`chmod a+r`): Bitcoin Core runs as its own user.
+
+**Which snapshot.** Bitcoin Core 31.3, the version pinned here, takes a snapshot of block
+840,000, 880,000, 910,000 or 935,000 and of no other: it carries the hash of each in its code
+(chainparams). Take 935,000, the newest: less to catch up on afterwards. It is a file of about
+9.4 GB (9,387,990,306 bytes).
+
+**Where from.** There is no official source, and none is needed: Bitcoin Core hashes the coins
+it loads and refuses a snapshot whose hash is not the one it carries for that block. That hash
+is all that is trusted; the app adds no check of its own, and sets no default source. For
+935,000, for example:
+
+- the torrent linked in Bitcoin Core's pull request
+  [#34677](https://github.com/bitcoin/bitcoin/pull/34677) that added its hash (the file's
+  SHA-256 there: `e572ddbe456d254f05fb004cebe225bdb3656074b66f0e9b1c7fa83e1301d486`);
+- a plain download, e.g. `https://achow101.com/files/utxo-snapshots/mainnet-935000-utxos.dat`,
+  put by one of Bitcoin Core's maintainers for that pull request; the app resumes it where it
+  stopped after a restart;
+- one you make on a synced Bitcoin Core 31.x of your own:
+  `bitcoin-cli -rpcclienttimeout=0 dumptxoutset /path/utxo-935000.dat rollback`. That node
+  drops its peers while it writes it, and should be asked nothing else meanwhile.
+
+**What happens.** The status line, on every view, follows each step:
+
+1. with a URL, the app downloads the file into `snapshot/`;
+2. the node fetches the chain's block headers, a few minutes; the app then has it load the
+   snapshot (`loadtxoutset`, minutes) and deletes the file;
+3. the node catches up from block 935,000 to the tip, a few hours, then your Bitcoin wallets
+   are read from it, as after a first sync;
+4. behind, it downloads and checks every block from the genesis block up to 935,000, as a first
+   sync does, then compares the coins it ends with against the snapshot's hash: "checking in the
+   background from the genesis block: block 400,000 of 935,000 (43%)", read from the node's
+   `getchainstates`. Until then it trusts the snapshot. Were they to differ, Bitcoin Core
+   would stop and drop the snapshot.
+
+The app registers your wallets with the node only once the snapshot is loaded: a wallet made
+before could keep Bitcoin Core from starting again until step 4 is over. Until then the node
+cannot tell your addresses from others': the ones the tracker knows as yours wait, and an
+address of yours it has not met yet (an HD wallet's address past those it found, say), looked
+up meanwhile, goes to the public server as a stranger's does. A sync never sends one.
+
+**What it costs: your wallets' older history.** The node's wallet sees the blocks from the
+snapshot's on: Bitcoin Core never shows a wallet the blocks it checks behind, and the node
+deletes them as it goes. So your Bitcoin wallets are read from the node from block 935,001 on,
+and say so ("read from your own node from block 935,001 on"), as
+[a wallet added later](#a-wallet-added-later) does. Their balances are whole: they come from
+the set of unspent coins. What the tracker read before stays in its database. For their whole
+history from your node, start it without a snapshot.
+
+**Disk.** Until step 4 is over the node keeps two chain states: the one from the snapshot, and
+the one it builds behind, which grows to the set of unspent coins at the snapshot's block
+(12.4 GiB at 935,000). With `NODE_SNAPSHOT` set, `bitcoind-lite` gives that 17 GB of the cap:
+15 for the second chain state and its compacting, 2 for the blocks it fetches ahead. Bitcoin
+Core shares the blocks' room between the two chain states and keeps at least 1100 MiB of them,
+whatever the cap. Hence a cap of at least 37 GB: `bitcoind-lite` and the installer refuse less,
+and the node's log (`docker compose logs bitcoind-lite`) says how the cap is split. The file
+fits in that room until it is deleted. The lite node keeps no index, so the note in Bitcoin
+Core's documentation about indexes holding blocks back does not apply.
+
+Once the status line no longer shows the check, remove `NODE_SNAPSHOT` from `.env`, then
+`docker compose up -d` and, once it is up, `docker compose restart bitcoind-lite`: the first
+start drops the second chain state, the next gives its 17 GB back to blocks.
+
+**A node that has started already.** Only a new node starts from a snapshot. On one that has
+synced, or begun to, without it, the app leaves the node as it is and the status line says
+"NODE_SNAPSHOT is not used". To start it over from the snapshot, resync it as in
+[A wallet added later](#a-wallet-added-later), with `NODE_SNAPSHOT` set.
+
+**When it does not load**, e.g. a snapshot of a block Bitcoin Core 31.3 has no hash for, or a
+URL that answers 404, the status line says why, in Bitcoin Core's own words where they are,
+and your Bitcoin wallets wait. A file the app downloaded is deleted then; one you put in
+`snapshot/` stays. Fix the setting, then `docker compose up -d`: another URL is downloaded
+afresh. Meanwhile the node goes on syncing from the genesis block without your wallets,
+deleting old blocks as it goes: remove the setting instead, and your wallets are read from
+the block where the node's blocks then start, as [a wallet added later](#a-wallet-added-later)
+is; resync it to read all of it.
 
 ### HTTPS
 
@@ -509,7 +612,8 @@ against it, and refuses the scanner's broadcasts through the
 | `CT_PASSWORD_FILE` | unset (the image: `/data/password`) | Without `CT_PASSWORD`, the password kept in this file, made and printed on the first start. |
 | `CT_ESPLORA` | your own node when there is one, else `https://blockstream.info/api` | Bitcoin indexer of the tracker (Esplora API: Blockstream, mempool.space, your own). With a [lite node](#a-lite-node): the one for addresses that are not yours. |
 | `COMPOSE_PROFILES` | unset | `mempool`: run [a Bitcoin node of your own](#a-bitcoin-node-of-your-own) next to the app; `node-lite`: [a lite one](#a-lite-node). |
-| `NODE_MAX_DISK_GB` | `50` | The most disk the lite node takes, in GB, at least `20` ([The cap](#the-cap)). |
+| `NODE_MAX_DISK_GB` | `50` | The most disk the lite node takes, in GB, at least `20` ([The cap](#the-cap)); `37` with a snapshot. |
+| `NODE_SNAPSHOT` | unset | A UTXO snapshot to start a new lite node from: the name of a file in `snapshot/` next to `compose.yaml`, or a URL to download it from ([From a snapshot](#from-a-snapshot)). |
 | `HTTPS_PROXY` | unset | A proxy for every request the server sends out, e.g. Tor's `HTTPTunnelPort`: `http://<tor host>:9080`. |
 | `CT_MEMPOOL` | unset; with the `mempool` profile, its own | Address of a mempool of your own, as your browser opens it, e.g. `http://umbrel.local:3006`: the tracker and the scanner read Bitcoin from it. |
 | `MEMPOOL_PORT` | `8080` | Port of the `mempool` profile's own site, a block explorer. |

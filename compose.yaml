@@ -9,6 +9,8 @@
 # COMPOSE_PROFILES=mempool in .env, then docker compose up -d. About 1.1 TB of disk.
 # Or a lite one, pruned, that watches your own wallets only (README, "A lite node"):
 # COMPOSE_PROFILES=node-lite and NODE_MAX_DISK_GB=50 (its most disk, at least 20) in .env.
+# A new one can start from a UTXO snapshot (README, "From a snapshot"): NODE_SNAPSHOT, the name
+# of a file in snapshot/ next to this file, or a URL; then the cap is at least 37.
 services:
   crypto-tracker:
     build:
@@ -27,9 +29,11 @@ services:
       # The stacks below that run: the app then reads Bitcoin from them (tracker/node.py).
       CT_PROFILES: ${COMPOSE_PROFILES:-}
       CT_MEMPOOL_PORT: ${MEMPOOL_PORT:-8080}
+      CT_SNAPSHOT: ${NODE_SNAPSHOT:-}
     volumes:
       - data:/data
       - bitcoind-rpc:/rpc:ro # the lite node's RPC cookie (tracker/node.py)
+      - ./snapshot:/snapshot # the lite node's snapshot: downloaded or found here, then deleted
 
   # ---- profile "mempool": bitcoind, its address index (Fulcrum) and mempool on top ----
   bitcoind:
@@ -128,6 +132,7 @@ services:
     entrypoint: ["/bin/sh", "/bitcoind-lite.sh"]
     environment:
       NODE_MAX_DISK_GB: ${NODE_MAX_DISK_GB:-50}
+      NODE_SNAPSHOT: ${NODE_SNAPSHOT:-} # a second chain state to make room for in the cap
     command:
       - -server=1
       - -maxmempool=300 # MB; mempool.dat on disk stays below it (counted in the cap)
@@ -142,6 +147,7 @@ services:
       - bitcoind-lite:/home/bitcoin/.bitcoin
       - bitcoind-rpc:/home/bitcoin/rpc
       - ./node/bitcoind-lite.sh:/bitcoind-lite.sh:ro
+      - ./snapshot:/snapshot:ro # loadtxoutset reads it here (tracker/node.py)
     stop_grace_period: 5m
 
 volumes:

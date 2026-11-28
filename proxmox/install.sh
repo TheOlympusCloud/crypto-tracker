@@ -14,6 +14,8 @@ MEMPOOL_DISK=${MEMPOOL_DISK:-1200}          # GB added for a full node; node and
 MEMPOOL_MIN_DISK=1100                       # GB: today's ~950 and a year of growth
 NODE_MAX_DISK_GB=${NODE_MAX_DISK_GB:-50}    # GB added for a lite node: the most it takes
 NODE_MIN_DISK=20                            # GB: its floor, as in node/bitcoind-lite.sh
+NODE_SNAPSHOT=${NODE_SNAPSHOT:-}            # lite node: a UTXO snapshot to start from, a file on this host or an http(s) URL (README)
+NODE_SNAPSHOT_DISK=17                       # GB more on the floor while it checks one: SECOND in node/bitcoind-lite.sh
 LXC_ID=${LXC_ID:-}                          # default: the next free id
 LXC_HOSTNAME=${LXC_HOSTNAME:-crypto-tracker}
 LXC_STORAGE=${LXC_STORAGE:-}                # default: the first storage that holds containers
@@ -51,10 +53,20 @@ if [ "$NODE" = full ]; then
     disk=$((LXC_DISK + MEMPOOL_DISK)) added="MEMPOOL_DISK $MEMPOOL_DISK"
 elif [ "$NODE" = lite ]; then
     case $NODE_MAX_DISK_GB in '' | 0* | *[!0-9]*) cap=0 ;; *) cap=$NODE_MAX_DISK_GB ;; esac
+    if [ -n "$NODE_SNAPSHOT" ]; then
+        case $NODE_SNAPSHOT in
+        http://* | https://*) ;;
+        *) [ -f "$NODE_SNAPSHOT" ] || die "NODE_SNAPSHOT: no file $NODE_SNAPSHOT on this host; give a snapshot file here or an http(s) URL" ;;
+        esac
+        floor=$((NODE_MIN_DISK + NODE_SNAPSHOT_DISK))
+        [ "$cap" -ge "$floor" ] ||
+            die "NODE_MAX_DISK_GB must be a whole number of GB, at least $floor with a snapshot: until it has checked the snapshot the node keeps two chain states of about 15 GB each, and Bitcoin Core then keeps at least 1100 MiB of blocks (README, \"From a snapshot\")"
+    fi
     [ "$cap" -ge "$NODE_MIN_DISK" ] ||
         die "NODE_MAX_DISK_GB must be a whole number of GB, at least $NODE_MIN_DISK: a pruned node's chain state alone takes about 15 (README, \"A lite node\")"
     disk=$((LXC_DISK + cap)) added="NODE_MAX_DISK_GB $cap"
 fi
+[ -z "$NODE_SNAPSHOT" ] || [ "$NODE" = lite ] || die "NODE_SNAPSHOT needs NODE=lite: only the lite node starts from a snapshot"
 
 LXC_ID=${LXC_ID:-$(pvesh get /cluster/nextid)}
 if pct status "$LXC_ID" >/dev/null 2>&1; then
@@ -106,6 +118,22 @@ if [ "$NODE" = full ]; then
 elif [ "$NODE" = lite ]; then
     in_ct sh -c "echo COMPOSE_PROFILES=node-lite >>$APP/.env && echo NODE_MAX_DISK_GB=$cap >>$APP/.env"
 fi
+if [ -n "$NODE_SNAPSHOT" ]; then
+    snapshot=$NODE_SNAPSHOT
+    case $NODE_SNAPSHOT in
+    http://* | https://*) ;; # the app downloads it into snapshot/
+    *)
+        # Into snapshot/ next to compose.yaml, which the app and the node share; the app deletes
+        # it once the node has loaded it. It counts in the node's cap meanwhile.
+        echo "==> The snapshot, into the container"
+        snapshot=$(basename "$NODE_SNAPSHOT")
+        in_ct mkdir -p "$APP/snapshot"
+        pct push "$LXC_ID" "$NODE_SNAPSHOT" "$APP/snapshot/$snapshot" --perms 0644
+        ;;
+    esac
+    # shellcheck disable=SC2016 # expanded inside the container, the value as an argument
+    in_ct sh -c 'printf "NODE_SNAPSHOT=%s\n" "$1" >>"$2"' sh "$snapshot" "$APP/.env"
+fi
 
 echo "==> Building and starting (several minutes the first time)"
 in_ct sh -c "cd $APP && docker compose up -d --build"
@@ -156,5 +184,12 @@ if [ "$NODE" = lite ]; then
                 for it (never a public server); other Bitcoin addresses are read from a
                 public server, as the Chains list says.
   Its progress  pct exec $LXC_ID -- docker compose --project-directory $APP logs -f --tail 5 bitcoind-lite
+EOF
+fi
+if [ -n "$NODE_SNAPSHOT" ]; then
+    cat <<EOF
+  From a snapshot  the app loads it into the node once the node has the block headers, then
+                   deletes it: your wallets are read from the node within hours, from the
+                   snapshot's block on. The tracker's status line shows each step.
 EOF
 fi

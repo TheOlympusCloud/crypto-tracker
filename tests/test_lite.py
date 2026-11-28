@@ -33,6 +33,11 @@ PRUNED_MSG = (
     "(see bitcoind log for details) and could be dealt with by downloading and rescanning the "
     "relevant blocks (see -reindex option and rescanblockchain RPC)."
 )
+# The same, on a node started from a snapshot that has not pruned yet (Core 31.3's backup.cpp)
+SNAPSHOT_MSG = PRUNED_MSG.split(" This error")[0] + (
+    " This error is likely caused by an in-progress assumeutxo background sync. Check logs or "
+    "getchainstates RPC for assumeutxo background sync progress and try again later."
+)
 
 
 def spk(address):
@@ -80,6 +85,10 @@ class Core:
         self.estimates = {1: 0.0002, 3: 0.00012, 6: 0.0001, 144: 0.00002}  # BTC/kvB by target
         self.mempool = set()  # txids
         self.refuse_tx = None  # (code, message) sendrawtransaction answers
+        # assumeutxo: the heights its chainparams take a snapshot of; the snapshot's block once
+        # loaded; how far its background chain state has checked it; headers it has (None: all)
+        self.assumeutxo, self.base, self.checked, self.headers = {5}, None, 0, None
+        self.have_pruned = False
         for _ in range(3):
             self.connect([])
 
@@ -98,6 +107,7 @@ class Core:
 
     def prune(self, below):
         self.pruned |= set(range(below))
+        self.have_pruned = True
 
     def tip(self):
         return self.blocks[-1]
@@ -163,6 +173,43 @@ class Core:
     def getbestblockhash(self):
         return self.tip()["hash"]
 
+    # -- assumeutxo
+    def getchainstates(self):
+        current = {"blocks": self.tip()["height"], "validated": True}
+        headers = self.tip()["height"] if self.headers is None else self.headers
+        if self.base is None:
+            return {"headers": headers, "chainstates": [current]}
+        current |= {"snapshot_blockhash": self.blocks[self.base]["hash"],
+                    "validated": self.checked >= self.base}  # fmt: skip
+        behind = [{"blocks": self.checked, "validated": True}] if self.checked < self.base else []
+        return {"headers": headers, "chainstates": behind + [current]}
+
+    def getblockheader(self, blockhash):
+        return {"hash": blockhash, "height": int(blockhash, 16)}
+
+    def listwalletdir(self):
+        return {"wallets": [{"name": node.WALLET}] if self.on_disk else []}
+
+    def loadtxoutset(self, path):
+        """A snapshot file here holds the height of its block: Core's checks, in its order."""
+        with open(path) as f:
+            height = int(f.read())
+        why = "Unable to load UTXO snapshot: "
+        if self.base is not None:
+            raise Fault(-32603, why + "Can't activate a snapshot-based chainstate more than once")
+        if height not in self.assumeutxo:
+            raise Fault(-32603, why + "assumeutxo block hash in snapshot metadata not recognized "
+                        f"(hash: {height:064x}). The following snapshot heights are available: "
+                        f"{', '.join(map(str, sorted(self.assumeutxo)))}. ({path})")  # fmt: skip
+        if self.headers is not None and self.headers < height:
+            raise Fault(-32603, why + f"The base block header ({height:064x}) must appear in the "
+                        "headers chain. Make sure all headers are syncing, and call loadtxoutset "
+                        f"again. ({path})")  # fmt: skip
+        self.base = height
+        self.pruned |= set(range(1, height + 1))  # the blocks before it are not on the node
+        return {"coins_loaded": 164241311, "tip_hash": self.blocks[height]["hash"],
+                "base_height": height, "path": path}  # fmt: skip
+
     def listwallets(self):
         return [node.WALLET] if self.wallet else []
 
@@ -193,8 +240,9 @@ class Core:
                 continue
             self.wallet["descs"].append(r)
             # A rescan reads the blocks still kept; the older ones are gone.
+            gone = PRUNED_MSG if self.have_pruned else SNAPSHOT_MSG
             results.append({"success": not self.pruned} if not self.pruned else
-                           {"success": False, "error": {"code": -1, "message": PRUNED_MSG}})  # fmt: skip
+                           {"success": False, "error": {"code": -1, "message": gone}})  # fmt: skip
         self._find([b for b in self.blocks if b["height"] not in self.pruned])
         return results
 
@@ -320,6 +368,8 @@ def lite(db, monkeypatch, tmp_path):
     def route(request):
         if request.url.host == "bitcoind-lite":
             return core(request)
+        if request.url.host == "snapshots.example":
+            return serve(core.files, request)
         if request.url.host == "blockstream.info":
             return public(request)
         return httpx.Response(404)
@@ -333,10 +383,28 @@ def lite(db, monkeypatch, tmp_path):
     monkeypatch.setattr(node, "TTL", -1)  # asked again every time
     monkeypatch.setattr(node, "_scan", {"at": 0.0, "key": None, "sats": {}})
     monkeypatch.setattr(node, "refused", {})
+    monkeypatch.setattr(node, "SNAPSHOT", "")
+    monkeypatch.setattr(node, "SNAPSHOTS", str(tmp_path / "snapshot"))
+    monkeypatch.setattr(node, "_snap", {"done": False, "said": "", "failed": ""})
+    (tmp_path / "snapshot").mkdir()
+    core.files = {}  # what snapshots.example serves: path -> bytes
     monkeypatch.setitem(chains.UTXO, "bitcoin", ("BTC", "esplora", chains.ESPLORA, chains.LITE))
     monkeypatch.setattr(chains, "DELAY", 0)
     core.public, core.client = public, lambda: real(transport=transport)
     return core
+
+
+def serve(files, request):
+    """A web server that serves byte ranges, as one serving a 9 GB snapshot does."""
+    if request.url.path not in files:
+        return httpx.Response(404)
+    data = files[request.url.path]
+    start = int(request.headers.get("range", "bytes=0-")[6:].split("-")[0])
+    if start >= len(data):
+        return httpx.Response(416, headers={"content-range": f"bytes */{len(data)}"})
+    if not start:
+        return httpx.Response(200, content=data)
+    return httpx.Response(206, content=data[start:])
 
 
 def never_public(core, *addresses):
@@ -554,6 +622,172 @@ def test_a_wallet_added_after_the_node_pruned_says_what_it_misses(db, lite, monk
     assert "from block 4 " in db.execute("SELECT error FROM hdwallet").fetchone()[0]
 
 
+# ---- Starting from a UTXO snapshot (assumeutxo): NODE_SNAPSHOT
+
+
+def methods(core):
+    return [m for m, _ in core.asked]
+
+
+def test_a_new_node_loads_the_snapshot_before_it_watches_my_wallets(db, lite, monkeypatch):
+    # The chain: a payment to me at block 3, before the snapshot's block 5, and one after it
+    lite.connect([tx("3" * 64, [("c" * 64, 0, SENDER, 9000)], [(MINE, 8000)])])
+    lite.connect([])
+    lite.connect([])
+    lite.connect([tx("6" * 64, [("c" * 64, 1, SENDER, 6000)], [(MINE, 5000)])])
+    mine(db, MINE)
+    db.commit()
+    file = Path(node.SNAPSHOTS) / "utxo-5.dat"
+    file.write_text("5")
+    monkeypatch.setattr(node, "SNAPSHOT", "snapshot/utxo-5.dat")  # as given, or just its name
+    lite.headers = 2  # a new node: it fetches the block headers first
+    node.snapshot()
+    assert lite.base is None and lite.wallet is None and file.exists()
+    said = " · ".join(node.notes())
+    assert "fetching the chain's block headers" in said and "2 so far" in said
+    with lite.client() as client:  # my wallet waits, and says why
+        sync.sync_address(db, client, MINE)
+    waits = db.execute("SELECT error FROM node WHERE address = ?", (MINE,)).fetchone()[0]
+    assert "block headers" in waits and "never from a public server" in waits
+
+    lite.headers = None
+    node.snapshot()
+    assert lite.base == 5 and not file.exists()  # loaded, then deleted
+    (said,) = node.notes()  # nothing to wait for, only the check going on behind
+    assert said.startswith("Bitcoin: your own node started from a snapshot of block 5")
+    node.refresh()  # only now is the wallet made, my addresses registered with it
+    assert methods(lite).index("loadtxoutset") < methods(lite).index("createwallet")
+    with lite.client() as client:
+        sync.sync_address(db, client, MINE)
+    got = {r["txid"] for r in db.execute("SELECT txid FROM transfer")}
+    assert got == {"6" * 64}  # from the snapshot's block on: the node never had block 3
+    said = db.execute("SELECT error FROM node WHERE address = ?", (MINE,)).fetchone()[0]
+    assert "from block 6 on" in said and "without NODE_SNAPSHOT" in said
+    row = db.execute("SELECT amount FROM balance WHERE address = ?", (MINE,)).fetchone()
+    assert row["amount"] == 13_000 / 1e8  # the balance is whole: the UTXO set has both
+    never_public(lite, MINE)
+
+    # It checks the snapshot from the genesis block on: the status line follows it
+    lite.checked = 2
+    checking = (
+        "Bitcoin: your own node started from a snapshot of block 5, which it is checking in the "
+        "background from the genesis block: block 2 of 5 (40%). Until then it trusts the "
+        "snapshot's coins, whose hash Bitcoin Core carries."
+    )
+    assert node.notes() == [checking]
+    lite.checked = 5
+    assert node.notes() == []
+    # The app restarts once the node has checked it and dropped the second chain state
+    lite.base, loads = None, methods(lite).count("loadtxoutset")
+    monkeypatch.setattr(node, "_snap", {"done": False, "said": "", "failed": ""})
+    node.snapshot()
+    assert node._snap["done"] and node.notes() == []
+    assert methods(lite).count("loadtxoutset") == loads  # not loaded again, nothing to say
+
+
+def test_a_snapshot_from_a_url_is_downloaded_first_and_carries_on_where_it_stopped(
+    db, lite, monkeypatch
+):
+    for _ in range(3):
+        lite.connect([])  # the chain up to the snapshot's block 5
+    monkeypatch.setattr(node, "SNAPSHOT", "https://snapshots.example/mainnet-5-utxos.dat")
+    whole = b"5" + b" " * 2_000_000  # the fake Core reads the height and ignores the rest
+    lite.files["/mainnet-5-utxos.dat"] = whole
+    part = Path(f"{node._file()[0]}.part")
+    part.write_bytes(whole[:1_500_000])  # the app stopped half way
+    node.snapshot()
+    assert lite.base == 5
+    assert not list(Path(node.SNAPSHOTS).iterdir())  # downloaded, loaded, deleted
+    node.refresh()
+    assert lite.wallet is not None
+
+
+def test_a_whole_download_the_app_stopped_before_naming_is_not_downloaded_again(
+    db, lite, monkeypatch
+):
+    for _ in range(3):
+        lite.connect([])
+    monkeypatch.setattr(node, "SNAPSHOT", "https://snapshots.example/mainnet-5-utxos.dat")
+    lite.files["/mainnet-5-utxos.dat"] = whole = b"5" + b" " * 1000
+    Path(f"{node._file()[0]}.part").write_bytes(whole)  # every byte, then the app stopped
+    node.snapshot()  # the server has nothing past its end (416): it is whole
+    assert lite.base == 5 and not list(Path(node.SNAPSHOTS).iterdir())
+
+
+def test_a_refused_download_gives_way_to_a_new_url_and_another_url_s_part_is_never_resumed(
+    db, lite, monkeypatch
+):
+    for _ in range(3):
+        lite.connect([])
+    lite.files["/mainnet-4-utxos.dat"] = b"4" + b" " * 1000
+    lite.files["/mainnet-5-utxos.dat"] = b"5" + b" " * 1000
+    kept = Path(node.SNAPSHOTS) / "mine.dat"
+    kept.write_text("5")  # a file I put there myself: never the app's to delete
+    monkeypatch.setattr(node, "SNAPSHOT", "https://snapshots.example/mainnet-4-utxos.dat")
+    node.snapshot()
+    assert "not recognized" in node.notes()[0] and lite.base is None
+    assert list(Path(node.SNAPSHOTS).iterdir()) == [kept]  # the download, of no use: gone
+
+    # Another URL whose download stopped half way, then the one that fits; the app restarted
+    monkeypatch.setattr(node, "SNAPSHOT", "https://snapshots.example/other-5-utxos.dat")
+    Path(f"{node._file()[0]}.part").write_bytes(b"4" + b" " * 500)
+    monkeypatch.setattr(node, "_snap", {"done": False, "said": "", "failed": ""})
+    monkeypatch.setattr(node, "SNAPSHOT", "https://snapshots.example/mainnet-5-utxos.dat")
+    node.snapshot()
+    assert lite.base == 5  # downloaded whole from the new URL, not resumed from the old part
+    assert list(Path(node.SNAPSHOTS).iterdir()) == [kept]
+
+
+def test_a_snapshot_that_cannot_be_had_or_is_refused_holds_my_wallets_and_says_why(
+    db, lite, monkeypatch
+):
+    mine(db, MINE)
+    db.commit()
+    monkeypatch.setattr(node, "SNAPSHOT", "https://snapshots.example/gone.dat")
+    node.snapshot()  # a 404: asked once, not every 5 seconds
+    node.snapshot()
+    assert "HTTP 404" in node.notes()[0] and "remove the setting" in node.notes()[0]
+    with pytest.raises(node.NotReady, match="HTTP 404"):
+        node.read(MINE)
+    assert node.read(SATOSHI) is None  # a stranger's address goes to the public server as ever
+    assert lite.wallet is None
+
+    monkeypatch.setattr(node, "_snap", {"done": False, "said": "", "failed": ""})
+    monkeypatch.setattr(node, "SNAPSHOT", "utxo-4.dat")
+    node.snapshot()
+    assert "is not in snapshot/ next to compose.yaml" in node.notes()[0]
+    (Path(node.SNAPSHOTS) / "utxo-4.dat").write_text("4")  # put there later: found then
+    node.snapshot()
+    node.snapshot()
+    said = node.notes()[0]  # a height Bitcoin Core 31.3 has no hash for: its own words
+    assert "not recognized" in said and "The following snapshot heights are available: 5" in said
+    assert methods(lite).count("loadtxoutset") == 1 and lite.wallet is None
+    assert (Path(node.SNAPSHOTS) / "utxo-4.dat").exists()  # not deleted: it was not loaded
+
+
+def test_a_node_that_started_without_the_snapshot_keeps_going_and_says_it_is_not_used(
+    db, lite, monkeypatch
+):
+    mine(db, MINE)
+    db.commit()
+    node.refresh()  # the node's wallet, from before the setting
+    (Path(node.SNAPSHOTS) / "u.dat").write_text("5")
+    monkeypatch.setattr(node, "SNAPSHOT", "u.dat")
+    node.snapshot()
+    assert "loadtxoutset" not in methods(lite)  # it would stop bitcoind from starting again
+    assert "NODE_SNAPSHOT is not used" in node.notes()[0]
+    node.read(MINE)  # my wallets carry on from the node
+    assert (Path(node.SNAPSHOTS) / "u.dat").exists()
+
+
+def test_the_status_line_keeps_asking_while_the_node_has_something_to_say(db, lite, monkeypatch):
+    web = TestClient(app, base_url="http://localhost")
+    assert web.get("/api/tracker/sync").json()["node"] is False
+    lite.ibd = True
+    status = web.get("/api/tracker/sync").json()
+    assert status["node"] is True and "still syncing" in status["notes"][0]
+
+
 def test_with_the_lite_node_my_bitcoin_addresses_go_to_no_swap_api(db, monkeypatch):
     monkeypatch.setattr(node, "BITCOIND", RPC)
     mine(db, MINE)
@@ -576,14 +810,16 @@ def test_with_the_lite_node_my_bitcoin_addresses_go_to_no_swap_api(db, monkeypat
 WRAPPER = ROOT / "node" / "bitcoind-lite.sh"
 
 
-def start(tmp_path, cap):
+def start(tmp_path, cap, **more):
     """The wrapper with the image's entrypoint replaced by one that prints its arguments."""
     entry = tmp_path / "entrypoint.sh"
     entry.write_text('#!/bin/sh\necho "$@"\n')
     entry.chmod(0o755)
     script = tmp_path / "lite.sh"
     script.write_text(WRAPPER.read_text().replace("/entrypoint.sh", str(entry)))
-    env = {k: v for k, v in os.environ.items() if k != "NODE_MAX_DISK_GB"}
+    ours = ("NODE_MAX_DISK_GB", "NODE_SNAPSHOT", "BITCOIN_DATA")
+    env = {k: v for k, v in os.environ.items() if k not in ours}
+    env |= {"BITCOIN_DATA": str(tmp_path / "data")} | more  # the image sets BITCOIN_DATA
     env |= {"NODE_MAX_DISK_GB": cap} if cap is not None else {}
     return subprocess.run(
         ["sh", script, "-server=1"],
@@ -607,14 +843,29 @@ def test_one_setting_sizes_the_node(tmp_path):
         assert "at least 20" in refused.stderr and not refused.stdout
 
 
+def test_a_snapshot_makes_room_for_a_second_chain_state(tmp_path):
+    # While the node checks a snapshot it keeps two chain states: 17 GB more than without one
+    done = start(tmp_path, "50", NODE_SNAPSHOT="utxo-935000.dat")
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.split()[-1] == f"-prune={15 * 1024}"
+    assert "second chain state" in done.stderr  # said in its log, not only in the README
+    assert start(tmp_path, "37", NODE_SNAPSHOT="u.dat").stdout.split()[-1] == "-prune=2048"
+    refused = start(tmp_path, "36", NODE_SNAPSHOT="https://example.org/u.dat")
+    assert refused.returncode == 1 and not refused.stdout
+    assert "at least 37 with a snapshot" in refused.stderr and "1100 MiB" in refused.stderr
+    # NODE_SNAPSHOT removed before the node has checked it: the second chain state is still there
+    (tmp_path / "data" / "chainstate_snapshot").mkdir(parents=True)
+    assert start(tmp_path, "50").stdout.split()[-1] == f"-prune={15 * 1024}"
+
+
 def test_the_floor_is_the_same_in_the_installer_and_the_node():
     floor = [
         line.split("=")[1].split()[0]
         for path in (WRAPPER, ROOT / "proxmox" / "install.sh")
         for line in path.read_text().splitlines()
-        if line.startswith(("MIN=", "NODE_MIN_DISK="))
+        if line.startswith(("MIN=", "NODE_MIN_DISK=", "SECOND=", "NODE_SNAPSHOT_DISK="))
     ]
-    assert floor == ["20", "20"]
+    assert floor == ["20", "17", "20", "17"]
 
 
 def test_compose_runs_the_lite_profile_without_an_index():
@@ -627,7 +878,16 @@ def test_compose_runs_the_lite_profile_without_an_index():
     assert not [a for a in lite["command"] if "txindex" in a or "disablewallet" in a]
     assert "-nodebuglogfile=1" in lite["command"]  # logs go to Docker's, capped at 30 MB
     assert lite["environment"]["NODE_MAX_DISK_GB"] == "${NODE_MAX_DISK_GB:-50}"
-    assert "bitcoind-rpc:/rpc:ro" in spec["services"]["crypto-tracker"]["volumes"]
+    app = spec["services"]["crypto-tracker"]
+    assert "bitcoind-rpc:/rpc:ro" in app["volumes"]
+    # A snapshot: the app downloads or finds it in snapshot/, the node reads it from there
+    assert app["environment"]["CT_SNAPSHOT"] == "${NODE_SNAPSHOT:-}"
+    assert lite["environment"]["NODE_SNAPSHOT"] == "${NODE_SNAPSHOT:-}"  # sizes its cap
+    assert "./snapshot:/snapshot" in app["volumes"] and "./snapshot:/snapshot:ro" in lite["volumes"]
+    assert node.SNAPSHOTS == "/snapshot"
+    # 9 GB that never go into an image build, nor into git
+    assert "snapshot" in (ROOT / ".dockerignore").read_text().split()
+    assert "snapshot/" in (ROOT / ".gitignore").read_text().split()
     # the full profile is untouched
     assert "-txindex=1" in spec["services"]["bitcoind"]["command"]
 

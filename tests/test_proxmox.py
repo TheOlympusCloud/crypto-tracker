@@ -169,3 +169,46 @@ def test_a_lite_node_below_its_floor_is_refused_before_anything_is_made(tmp_path
         c.startswith(("pct create", "pveam download"))
         for c in (tmp_path / "calls").read_text().splitlines()
     )
+
+
+def test_a_lite_node_can_start_from_a_snapshot_file_or_url(tmp_path):
+    snap = tmp_path / "utxo-935000.dat"
+    snap.write_bytes(b"utxo\xff")
+    done = run(tmp_path, NODE="lite", NODE_SNAPSHOT=str(snap))
+    assert done.returncode == 0, done.stderr
+    calls = (tmp_path / "calls").read_text().splitlines()
+    app = "/opt/crypto-tracker"
+    # into the container's snapshot/, which compose.yaml shares with the node, before it starts
+    push = f"pct push 105 {snap} {app}/snapshot/utxo-935000.dat --perms 0644"
+    setting = f'pct exec 105 -- sh -c printf "NODE_SNAPSHOT=%s\\n" "$1" >>"$2" sh utxo-935000.dat {app}/.env'
+    up = next(i for i, c in enumerate(calls) if "docker compose up" in c)
+    assert calls.index(f"pct exec 105 -- mkdir -p {app}/snapshot") < calls.index(push) < up
+    assert calls.index(setting) < up
+    assert "--rootfs local-lvm:66" in next(c for c in calls if c.startswith("pct create"))
+    assert "snapshot" in done.stdout
+
+    (tmp_path / "url").mkdir()
+    url = "https://example.org/utxo-935000.dat?from=me&x=1"  # passed as is, never through a shell
+    done = run(tmp_path / "url", NODE="lite", NODE_SNAPSHOT=url)
+    assert done.returncode == 0, done.stderr
+    calls = (tmp_path / "url" / "calls").read_text()
+    assert f'"$1" >>"$2" sh {url} {app}/.env' in calls and "pct push" not in calls
+
+
+def test_a_snapshot_the_node_has_no_room_or_use_for_is_refused_before_anything_is_made(tmp_path):
+    snap = tmp_path / "u.dat"
+    snap.write_bytes(b"utxo\xff")
+    for given, said in (
+        ({"NODE_MAX_DISK_GB": "36"}, "at least 37 with a snapshot"),  # two chain states
+        ({"NODE_SNAPSHOT": str(tmp_path / "missing.dat")}, "no file"),
+        ({"NODE": "full"}, "NODE_SNAPSHOT needs NODE=lite"),
+        ({"NODE": "none"}, "NODE_SNAPSHOT needs NODE=lite"),
+    ):
+        refused = run(tmp_path, **{"NODE": "lite", "NODE_SNAPSHOT": str(snap), **given})
+        assert refused.returncode == 1 and said in refused.stderr, given
+    assert not any(
+        c.startswith(("pct create", "pveam download"))
+        for c in (tmp_path / "calls").read_text().splitlines()
+    )
+    enough = run(tmp_path, NODE="lite", NODE_SNAPSHOT=str(snap), NODE_MAX_DISK_GB="37")
+    assert enough.returncode == 0, enough.stderr

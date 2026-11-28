@@ -8,6 +8,8 @@ With the lite node that holds for my own addresses. Any other has no index to be
 there: it goes to the public server, and every view says so (chains.LITE).
 """
 
+import glob
+import hashlib
 import json
 import os
 import re
@@ -15,6 +17,7 @@ import sys
 import threading
 import time
 from collections import Counter
+from contextlib import closing
 from datetime import UTC, datetime
 
 import httpx
@@ -96,7 +99,7 @@ class NotReady(RuntimeError):
 class RpcError(RuntimeError):
     def __init__(self, code, message):
         super().__init__(f"your Bitcoin node: {message}")
-        self.code = code
+        self.code, self.message = code, message
 
 
 def status():
@@ -115,13 +118,15 @@ def status():
 def _lite_status():
     try:
         info = rpc("getblockchaininfo", timeout=5)
+        check = _check()
     except (httpx.HTTPError, OSError, ValueError, RpcError):  # -28: still loading its index
-        return {"state": "down", "height": None, "time": None}
+        return {"state": "down", "height": None, "time": None, "check": ""}
     behind = info["initialblockdownload"] or info["time"] < time.time() - STALE
     return {
         "state": "syncing" if behind else "ready",
         "height": info["blocks"],
         "time": info["time"],
+        "check": check,
     }
 
 
@@ -157,9 +162,11 @@ def notice(found, waits=True):
 
 
 def notes():
-    """The notice, when there is a node and it is not ready."""
+    """The notice, when there is a node and it is not ready; with the lite node, where its
+    snapshot stands too."""
     found = status()
-    return [notice(found)] if found and found["state"] != "ready" else []
+    said = [notice(found)] if found and found["state"] != "ready" else []
+    return said + [n for n in (_snapshot_note(), found and found.get("check")) if n]
 
 
 def guard(url):
@@ -239,7 +246,8 @@ def _register(db):
     low = None
     for key, rs in wanted.items():
         errors = [r["error"]["message"] for r in (next(results) for _ in rs) if not r["success"]]
-        if bad := [e for e in errors if "pruning" not in e]:
+        # "assumeutxo": blocks before its snapshot, on a node that has pruned none yet
+        if bad := [e for e in errors if "pruning" not in e and "assumeutxo" not in e]:
             refused[key] = bad[0]  # asked again at each look; its addresses wait meanwhile
             continue
         refused.pop(key, None)
@@ -322,10 +330,10 @@ def missing(db, key):
     row = db.execute("SELECT since FROM bitcoind_watch WHERE key = ?", (key,)).fetchone()
     if not row or not row[0]:
         return ""
+    how = "resync it without NODE_SNAPSHOT" if SNAPSHOT else "resync the node"
     return (
-        f"Bitcoin: read from your own node from block {row[0]:,} on: it no longer had the "
-        "older blocks when this wallet was added; resync the node to read all of it (README, "
-        '"A lite node").'
+        f"Bitcoin: read from your own node from block {row[0]:,} on: it did not have the older "
+        f'blocks when this wallet was added; {how} to read all of it (README, "A lite node").'
     )
 
 
@@ -338,12 +346,14 @@ def read(address, mine=()):
         raise NotReady(BUSY)
     db = database.connect()
     try:
-        refresh(db)
-        if not rpc("getaddressinfo", address, wallet=True)["ismine"]:
+        if not (waiting := _waiting()):
+            refresh(db)
+        # Waiting for its snapshot, the node has no wallet yet to tell mine from a stranger's.
+        if waiting or not rpc("getaddressinfo", address, wallet=True)["ismine"]:
             listed = db.execute("SELECT 1 FROM node WHERE address = ? AND mine", (address,))
             if address in mine or listed.fetchone():
                 why = "".join(f" Your node refused {k}: {e}" for k, e in refused.items())
-                raise NotReady(UNWATCHED + why)
+                raise NotReady(waiting or UNWATCHED + why)
             return None
         if (found := status())["state"] != "ready":
             raise NotReady(notice(found))
@@ -396,8 +406,10 @@ def watch():
         said = ""
         while True:
             try:
-                with _lock:
-                    refresh()
+                snapshot()
+                if not _waiting():
+                    with _lock:
+                        refresh()
                 said = ""
             except Exception as e:  # noqa: BLE001 - a background thread must report, not die
                 if str(e) != said:
@@ -406,6 +418,154 @@ def watch():
             time.sleep(WATCH_EVERY)
 
     threading.Thread(target=loop, daemon=True).start()
+
+
+# ---- Starting a new lite node from a UTXO snapshot (assumeutxo, README "From a snapshot"): it
+# loads the set of unspent coins at a block its Bitcoin Core carries the hash of, is at the tip
+# within hours, and checks the snapshot from the genesis block on in the background. Its wallet
+# only sees blocks from the snapshot's on (Core's wallet skips the ones checked behind).
+
+SNAPSHOT = os.environ.get("CT_SNAPSHOT", "").strip()  # NODE_SNAPSHOT: a file name or a URL
+SNAPSHOTS = "/snapshot"  # snapshot/ next to compose.yaml, at the same path in bitcoind-lite
+_snap = {"done": False, "said": "", "failed": ""}  # done: nothing more to do; failed: given up
+
+AGAIN = 'Fix or remove the setting, then docker compose up -d (README, "From a snapshot").'
+SNAP = {
+    "starting": "Bitcoin: your own node is about to load the snapshot NODE_SNAPSHOT names.",
+    "missing": "Bitcoin: the snapshot {name} is not in snapshot/ next to compose.yaml: put it "
+    'there, or give its URL in NODE_SNAPSHOT (README, "From a snapshot").',
+    "downloading": "Bitcoin: downloading the snapshot your own node starts from: {have:.1f} of "
+    "{total:.1f} GB.",
+    "stopped": "Bitcoin: downloading the snapshot stopped ({error}); it carries on in a moment.",
+    "no download": "Bitcoin: the snapshot in NODE_SNAPSHOT could not be downloaded: HTTP {code}. "
+    + AGAIN,
+    "headers": "Bitcoin: your own node is fetching the chain's block headers before it loads the "
+    "snapshot: {headers:,} so far.",
+    "loading": "Bitcoin: your own node is loading the snapshot, which takes minutes.",
+    "refused": "Bitcoin: your own node did not load the snapshot: {error} " + AGAIN,
+    "unused": "Bitcoin: NODE_SNAPSHOT is not used: your own node had started syncing without it, "
+    "and only a new node starts from a snapshot. Resync the node to start from it, or remove "
+    'the setting (README, "From a snapshot").',
+    "checking": "Bitcoin: your own node started from a snapshot of block {base:,}, which it is "
+    "checking in the background from the genesis block: block {done:,} of {base:,} "
+    "({share:.0%}). Until then it trusts the snapshot's coins, whose hash Bitcoin Core carries.",
+}
+
+
+def _snapshot_note():
+    """Where the snapshot stands, for the status line: "" without one, or once loaded."""
+    if not SNAPSHOT or not BITCOIND:
+        return ""
+    return _snap["said"] if _snap["done"] else _snap["failed"] or _snap["said"] or SNAP["starting"]
+
+
+def _waiting():
+    """Why my wallets wait for the snapshot, or "" when they do not (any longer)."""
+    return "" if not SNAPSHOT or _snap["done"] else f"{_snapshot_note()} {LITE_WAITS}"
+
+
+def snapshot():
+    """Start a new node from the snapshot NODE_SNAPSHOT names: downloaded first when it is a
+    URL, loaded once the node has the block headers up to its block, then deleted. Only into a
+    node without its wallet yet: one made before could keep bitcoind from starting again
+    until its background check is done (Core: "Wallet requires blocks to be downloaded")."""
+    if not SNAPSHOT or _snap["done"] or _snap["failed"]:
+        return
+    path, url = _file()
+    found = rpc("getchainstates")
+    if base := found["chainstates"][-1].get("snapshot_blockhash"):  # loaded, now or before
+        return _loaded(path, base)
+    if WALLET in {w["name"] for w in rpc("listwalletdir")["wallets"]}:
+        with closing(database.connect()) as db:
+            used = db.execute("SELECT 1 FROM meta WHERE key = 'bitcoind_snapshot'").fetchone()
+        _snap.update(done=True, said="" if used else SNAP["unused"])  # used: checked since
+        return
+    if not os.path.exists(path):
+        if url:
+            _download(path)
+        else:
+            _snap["said"] = SNAP["missing"].format(name=os.path.basename(SNAPSHOT))
+        if not os.path.exists(path):
+            return
+    _snap["said"] = SNAP["loading"]
+    try:
+        loaded = rpc("loadtxoutset", path, timeout=None)
+    except RpcError as e:
+        if "headers chain" in e.message:  # a new node: a few minutes
+            _snap["said"] = SNAP["headers"].format(headers=found["headers"])
+        else:
+            _snap["failed"] = SNAP["refused"].format(error=e.message)
+            if url:
+                os.remove(path)  # downloaded, of no use: 9 GB, and in the way of a fixed URL
+        return
+    _loaded(path, loaded["tip_hash"])
+
+
+def _file():
+    """Where the snapshot is, as the node reads it, and whether the app downloads it there:
+    then under a name of its URL's, so that another URL never takes up its file or part."""
+    if not SNAPSHOT.startswith(("http://", "https://")):
+        return os.path.join(SNAPSHOTS, os.path.basename(SNAPSHOT)), False
+    name = f"download-{hashlib.sha256(SNAPSHOT.encode()).hexdigest()[:16]}.dat"
+    return os.path.join(SNAPSHOTS, name), True
+
+
+def _loaded(path, base):
+    if os.path.exists(path):
+        os.remove(path)  # all of it is in the node's chain state now
+    with closing(database.connect()) as db:
+        db.execute("INSERT OR REPLACE INTO meta VALUES ('bitcoind_snapshot', ?)", (base,))
+        db.commit()
+    _snap.update(done=True, said="")
+
+
+def _download(path):
+    """NODE_SNAPSHOT into `path`, on from where an interrupted download stopped."""
+    part = f"{path}.part"
+    for old in glob.glob(os.path.join(SNAPSHOTS, "download-*")):  # another URL's: never resumed
+        if not old.startswith(path):
+            os.remove(old)
+    have = os.path.getsize(part) if os.path.exists(part) else 0
+    try:
+        with (
+            httpx.Client(timeout=60, follow_redirects=True) as client,
+            client.stream("GET", SNAPSHOT, headers={"Range": f"bytes={have}-"}) as r,
+        ):
+            if r.status_code == 416:  # nothing past what it has: whole if it is the file's size
+                if r.headers.get("content-range", "").rpartition("/")[2] == str(have):
+                    os.replace(part, path)  # the app stopped between its last byte and this
+                else:
+                    os.remove(part)
+                return
+            r.raise_for_status()
+            if r.status_code != 206:
+                have = 0  # the server sends all of it
+            total = have + int(r.headers.get("content-length", 0))
+            with open(part, "ab" if have else "wb") as f:
+                for chunk in r.iter_bytes(1 << 20):
+                    f.write(chunk)
+                    have += len(chunk)
+                    _snap["said"] = SNAP["downloading"].format(have=have / 1e9, total=total / 1e9)
+    except httpx.HTTPStatusError as e:
+        if not e.response.is_client_error:
+            _snap["said"] = SNAP["stopped"].format(error=f"HTTP {e.response.status_code}")
+        else:
+            _snap["failed"] = SNAP["no download"].format(code=e.response.status_code)
+        return
+    except (httpx.HTTPError, OSError) as e:
+        _snap["said"] = SNAP["stopped"].format(error=e)
+        return
+    os.replace(part, path)
+
+
+def _check():
+    """While the node checks the snapshot it started from, how far it is (getchainstates)."""
+    *behind, current = rpc("getchainstates", timeout=5)["chainstates"]
+    if not behind or "snapshot_blockhash" not in current:
+        return ""
+    base = rpc("getblockheader", current["snapshot_blockhash"], timeout=5)["height"]
+    done = behind[0].get("blocks", 0)
+    return SNAP["checking"].format(base=base, done=done, share=done / base)
 
 
 # ---- What the privacy scanner (am-i-exposed) asks of the lite node: fee estimates, the chain
