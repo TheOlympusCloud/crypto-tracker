@@ -202,6 +202,7 @@ export function TrackerProvider({ children }: { children: ReactNode }) {
         setSync(s);
         if (s.running) await wait(1500);
         else if (s.filling) await wait(10000);
+        else if (s.node) await wait(30000); // the node's progress: it changes every few seconds
         else {
           if (s.total || filled) await refresh();
           return;
